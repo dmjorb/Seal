@@ -54,7 +54,7 @@ struct StorageMaintenanceView: View {
         } message: {
             Text("会删除签名工作区和临时导入文件。")
         }
-        .sealScreenBackground(.secondary)
+        .sealScreenBackground()
     }
 
     private var summaryCard: some View {
@@ -70,7 +70,7 @@ struct StorageMaintenanceView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(28)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
@@ -88,7 +88,7 @@ struct StorageMaintenanceView: View {
             usageRow("临时缓存", viewModel.storageUsage.temporary)
         }
         .padding(.horizontal, 16)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)

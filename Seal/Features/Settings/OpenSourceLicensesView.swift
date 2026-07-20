@@ -68,7 +68,7 @@ struct OpenSourceLicensesView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
@@ -78,7 +78,7 @@ struct OpenSourceLicensesView: View {
         }
         .navigationTitle("开源许可")
         .navigationBarTitleDisplayMode(.inline)
-        .sealScreenBackground(.secondary)
+        .sealScreenBackground()
     }
 }
 

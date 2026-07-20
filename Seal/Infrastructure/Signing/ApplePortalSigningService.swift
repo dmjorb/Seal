@@ -28,19 +28,19 @@ enum ApplePortalSigningFailure {
         let details: (title: String, reason: String, recovery: String, code: String)
         switch stage {
         case .account:
-            details = ("无法连接 Apple 账户", "Apple 账户会话失败。\(diagnostic)", "检查网络后重新验证账户", "SEAL-AUTH-105")
+            details = ("无法连接 Apple 账户", "Apple 账户会话失败。", "检查网络后重新验证账户", "SEAL-AUTH-105")
         case .device:
-            details = ("无法注册设备", "Apple 设备注册失败。\(diagnostic)", "检查设备配对后重试", "SEAL-DEVICE-203")
+            details = ("无法注册设备", "Apple 设备注册失败。", "检查设备配对后重试", "SEAL-DEVICE-203")
         case .certificate:
             return certificateFailure(error: error, diagnostic: diagnostic)
         case .appID:
             return appIDFailure(error: error, diagnostic: diagnostic)
         case .provisioningProfile:
-            details = ("无法完成签名", "描述文件失败。\(diagnostic)", "重试", "SEAL-PROFILE-303")
+            details = ("无法完成签名", "描述文件生成失败。", "重试", "SEAL-PROFILE-303")
         case .signing:
-            details = ("无法完成签名", "应用签名失败。\(diagnostic)", "重试", "SEAL-SIGN-501")
+            details = ("无法完成签名", "应用签名失败。", "重试", "SEAL-SIGN-501")
         case .packaging:
-            details = ("无法完成签名", "签名包生成失败。\(diagnostic)", "重试", "SEAL-SIGN-502")
+            details = ("无法完成签名", "签名包生成失败。", "重试", "SEAL-SIGN-502")
         }
         return ImportFailure(
             title: details.title,
@@ -61,7 +61,7 @@ enum ApplePortalSigningFailure {
             || normalized.contains("bundle identifier unavailable") {
             return ImportFailure(
                 title: "Apple 返回 Bundle ID 不可用",
-                reason: "Apple 返回目标 Bundle ID 不可用。Seal 不在本地判断归属，原始返回：\(diagnostic)",
+                reason: "Apple 返回目标 Bundle ID 不可用。",
                 recovery: "首次签名更换 Bundle ID；续签继续使用原签名账号与原 Bundle ID。",
                 code: "SEAL-APPID-302"
             )
@@ -69,8 +69,8 @@ enum ApplePortalSigningFailure {
 
         return ImportFailure(
             title: "Apple App ID 操作失败",
-            reason: "Apple 返回 App ID 操作失败。原始返回：\(diagnostic)",
-            recovery: "按 Apple 原始返回处理；重新验证 Apple ID 后重试。",
+            reason: "Apple 返回 App ID 操作失败。",
+            recovery: "重新验证 Apple ID 后重试。",
             code: "SEAL-APPID-303"
         )
     }
@@ -86,8 +86,8 @@ enum ApplePortalSigningFailure {
             || normalized.contains("invalidcertificaterequest") {
             return ImportFailure(
                 title: "证书名额已满",
-                reason: "Apple 拒绝创建新的开发证书。Seal 没有撤销任何证书，也没有自动选择替换对象。原始返回：\(diagnostic)",
-                recovery: "前往签名证书页面，选择完整 Serial 并明确确认撤销",
+                reason: "Apple 开发证书数量已达到上限。Seal 没有撤销任何证书，也没有自动选择替换对象。",
+                recovery: "前往签名证书页面处理旧证书",
                 code: "SEAL-CERT-204"
             )
         }
@@ -98,7 +98,7 @@ enum ApplePortalSigningFailure {
             || nsError.domain == NSURLErrorDomain {
             return ImportFailure(
                 title: "证书服务连接失败",
-                reason: "连接 Apple 证书服务失败。\(diagnostic)",
+                reason: "连接 Apple 证书服务失败。",
                 recovery: "检查网络后重试",
                 code: "SEAL-CERT-205"
             )
@@ -110,7 +110,7 @@ enum ApplePortalSigningFailure {
             || normalized.contains("forbidden") {
             return ImportFailure(
                 title: "账号需要重新验证",
-                reason: "Apple ID 会话在准备证书时失效。\(diagnostic)",
+                reason: "Apple ID 会话在准备证书时失效。",
                 recovery: "重新验证 Apple ID 后重试",
                 code: "SEAL-AUTH-104"
             )
@@ -118,8 +118,8 @@ enum ApplePortalSigningFailure {
 
         return ImportFailure(
             title: "无法准备证书",
-            reason: "Apple 开发证书准备失败。\(diagnostic)",
-            recovery: "重新同步证书；不要反复创建或自动撤销证书",
+            reason: "Apple 开发证书准备失败。",
+            recovery: "重新同步证书后重试",
             code: "SEAL-CERT-203"
         )
     }
@@ -194,7 +194,7 @@ actor ApplePortalSigningService {
                 let nsError = error as NSError
                 throw Self.failure(
                     title: "无法签名",
-                    reason: "Apple 签名服务失败。[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
+                    reason: "Apple 签名服务失败，但 Seal 没有收到明确的失败原因。",
                     recovery: "重试",
                     code: "SEAL-SIGN-501"
                 )

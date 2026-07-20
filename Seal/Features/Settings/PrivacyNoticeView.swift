@@ -13,7 +13,7 @@ struct PrivacyNoticeView: View {
         }
         .navigationTitle("隐私说明")
         .navigationBarTitleDisplayMode(.inline)
-        .sealScreenBackground(.secondary)
+        .sealScreenBackground()
     }
 
     private func privacyRow(_ title: String, _ detail: String) -> some View {

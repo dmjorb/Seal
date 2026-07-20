@@ -21,7 +21,7 @@ struct BatchRefreshView: View {
                 if isRunning { ToolbarItem(placement: .cancellationAction) { Button("取消") { viewModel.cancelBatchRefresh(); dismiss() } } }
             }
         }
-        .sealSheetBackground(.tertiary)
+        .sealSheetBackground()
     }
 
     @ViewBuilder private var graphic: some View {
@@ -52,7 +52,7 @@ struct BatchRefreshView: View {
                 resultRow("xmark.circle.fill", "失败", "\(result.failed)", .red)
             }.padding(.horizontal, 16).glassSurface(cornerRadius: 16)
         case .failed(let failure):
-            VStack(spacing: 6) { Text(failure.reason).font(.title3.weight(.semibold)); Text(failure.code).font(.caption.monospaced()).foregroundStyle(.secondary) }
+            VStack(spacing: 8) { Text(failure.title).font(.title3.weight(.semibold)); Text(failure.userMessage).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center) }
         case nil: EmptyView()
         }
     }

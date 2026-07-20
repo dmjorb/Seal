@@ -126,7 +126,7 @@ struct AppSigningSheet: View {
             .padding(.top, 12)
             .padding(.bottom, 34)
         }
-        .sealSheetBackground(.tertiary)
+        .sealSheetBackground()
     }
 
     private func appIdentity(presentation: AppOperationPresentation) -> some View {
@@ -344,7 +344,7 @@ struct AppSigningSheet: View {
                     .scaledToFit()
                     .padding(12)
                     .foregroundStyle(Color.sealAccent)
-                    .background(.white.opacity(0.72))
+                    .background(Color.sealSurface)
             }
         }
         .frame(width: size, height: size)
@@ -425,15 +425,7 @@ struct AppSigningSheet: View {
     }
 
     private var certificateMigrationMessage: String {
-        guard let selectedAccount,
-              let oldSerial = app.certificateSerialNumber,
-              let newSerial = migrationTargetSerial else {
-            return "没有可迁移的本机证书。"
-        }
-        let bundleIdentifier = app.mappedBundleIdentifier
-            ?? app.preferredBundleIdentifier
-            ?? app.originalBundleIdentifier
-        return "此操作只更换应用绑定的签名证书，不更换 Apple ID、Team 或 Bundle ID。\n\n原证书 Serial：\n\(oldSerial)\n\n新证书 Serial：\n\(newSerial)\n\nTeam ID：\n\(selectedAccount.teamID)\n\nBundle ID：\n\(bundleIdentifier)"
+        "原本使用的本机证书不可用。Seal 将使用新的本机证书重新签名并安装。Bundle ID 和 Apple ID 不会改变。"
     }
 
     private func resetBundleIDDraftIfNeeded() {
@@ -507,7 +499,7 @@ struct AppSigningSheet: View {
         guard let serial, serial.isEmpty == false else {
             return "签名时申请 Seal 证书"
         }
-        return serial
+        return "Seal-\(serial.suffix(8))"
     }
 
     private var certificateCaption: String {
@@ -573,7 +565,7 @@ struct AppSigningSheet: View {
         if certificateSelectionError != nil {
             return migrationTargetSerial == nil
                 ? "去选择签名证书"
-                : "确认迁移到本机证书"
+                : "继续续签"
         }
         if app.hasPersistedSigningIdentity && app.state != .installed {
             return "重试安装已签名 IPA"
@@ -636,7 +628,7 @@ struct AppSigningSheet: View {
         if (failure.code == "SEAL-INSTALL-701" || failure.code == "SEAL-INSTALL-706"), viewModel.hasPendingVPNRecovery {
             return Alert(
                 title: Text(failure.title),
-                message: Text(failure.reason),
+                message: Text(failure.userMessage),
                 primaryButton: .default(Text("打开 LocalDevVPN")) { openLocalDevVPN() },
                 secondaryButton: .cancel(Text("取消")) {
                     viewModel.cancelPendingVPNRecovery()
@@ -645,7 +637,7 @@ struct AppSigningSheet: View {
         }
         return Alert(
             title: Text(failure.title),
-            message: Text("\(failure.reason)\n\(failure.code)"),
+            message: Text(failure.userMessage),
             dismissButton: .default(Text(failure.recovery)) {
                 viewModel.performAlertRecovery(for: failure)
             }
@@ -721,7 +713,7 @@ private struct BundleIDEditorSheet: View {
                 }
                 .padding(24)
             }
-            .background(SealBackdrop(level: .tertiary))
+            .background(SealBackdrop())
             .navigationTitle("修改 Bundle ID")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -792,8 +784,7 @@ private struct SigningPreflightDetailSheet: View {
 
                     diagnosticsSection("Apple ID", rows: [
                         ("账号", account?.maskedEmail ?? "未选择"),
-                        ("账号类型", account?.isFreeTeam == false ? "Apple Developer Program" : "个人免费账户"),
-                        ("Team ID", account?.teamID ?? "未确认"),
+                        ("Team", account?.teamName ?? "未确认"),
                         ("证书", certificateSummary)
                     ])
 
@@ -805,7 +796,7 @@ private struct SigningPreflightDetailSheet: View {
                 }
                 .padding(24)
             }
-            .background(SealBackdrop(level: .tertiary))
+            .background(SealBackdrop())
             .navigationTitle("签名前检查")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -857,7 +848,7 @@ private struct SigningPreflightDetailSheet: View {
                             .foregroundStyle(.primary)
                         Spacer(minLength: 12)
                         Text(row.1)
-                            .font(.system(size: 13, weight: .regular, design: row.0.contains("Bundle") || row.0 == "原始" || row.0 == "目标" || row.0 == "续签" || row.0 == "Team ID" ? .monospaced : .default))
+                            .font(.system(size: 13, weight: .regular, design: row.0.contains("Bundle") || row.0 == "原始" || row.0 == "目标" || row.0 == "续签" ? .monospaced : .default))
                             .foregroundStyle(Color.sealTextSecondary)
                             .multilineTextAlignment(.trailing)
                             .fixedSize(horizontal: false, vertical: true)

@@ -185,13 +185,6 @@ struct SettingsRootView: View {
                             viewModel: viewModel
                         )
                     }
-                case .signingHistory(let id):
-                    if let account = viewModel.accounts.first(where: { $0.id == id }) {
-                        SigningHistoryView(
-                            account: account,
-                            viewModel: viewModel
-                        )
-                    }
                 case .pairing:
                     PairingSettingsView(viewModel: viewModel)
                 case .localDevVPN:
@@ -205,7 +198,7 @@ struct SettingsRootView: View {
             .alert(item: $viewModel.alertFailure) { failure in
                 Alert(
                     title: Text(failure.title),
-                    message: Text("\(failure.reason)\n\(failure.code)"),
+                    message: Text(failure.userMessage),
                     dismissButton: .default(Text(failure.recovery))
                 )
             }
@@ -244,7 +237,7 @@ struct SettingsRootView: View {
                 .padding(.leading, 8)
             VStack(spacing: 0, content: content)
                 .padding(.horizontal, 16)
-                .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
@@ -343,7 +336,6 @@ struct SettingsRootView: View {
 
     private var latestLogSummary: String {
         guard let log = viewModel.logs.first else { return "暂无日志" }
-        if let code = log.code { return code }
         return log.level.displayTitle
     }
 
@@ -414,7 +406,7 @@ struct SettingsRootView: View {
     private var oneClickCheckSummary: String {
         if isChecking { return "检测中…" }
         switch viewModel.diagnosticState {
-        case .ready: return "全部正常"
+        case .ready: return "环境正常"
         case .running: return "检测中…"
         case .failed: return "发现问题"
         case .idle: return "未检测"

@@ -57,7 +57,7 @@ struct ImportConfirmationView: View {
         .padding(.top, 12)
         .padding(.bottom, 26)
         .presentationDetents([.height(520), .large])
-        .sealSheetBackground(.tertiary)
+        .sealSheetBackground()
         .interactiveDismissDisabled(showsProgress)
         .accessibilityIdentifier("import-confirmation")
         .onChange(of: isCommitting) { newValue in
@@ -126,12 +126,10 @@ struct ImportConfirmationView: View {
             Label(failure.title, systemImage: "exclamationmark.triangle.fill")
                 .font(.headline)
                 .foregroundStyle(Color.sealWarning)
-            Text(failure.reason)
+            Text(failure.userMessage)
                 .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(.primary)
-            Text(failure.code)
-                .font(.caption.monospaced())
-                .foregroundStyle(Color.sealTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
@@ -152,7 +150,7 @@ struct ImportConfirmationView: View {
                     .scaledToFit()
                     .padding(12)
                     .foregroundStyle(Color.sealAccent)
-                    .background(.white.opacity(0.72))
+                    .background(Color.sealSurface)
             }
         }
         .frame(width: 60, height: 60)

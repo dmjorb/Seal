@@ -17,7 +17,7 @@ struct AboutView: View {
         }
         .navigationTitle("当前版本")
         .navigationBarTitleDisplayMode(.inline)
-        .sealScreenBackground(.secondary)
+        .sealScreenBackground()
     }
 
     private var headerCard: some View {
@@ -33,7 +33,7 @@ struct AboutView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(28)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
@@ -51,7 +51,7 @@ struct AboutView: View {
             infoRow("系统", "iOS \(UIDevice.current.systemVersion)")
         }
         .padding(.horizontal, 16)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
@@ -65,7 +65,7 @@ struct AboutView: View {
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
             .padding(18)
-            .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private func infoRow(_ title: String, _ value: String) -> some View {

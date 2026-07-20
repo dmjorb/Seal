@@ -30,7 +30,7 @@ struct SigningProgressView: View {
             .padding(.top, 12)
             .padding(.bottom, 34)
         }
-        .sealSheetBackground(.tertiary)
+        .sealSheetBackground()
         .interactiveDismissDisabled(isRunning)
     }
 
@@ -120,10 +120,11 @@ struct SigningProgressView: View {
                     .foregroundStyle(Color.sealTextSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("错误代码：  \(failure.code)")
-                    .font(.system(size: 15, weight: .regular, design: .monospaced))
+                Text(recoveryText(failure))
+                    .font(.system(size: 15, weight: .regular))
                     .foregroundStyle(Color.sealTextSecondary)
-                    .textSelection(.enabled)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -192,11 +193,9 @@ struct SigningProgressView: View {
         VStack(spacing: 0) {
             runtimeRow("Apple ID", session.account.maskedEmail)
             Divider().padding(.leading, 14)
-            runtimeRow("Team ID", session.account.teamID)
+            runtimeRow("签名证书", certificateDisplayName(session))
             Divider().padding(.leading, 14)
-            runtimeRow("证书", session.selectedCertificateSerialNumber ?? session.account.certificateSerialNumber ?? "签名时创建并立即保存本机证书")
-            Divider().padding(.leading, 14)
-            runtimeRow("目标 Bundle ID", runtimeBundleIdentifier(session))
+            runtimeRow("Bundle ID", runtimeBundleIdentifier(session))
         }
         .padding(.horizontal, 14)
         .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -207,8 +206,25 @@ struct SigningProgressView: View {
     }
 
     private func runtimeRow(_ title: String, _ value: String) -> some View {
-        FullIdentifierRow(title: title, value: value)
-            .frame(minHeight: 44)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .foregroundStyle(.primary)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.system(size: 13, weight: .regular, design: title.contains("Bundle") || title.contains("证书") ? .monospaced : .default))
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(minHeight: 48)
+    }
+
+    private func certificateDisplayName(_ session: SigningSession) -> String {
+        guard let serial = session.selectedCertificateSerialNumber ?? session.account.certificateSerialNumber,
+              serial.isEmpty == false else {
+            return "签名时创建"
+        }
+        return "Seal-\(serial.suffix(8))"
     }
 
     private func runtimeBundleIdentifier(_ session: SigningSession) -> String {
@@ -250,27 +266,29 @@ struct SigningProgressView: View {
     }
 
     private func stageTimeline(activeStage: SigningStage) -> some View {
-        let steps = [
-            TimelineStep(title: "准备签名", position: 0),
-            TimelineStep(title: isRenewal ? "正在续签" : "正在签名", position: 1),
-            TimelineStep(title: "等待安装", position: 2)
-        ]
-        let activePosition = timelinePosition(for: activeStage)
+        let activeIndex = SigningStage.allCases.firstIndex(of: activeStage) ?? 0
         return VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+            ForEach(Array(SigningStage.allCases.enumerated()), id: \.offset) { index, stage in
                 HStack(alignment: .top, spacing: 13) {
                     VStack(spacing: 0) {
-                        timelineMarker(for: step.position, activePosition: activePosition)
-                        if index < steps.count - 1 {
+                        timelineMarker(for: index, activePosition: activeIndex)
+                        if index < SigningStage.allCases.count - 1 {
                             Rectangle()
-                                .fill(timelineLineColor(for: step.position, activePosition: activePosition))
-                                .frame(width: 2, height: 22)
+                                .fill(timelineLineColor(for: index, activePosition: activeIndex))
+                                .frame(width: 2, height: 18)
                         }
                     }
-                    Text(step.title)
-                        .font(.system(size: 17, weight: step.position == activePosition ? .semibold : .regular))
-                        .foregroundStyle(step.position == activePosition ? .primary : Color.sealTextSecondary)
-                        .padding(.top, -1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(stage.userVisibleTitle(isRenewal: isRenewal))
+                            .font(.system(size: 16, weight: index == activeIndex ? .semibold : .regular))
+                            .foregroundStyle(index == activeIndex ? .primary : Color.sealTextSecondary)
+                        if index == activeIndex {
+                            Text("正在执行")
+                                .font(.caption)
+                                .foregroundStyle(Color.sealAccent)
+                        }
+                    }
+                    .padding(.top, -1)
                 }
             }
         }
@@ -278,7 +296,7 @@ struct SigningProgressView: View {
     }
 
     private var completedTimeline: some View {
-        let steps = ["准备签名", isRenewal ? "续签完成" : "签名完成", "安装完成"]
+        let steps = SigningStage.allCases.map { $0.userVisibleTitle(isRenewal: isRenewal) }
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(steps.enumerated()), id: \.offset) { index, title in
                 HStack(alignment: .top, spacing: 13) {
@@ -337,7 +355,7 @@ struct SigningProgressView: View {
                     .scaledToFit()
                     .padding(12)
                     .foregroundStyle(Color.sealAccent)
-                    .background(.white.opacity(0.72))
+                    .background(Color.sealSurface)
             }
         }
         .frame(width: size, height: size)
@@ -397,8 +415,7 @@ struct SigningProgressView: View {
 
     private func expiryText(for installed: AppRecord) -> String {
         guard let expiryDate = installed.expiryDate else { return "应用已安装" }
-        let days = max(1, Int(ceil(expiryDate.timeIntervalSince(Date()) / 86_400)))
-        return "有效期为 \(days) 天"
+        return "到期：\(SealSettingsDateFormatter.string(from: expiryDate))"
     }
 
     private func primaryRecoveryTitle(_ failure: ImportFailure) -> String {
@@ -447,7 +464,7 @@ struct SigningProgressView: View {
 
     private func userFacingReason(_ failure: ImportFailure) -> String {
         if isSelfAppIDOwnershipFailure(failure) {
-            return failure.reason
+            return failure.userReason
         }
         if isAppIDFailure(failure), session?.app.isSeal == true {
             return "当前 Apple ID / Team 无法使用当前安装的 Bundle ID。Seal 自续签只沿用当前安装 Bundle ID，请使用签出当前 Seal 的 Apple ID / Team。"
@@ -455,7 +472,13 @@ struct SigningProgressView: View {
         if isAuthFailure(failure) {
             return "Apple ID 登录状态已失效，请重新验证后重试"
         }
-        return failure.reason
+        return failure.userReason
+    }
+
+    private func recoveryText(_ failure: ImportFailure) -> String {
+        let recovery = failure.recovery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if recovery.isEmpty || recovery == "知道了" { return "请根据上方原因处理后再试。" }
+        return recovery
     }
 
     private func isAuthFailure(_ failure: ImportFailure) -> Bool {
@@ -492,6 +515,20 @@ struct SigningProgressView: View {
         viewModel.dismissSigningResult()
         onFinish()
         dismiss()
+    }
+}
+
+private extension SigningStage {
+    func userVisibleTitle(isRenewal: Bool) -> String {
+        switch self {
+        case .waitingForChannel: return "检查安装通道"
+        case .preparingAccount: return "检查 Apple ID"
+        case .preparingCertificate: return "检查本机证书"
+        case .preparingProfiles: return "生成描述文件"
+        case .signing: return isRenewal ? "重新签名应用" : "签名应用"
+        case .installing: return "安装到设备"
+        case .verifying: return "保存续签记录"
+        }
     }
 }
 

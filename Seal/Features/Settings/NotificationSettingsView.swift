@@ -54,7 +54,7 @@ struct NotificationSettingsView: View {
         }
         .navigationTitle("提醒设置")
         .navigationBarTitleDisplayMode(.inline)
-        .sealScreenBackground(.secondary)
+        .sealScreenBackground()
     }
 
     private var normalizedLeadHours: Int {

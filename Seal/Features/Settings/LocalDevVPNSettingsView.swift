@@ -1,8 +1,10 @@
 import SwiftUI
+import UIKit
 
 struct LocalDevVPNSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
     @Environment(\.openURL) private var openURL
+    @State private var isChecking = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -10,13 +12,12 @@ struct LocalDevVPNSettingsView: View {
                 hero
                 detailsCard
                 actions
-                helperCard
             }
             .padding(20)
         }
         .navigationTitle("LocalDevVPN")
         .navigationBarTitleDisplayMode(.inline)
-        .sealScreenBackground(.secondary)
+        .sealScreenBackground()
     }
 
     private var hero: some View {
@@ -33,99 +34,40 @@ struct LocalDevVPNSettingsView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(28)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
-        }
+        .glassSurface(cornerRadius: 24)
     }
 
     private var detailsCard: some View {
         VStack(spacing: 0) {
-            ForEach(Array(viewModel.installDiagnostics.steps.enumerated()), id: \.offset) { index, step in
-                diagnosticRow(step)
-                if index < viewModel.installDiagnostics.steps.count - 1 {
-                    Divider()
-                }
-            }
+            detailRow("设备响应", deviceResponseText, deviceResponseColor)
             Divider()
-            FullIdentifierRow(title: "设备 UDID", value: deviceIdentifier)
-            if let failureCode {
-                Divider()
-                detailRow("错误代码", failureCode, Color.sealDanger)
-            }
+            detailRow("安装服务", installServiceText, installServiceColor)
         }
         .padding(.horizontal, 16)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
-        }
+        .padding(.vertical, 8)
+        .glassSurface(cornerRadius: 18)
     }
 
     private var actions: some View {
-        Button("打开 LocalDevVPN") {
-            openURL(LocalDevVPNLink.enableAndReturn) { accepted in
-                guard accepted == false else { return }
-                openURL(LocalDevVPNLink.appStore)
-            }
-        }
-        .sealPrimaryAction(cornerRadius: 12)
-    }
-
-    private var helperCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("说明")
-                .font(.headline)
-            Text("Seal 通过 LocalDevVPN 建立本机安装通道。打开或恢复 VPN 后，请返回设置页，在 LocalDevVPN 下方点击“一键检测”，统一检查 Apple ID、证书、配对文件和安装通道。")
-                .font(.subheadline)
-                .foregroundStyle(Color.sealTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
-        }
-    }
-
-
-    private func diagnosticRow(_ step: InstallDiagnosticStep) -> some View {
-        let color: Color = {
-            switch step.status {
-            case .passed: return .sealSuccess
-            case .running: return .sealAccent
-            case .failed: return .sealDanger
-            case .pending: return Color.sealTextSecondary
-            }
-        }()
-        return HStack(spacing: 12) {
-            Circle()
-                .fill(color.opacity(0.18))
-                .frame(width: 22, height: 22)
-                .overlay {
-                    Image(systemName: iconName(for: step.status))
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(color)
+        VStack(spacing: 12) {
+            Button("打开 LocalDevVPN") {
+                openURL(LocalDevVPNLink.enableAndReturn) { accepted in
+                    guard accepted == false else { return }
+                    openURL(LocalDevVPNLink.appStore)
                 }
-            Text(step.title)
-            Spacer(minLength: 12)
-            Text(step.valueText)
-                .foregroundStyle(color)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        }
-        .frame(minHeight: 54)
-    }
+            }
+            .sealPrimaryAction(cornerRadius: 12)
 
-    private func iconName(for status: InstallDiagnosticStep.Status) -> String {
-        switch status {
-        case .passed: "checkmark"
-        case .running: "arrow.triangle.2.circlepath"
-        case .failed: "exclamationmark"
-        case .pending: "minus"
+            Button(isChecking ? "正在检测…" : "重新检测") {
+                guard isChecking == false else { return }
+                isChecking = true
+                Task {
+                    await viewModel.testConnection()
+                    isChecking = false
+                }
+            }
+            .sealOutlineAction(cornerRadius: 12)
+            .disabled(isChecking)
         }
     }
 
@@ -135,78 +77,67 @@ struct LocalDevVPNSettingsView: View {
             Spacer(minLength: 12)
             Text(value)
                 .foregroundStyle(color)
+                .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
         }
         .frame(minHeight: 54)
     }
 
     private var heroIcon: String {
-        if case .ready = viewModel.diagnosticState {
-            return "checkmark.circle.fill"
-        }
-        if case .running = viewModel.diagnosticState {
-            return "arrow.triangle.2.circlepath"
-        }
-        if installFailure != nil {
-            return "exclamationmark.triangle.fill"
-        }
+        if case .ready = viewModel.diagnosticState { return "checkmark.circle.fill" }
+        if case .running = viewModel.diagnosticState { return "arrow.triangle.2.circlepath" }
+        if installFailure != nil { return "exclamationmark.triangle.fill" }
         return "network"
     }
 
     private var statusTitle: String {
-        if case .ready = viewModel.diagnosticState {
-            return "LocalDevVPN 已连接"
-        }
-        if case .running = viewModel.diagnosticState {
-            return "正在检测连接"
-        }
-        if let installFailure {
-            return installFailure.title
-        }
+        if case .ready = viewModel.diagnosticState { return "LocalDevVPN 已连接" }
+        if case .running = viewModel.diagnosticState { return "正在检测连接" }
+        if installFailure != nil { return "LocalDevVPN 未连接" }
         return "尚未检测"
     }
 
     private var statusSubtitle: String {
-        if case .ready = viewModel.diagnosticState {
-            return "安装通道可用，可以签名和续签应用"
-        }
-        if case .running = viewModel.diagnosticState {
-            return "正在分层检测 VPN 通道、配对文件、设备响应和安装服务"
-        }
-        if let installFailure {
-            return installFailure.reason
-        }
-        return "返回设置页点击“一键检测”确认当前连接状态"
+        if case .ready = viewModel.diagnosticState { return "安装通道可用，可以签名和续签应用" }
+        if case .running = viewModel.diagnosticState { return "正在检测设备响应和安装服务" }
+        if let installFailure { return installFailure.userReason }
+        return "打开 LocalDevVPN 后，点击重新检测确认安装通道。"
     }
 
     private var statusColor: Color {
-        if case .ready = viewModel.diagnosticState {
-            return .sealSuccess
-        }
-        if case .running = viewModel.diagnosticState {
-            return .sealAccent
-        }
+        if case .ready = viewModel.diagnosticState { return .sealSuccess }
+        if case .running = viewModel.diagnosticState { return .sealAccent }
         return installFailure == nil ? Color.sealTextSecondary : .sealDanger
     }
 
     private var installFailure: ImportFailure? {
-        guard case .failed(let failure) = viewModel.diagnosticState else {
-            return nil
+        guard case .failed(let failure) = viewModel.diagnosticState else { return nil }
+        return failure.code.hasPrefix("SEAL-INSTALL-") || failure.code.hasPrefix("SEAL-PAIR-") ? failure : nil
+    }
+
+    private var deviceResponseText: String {
+        switch viewModel.diagnosticState {
+        case .ready: return "正常"
+        case .running: return "检测中"
+        case .failed: return "不可用"
+        case .idle: return "未检测"
         }
-        return failure.code.hasPrefix("SEAL-INSTALL-")
-            || failure.code.hasPrefix("SEAL-PAIR-")
-            ? failure
-            : nil
     }
 
-    private var deviceIdentifier: String {
-        if let id = viewModel.installDiagnostics.deviceIdentifier { return id }
-        if case .ready(let id) = viewModel.diagnosticState { return id }
-        return "—"
+    private var installServiceText: String {
+        switch viewModel.diagnosticState {
+        case .ready: return "可用"
+        case .running: return "检测中"
+        case .failed: return "不可用"
+        case .idle: return "未检测"
+        }
     }
 
-    private var failureCode: String? {
-        installFailure?.code
+    private var deviceResponseColor: Color {
+        if case .ready = viewModel.diagnosticState { return .sealSuccess }
+        if case .failed = viewModel.diagnosticState { return .sealDanger }
+        return .sealTextSecondary
     }
+
+    private var installServiceColor: Color { deviceResponseColor }
 }

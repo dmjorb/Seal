@@ -71,7 +71,7 @@ struct CertificatesRootView: View {
         .alert(item: $viewModel.alertFailure) { failure in
             Alert(
                 title: Text(failure.title),
-                message: Text("\(failure.reason)\n\(failure.code)"),
+                message: Text(failure.userMessage),
                 dismissButton: .default(Text(failure.recovery))
             )
         }
@@ -91,7 +91,7 @@ struct CertificatesRootView: View {
             viewModel.requestedRoute = nil
             isAddingAccount = true
         }
-        .sealScreenBackground(.secondary)
+        .sealScreenBackground()
     }
 
     private var header: some View {

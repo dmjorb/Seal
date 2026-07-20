@@ -48,16 +48,15 @@ struct AppOperationPresentation: Equatable, Sendable {
 
     var sheetTitle: String {
         switch kind {
-        case .signing: "签名应用"
-        case .renewal, .urgentRenewal, .expiredRenewal: "续签应用"
+        case .signing: "签名并安装"
+        case .renewal, .urgentRenewal, .expiredRenewal: "续签并安装"
         }
     }
 
     var primaryAction: String {
         switch kind {
         case .signing: "签名并安装"
-        case .renewal, .urgentRenewal: "立即续签"
-        case .expiredRenewal: "续签并重新安装"
+        case .renewal, .urgentRenewal, .expiredRenewal: "续签并安装"
         }
     }
 }

@@ -7,7 +7,6 @@ enum SettingsRoute: Hashable {
     case addAccount
     case certificates
     case accountDetail(UUID)
-    case signingHistory(UUID)
     case pairing
     case localDevVPN
     case storage
@@ -326,7 +325,7 @@ final class SettingsViewModel: ObservableObject {
             let nsError = error as NSError
             alertFailure = Self.failure(
                 title: "无法创建本机证书",
-                reason: "证书创建或本地保存失败。[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
+                reason: "失败原因暂时无法确定。Seal 没有收到明确的证书创建失败原因。",
                 recovery: "重新同步证书",
                 code: "SEAL-CERT-211"
             )
@@ -393,7 +392,7 @@ final class SettingsViewModel: ObservableObject {
             let nsError = error as NSError
             alertFailure = Self.failure(
                 title: "无法撤销证书",
-                reason: "Apple 证书撤销失败。Seal 没有处理其他证书。[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
+                reason: "Apple 证书撤销失败。Seal 没有处理其他证书。",
                 recovery: "重新同步证书后重试",
                 code: "SEAL-CERT-216"
             )
@@ -472,7 +471,7 @@ final class SettingsViewModel: ObservableObject {
             let nsError = error as NSError
             alertFailure = Self.failure(
                 title: "无法完成证书迁移",
-                reason: "已按完整 Serial 执行明确操作，但 Apple 或本地保存阶段失败。[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
+                reason: "已按用户选择处理证书，但 Apple 或本地保存阶段没有返回明确失败原因。",
                 recovery: "重新同步证书后确认当前状态",
                 code: "SEAL-CERT-212"
             )
@@ -695,7 +694,7 @@ final class SettingsViewModel: ObservableObject {
             let nsError = error as NSError
             let failure = Self.failure(
                 title: "Apple 侧同步失败",
-                reason: "Apple 返回：[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
+                reason: "Apple 侧同步失败，但 Seal 没有收到明确的失败原因。",
                 recovery: "重新同步",
                 code: "SEAL-INVENTORY-900"
             )

@@ -1,28 +1,14 @@
 import SwiftUI
+import UIKit
 
 enum SealScreenLevel {
     case primary
     case secondary
     case tertiary
 
-    var backgroundColor: Color {
-        switch self {
-        case .primary:
-            return Color.sealBackground
-        case .secondary:
-            return Color.sealSecondaryBackground
-        case .tertiary:
-            return Color.sealTertiaryBackground
-        }
-    }
+    var backgroundColor: Color { Color.sealBackground }
 
-    var topHighlightOpacity: Double {
-        switch self {
-        case .primary: return 0.72
-        case .secondary: return 0.58
-        case .tertiary: return 0.46
-        }
-    }
+    var topHighlightOpacity: Double { 0.44 }
 }
 
 struct SealBackdrop: View {
@@ -36,7 +22,7 @@ struct SealBackdrop: View {
         level.backgroundColor
             .overlay(alignment: .top) {
                 Rectangle()
-                    .fill(.white.opacity(level.topHighlightOpacity))
+                    .fill(Color.sealHairline.opacity(level.topHighlightOpacity))
                     .frame(height: 1)
             }
             .ignoresSafeArea()
@@ -44,17 +30,62 @@ struct SealBackdrop: View {
 }
 
 extension Color {
-    static let sealAccent = Color(red: 0.0, green: 0.478, blue: 1.0)
-    static let sealBackground = Color(red: 0.965, green: 0.965, blue: 0.984)
-    static let sealSecondaryBackground = Color(red: 0.954, green: 0.965, blue: 0.992)
-    static let sealTertiaryBackground = Color(red: 0.942, green: 0.950, blue: 0.970)
-    static let sealSurface = Color.white.opacity(0.74)
-    static let sealSurfaceElevated = Color.white.opacity(0.86)
-    static let sealTextSecondary = Color(red: 0.39, green: 0.40, blue: 0.53)
-    static let sealHairline = Color(red: 0.78, green: 0.79, blue: 0.84)
-    static let sealWarning = Color(red: 1.0, green: 0.49, blue: 0.0)
-    static let sealDanger = Color(red: 1.0, green: 0.18, blue: 0.18)
-    static let sealSuccess = Color(red: 0.20, green: 0.78, blue: 0.35)
+    static let sealAccent = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.22, green: 0.58, blue: 1.0, alpha: 1)
+            : UIColor(red: 0.0, green: 0.478, blue: 1.0, alpha: 1)
+    })
+
+    static let sealBackground = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.035, green: 0.047, blue: 0.075, alpha: 1)
+            : UIColor(red: 0.965, green: 0.965, blue: 0.984, alpha: 1)
+    })
+
+    static let sealSecondaryBackground = Color.sealBackground
+    static let sealTertiaryBackground = Color.sealBackground
+
+    static let sealSurface = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.090, green: 0.105, blue: 0.145, alpha: 0.82)
+            : UIColor(white: 1.0, alpha: 0.74)
+    })
+
+    static let sealSurfaceElevated = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.120, green: 0.138, blue: 0.185, alpha: 0.92)
+            : UIColor(white: 1.0, alpha: 0.88)
+    })
+
+    static let sealTextSecondary = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.68, green: 0.72, blue: 0.80, alpha: 1)
+            : UIColor(red: 0.39, green: 0.40, blue: 0.53, alpha: 1)
+    })
+
+    static let sealHairline = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(white: 1.0, alpha: 0.14)
+            : UIColor(red: 0.78, green: 0.79, blue: 0.84, alpha: 1)
+    })
+
+    static let sealWarning = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 1.0, green: 0.60, blue: 0.24, alpha: 1)
+            : UIColor(red: 1.0, green: 0.49, blue: 0.0, alpha: 1)
+    })
+
+    static let sealDanger = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 1.0, green: 0.42, blue: 0.42, alpha: 1)
+            : UIColor(red: 1.0, green: 0.18, blue: 0.18, alpha: 1)
+    })
+
+    static let sealSuccess = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.38, green: 0.86, blue: 0.52, alpha: 1)
+            : UIColor(red: 0.20, green: 0.78, blue: 0.35, alpha: 1)
+    })
 }
 
 extension View {

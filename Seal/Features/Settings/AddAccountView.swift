@@ -41,10 +41,10 @@ struct AddAccountView: View {
                 cancelAuthentication()
             }
             .alert(item: $authenticationFailure) { failure in
-                Alert(title: Text(failure.title), message: Text("\(failure.reason)\n\(failure.code)"), dismissButton: .default(Text(failure.recovery)))
+                Alert(title: Text(failure.title), message: Text(failure.userMessage), dismissButton: .default(Text(failure.recovery)))
             }
         }
-        .sealScreenBackground(.secondary)
+        .sealScreenBackground()
     }
 
     private var credentialsContent: some View {
@@ -85,7 +85,7 @@ struct AddAccountView: View {
             .frame(maxWidth: .infinity).padding(.vertical, 24)
             TextField("六位验证码", text: $verificationCode)
                 .keyboardType(.numberPad).textContentType(.oneTimeCode).multilineTextAlignment(.center).font(.title2.monospacedDigit().weight(.semibold))
-                .padding(.vertical, 16).background(.white.opacity(0.55), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .padding(.vertical, 16).background(Color.sealSurfaceElevated, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .onChange(of: verificationCode) { code in
                     verificationCode = String(code.filter(\.isNumber).prefix(6))
                 }

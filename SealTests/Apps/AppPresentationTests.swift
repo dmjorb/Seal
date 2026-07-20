@@ -10,7 +10,7 @@ struct AppPresentationTests {
         let app = makeApp(state: .preflightPassed, expiryDate: nil)
 
         #expect(AppOperationPresentation(app: app, now: now).kind == .signing)
-        #expect(AppOperationPresentation(app: app, now: now).sheetTitle == "签名应用")
+        #expect(AppOperationPresentation(app: app, now: now).sheetTitle == "签名并安装")
         #expect(AppOperationPresentation(app: app, now: now).primaryAction == "签名并安装")
     }
 
@@ -38,7 +38,7 @@ struct AppPresentationTests {
         #expect(presentation.kind == .urgentRenewal)
         #expect(presentation.validity?.text == "剩余 1 天")
         #expect(presentation.validity?.tone == .warning)
-        #expect(presentation.primaryAction == "立即续签")
+        #expect(presentation.primaryAction == "续签并安装")
     }
 
     @Test
@@ -52,7 +52,7 @@ struct AppPresentationTests {
         #expect(presentation.kind == .expiredRenewal)
         #expect(presentation.validity?.text == "已过期")
         #expect(presentation.validity?.tone == .danger)
-        #expect(presentation.primaryAction == "续签并重新安装")
+        #expect(presentation.primaryAction == "续签并安装")
     }
 
     @Test

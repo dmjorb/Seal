@@ -8,22 +8,19 @@ enum AppleAuthenticationStage: Sendable {
 
 enum AppleAuthenticationFailure {
     static func make(stage: AppleAuthenticationStage, error: Error) -> ImportFailure {
-        let nsError = error as NSError
-        let diagnostic = "[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)"
-
         switch stage {
         case .signIn:
             return ImportFailure(
-                title: "Unable to add account",
-                reason: "Apple sign-in failed. \(diagnostic)",
-                recovery: "Retry",
+                title: "无法添加账号",
+                reason: "Apple ID 验证失败。",
+                recovery: "重试",
                 code: "SEAL-AUTH-107"
             )
         case .teamLookup:
             return ImportFailure(
-                title: "Unable to add account",
-                reason: "The verification code was accepted, but Apple could not load the developer team. \(diagnostic)",
-                recovery: "Retry",
+                title: "无法添加账号",
+                reason: "验证码已接受，但 Apple 没有返回可用的开发团队。",
+                recovery: "重试",
                 code: "SEAL-AUTH-105"
             )
         }

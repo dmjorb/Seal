@@ -59,7 +59,7 @@ struct ImportedAppRow: View {
                     .scaledToFit()
                     .padding(12)
                     .foregroundStyle(Color.sealAccent)
-                    .background(.white.opacity(0.72))
+                    .background(Color.sealSurface)
                     .accessibilityHidden(true)
             }
         }

@@ -40,6 +40,45 @@ struct PairingStoreTests {
     }
 
     @Test
+    func importsRemotePairingWithPrivateKeyOnly() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appending(path: "Remote.plist")
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: ["private_key": Data([1, 2, 3])],
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: source)
+        let store = PairingStore(fileURL: root.appending(path: "Pairing.plist"))
+
+        let imported = try await store.importFile(at: source)
+        #expect(imported.deviceIdentifier == nil)
+        #expect(imported.isRemotePairing == true)
+        #expect(imported.validationStatus == .unverified)
+    }
+
+    @Test
+    func importsUDIDOnlyPairingForRuntimeValidation() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appending(path: "UDIDOnly.plist")
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: ["UDID": "device-123", "HostID": "host"],
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: source)
+        let store = PairingStore(fileURL: root.appending(path: "Pairing.plist"))
+
+        let imported = try await store.importFile(at: source)
+        #expect(imported.deviceIdentifier == "device-123")
+        #expect(imported.isRemotePairing == false)
+    }
+
+    @Test
     func rejectsPairingFileForAnotherConnectedDevice() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -62,13 +101,13 @@ struct PairingStoreTests {
     }
 
     @Test
-    func rejectsStructurallyIncompletePropertyList() async throws {
+    func rejectsPairingFileWithoutUDIDOrPrivateKey() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let source = root.appending(path: "Invalid.plist")
         let data = try PropertyListSerialization.data(
-            fromPropertyList: ["UDID": "device-123", "HostID": "host"],
+            fromPropertyList: ["HostID": "host"],
             format: .xml,
             options: 0
         )

@@ -39,7 +39,7 @@ struct AccountSelectionView: View {
         }
         .padding(.horizontal, 20)
         .presentationDetents([.height(520), .large])
-        .sealSheetBackground(.tertiary)
+        .sealSheetBackground()
         .onAppear { selection = accounts.first?.id }
     }
 }

@@ -15,6 +15,7 @@ struct AppsRootView: View {
     @ScaledMetric(relativeTo: .largeTitle) private var sealTitleSize = 38
     @State private var mode: ListMode = .unsigned
     @State private var detailApp: AppRecord?
+    @State private var pendingDeleteApp: AppRecord?
 
     var body: some View {
         NavigationStack {
@@ -60,7 +61,7 @@ struct AppsRootView: View {
                     viewModel: viewModel,
                     onFinish: { mode = .installed }
                 )
-                    .presentationDetents([.height(560)])
+                    .presentationDetents(viewModel.signingSession?.app.id == app.id ? [.large] : [.height(560)])
                     .compatiblePresentationCornerRadius(28)
             }
             .sheet(item: $viewModel.accountSelectionApp) { app in
@@ -82,6 +83,20 @@ struct AppsRootView: View {
                 .presentationDetents([.large])
                 .compatiblePresentationCornerRadius(28)
             }
+            .alert("删除记录？", isPresented: Binding(
+                get: { pendingDeleteApp != nil },
+                set: { if !$0 { pendingDeleteApp = nil } }
+            )) {
+                Button("取消", role: .cancel) { pendingDeleteApp = nil }
+                Button("删除", role: .destructive) {
+                    guard let app = pendingDeleteApp else { return }
+                    pendingDeleteApp = nil
+                    Task { _ = await viewModel.delete(app) }
+                }
+            } message: {
+                Text("该应用已过期。删除后将从 Seal 的已安装列表中移除，不会卸载手机上的应用。")
+            }
+
             .alert(item: rootAlertFailure) { failure in
                 vpnAwareAlert(failure)
             }
@@ -112,12 +127,12 @@ struct AppsRootView: View {
                     .foregroundStyle(Color.sealAccent)
                     .frame(width: 56, height: 56)
                     .background(
-                        Color.white.opacity(0.52),
+                        Color.sealSurfaceElevated,
                         in: Circle()
                     )
                     .overlay {
                         Circle()
-                            .stroke(Color.white.opacity(0.55), lineWidth: 1)
+                            .stroke(Color.sealHairline.opacity(0.55), lineWidth: 1)
                     }
             }
             .accessibilityLabel("导入应用")
@@ -233,27 +248,17 @@ struct AppsRootView: View {
                         ImportedAppRow(app: app, iconData: viewModel.iconData[app.id])
                             .padding(.horizontal, 18)
                             .padding(.vertical, 18)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                     .contextMenu {
                         Button("查看详情") { detailApp = app }
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        if !app.isSeal {
-                            Button(role: .destructive) {
-                                Task { _ = await viewModel.delete(app) }
-                            } label: {
-                                Label("移除", systemImage: "trash")
+                        if mode == .installed, app.isSeal == false, isExpired(app) {
+                            Button(role: .destructive) { pendingDeleteApp = app } label: {
+                                Text("删除记录")
                             }
                         }
-                    }
-                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                        Button {
-                            detailApp = app
-                        } label: {
-                            Label("详情", systemImage: "info.circle")
-                        }
-                        .tint(.sealAccent)
                     }
 
                     if index < apps.count - 1 {
@@ -284,18 +289,23 @@ struct AppsRootView: View {
         .sealListCard(cornerRadius: 20)
     }
 
+    private func isExpired(_ app: AppRecord, now: Date = Date()) -> Bool {
+        guard let expiryDate = app.expiryDate else { return false }
+        return expiryDate <= now
+    }
+
     private func vpnAwareAlert(_ failure: ImportFailure) -> Alert {
         if (failure.code == "SEAL-INSTALL-701" || failure.code == "SEAL-INSTALL-706"), viewModel.hasPendingVPNRecovery {
             return Alert(
                 title: Text(failure.title),
-                message: Text(failure.reason),
+                message: Text(failure.userMessage),
                 primaryButton: .default(Text("打开 LocalDevVPN")) { openLocalDevVPN() },
                 secondaryButton: .cancel(Text("取消")) { viewModel.cancelPendingVPNRecovery() }
             )
         }
         return Alert(
             title: Text(failure.title),
-            message: Text("\(failure.reason)\n\(failure.code)"),
+            message: Text(failure.userMessage),
             dismissButton: .default(Text(failure.recovery)) {
                 viewModel.performAlertRecovery(for: failure)
             }
@@ -337,7 +347,7 @@ private struct SealListCardModifier: ViewModifier {
         content
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color.white.opacity(0.72))
+                    .fill(Color.sealSurface)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)

@@ -635,7 +635,7 @@ final class AppsViewModel: ObservableObject {
             let nsError = error as NSError
             alertFailure = ImportFailure(
                 title: "无法迁移证书",
-                reason: "本地签名记录更新失败。[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
+                reason: "本地签名记录更新失败。",
                 recovery: "重试",
                 code: "SEAL-CERT-214"
             )
@@ -1115,7 +1115,7 @@ final class AppsViewModel: ObservableObject {
         let nsError = error as NSError
         return ImportFailure(
             title: "无法完成签名",
-            reason: "\(nsError.domain) (\(nsError.code)): \(nsError.localizedDescription)",
+            reason: "失败原因暂时无法确定。Seal 没有收到明确的签名失败原因。",
             recovery: "重试",
             code: "SEAL-SIGN-500"
         )

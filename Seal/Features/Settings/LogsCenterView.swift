@@ -32,7 +32,7 @@ struct LogsCenterView: View {
             Text("清理后无法从 Seal 内恢复。")
         }
         .task { await viewModel.load(force: true) }
-        .sealScreenBackground(.secondary)
+        .sealScreenBackground()
     }
 
     private var headerCard: some View {
@@ -50,11 +50,7 @@ struct LogsCenterView: View {
             Spacer()
         }
         .padding(18)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
-        }
+        .glassSurface(cornerRadius: 22)
     }
 
     private var emptyCard: some View {
@@ -71,11 +67,7 @@ struct LogsCenterView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(28)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
-        }
+        .glassSurface(cornerRadius: 22)
     }
 
     private var logsCard: some View {
@@ -86,11 +78,7 @@ struct LogsCenterView: View {
             }
         }
         .padding(.horizontal, 16)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
-        }
+        .glassSurface(cornerRadius: 18)
     }
 
     private var actionCard: some View {
@@ -126,12 +114,9 @@ struct LogsCenterView: View {
                     .font(.subheadline)
                     .foregroundStyle(Color.sealTextSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) {
-                    Text(SealSettingsDateFormatter.string(from: log.timestamp))
-                    if let code = log.code { Text(code) }
-                }
-                .font(.caption)
-                .foregroundStyle(Color.sealTextSecondary.opacity(0.78))
+                Text(SealSettingsDateFormatter.string(from: log.timestamp))
+                    .font(.caption)
+                    .foregroundStyle(Color.sealTextSecondary.opacity(0.78))
             }
             Spacer(minLength: 0)
         }

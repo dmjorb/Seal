@@ -176,40 +176,15 @@ actor PairingStore {
             in: dictionary,
             keys: ["private_key", "privateKey", "PrivateKey"]
         )
-        let hasRemoteCertificate = containsDataOrString(
-            in: dictionary,
-            keys: ["certificate", "cert", "host_certificate", "HostCertificate"]
-        )
-        let isRemote = hasRemotePrivateKey
 
-        if isRemote {
-            let hasHostIdentity = firstString(
-                in: dictionary,
-                keys: ["host_id", "HostID", "system_buid", "SystemBUID"]
-            )?.isEmpty == false
-            guard hasRemoteCertificate, hasHostIdentity || udid?.isEmpty == false else {
-                throw Self.incompleteFailure
-            }
-            return (udid, true)
+        // Keep RPPairing import compatible with files that were valid in
+        // previous Seal builds. Static schema checks only prove that a plist
+        // looks familiar; the real trust check must be done by LocalDevVPN /
+        // Minimuxer against the current device.
+        guard hasRemotePrivateKey || udid?.isEmpty == false else {
+            throw Self.invalidFailure
         }
-
-        let requiredStrings = ["HostID", "SystemBUID"]
-        let requiredData = [
-            "HostCertificate",
-            "HostPrivateKey",
-            "RootCertificate",
-            "RootPrivateKey"
-        ]
-        let hasStrings = requiredStrings.allSatisfy {
-            firstString(in: dictionary, keys: [$0])?.isEmpty == false
-        }
-        let hasData = requiredData.allSatisfy {
-            containsDataOrString(in: dictionary, keys: [$0])
-        }
-        guard hasStrings, hasData else {
-            throw Self.incompleteFailure
-        }
-        return (udid, false)
+        return (udid, hasRemotePrivateKey)
     }
 
     private static func firstString(
@@ -241,13 +216,6 @@ actor PairingStore {
         reason: "文件不是可解析的 Apple 设备配对 plist。",
         recovery: "使用 idevice_pair 重新导出",
         code: "SEAL-PAIR-201"
-    )
-
-    private static let incompleteFailure = ImportFailure(
-        title: "配对文件字段不完整",
-        reason: "配对文件缺少建立设备信任所需的主机标识、证书或私钥字段。",
-        recovery: "在电脑上重新连接并信任 iPhone 后导出",
-        code: "SEAL-PAIR-205"
     )
 
     private static func mismatchFailure(
