@@ -18,6 +18,7 @@ final class AppsViewModel: ObservableObject {
 
     @Published private(set) var apps: [AppRecord]
     @Published private(set) var accounts: [AppleAccountRecord]
+    @Published private(set) var activeAccountID: UUID?
     @Published private(set) var iconData: [UUID: Data]
     @Published private(set) var phase: Phase
     @Published var isImporterPresented = false
@@ -47,6 +48,7 @@ final class AppsViewModel: ObservableObject {
     private let signingHistoryStore: SigningHistoryStore?
     private let notificationScheduler: ExpiryNotificationScheduler?
     private let notificationPreferences: NotificationPreferences?
+    private let signingPreferenceStore: SigningPreferenceStore?
     private var signingTask: Task<Void, Never>?
     private var batchRefreshTask: Task<Void, Never>?
     private var channelTask: Task<Bool, Never>?
@@ -71,7 +73,8 @@ final class AppsViewModel: ObservableObject {
         logStore: SealLogStore,
         signingHistoryStore: SigningHistoryStore,
         notificationScheduler: ExpiryNotificationScheduler,
-        notificationPreferences: NotificationPreferences
+        notificationPreferences: NotificationPreferences,
+        signingPreferenceStore: SigningPreferenceStore
     ) {
         self.workflow = workflow
         self.appStore = appStore
@@ -86,6 +89,7 @@ final class AppsViewModel: ObservableObject {
         self.signingHistoryStore = signingHistoryStore
         self.notificationScheduler = notificationScheduler
         self.notificationPreferences = notificationPreferences
+        self.signingPreferenceStore = signingPreferenceStore
         apps = []
         accounts = []
         iconData = [:]
@@ -107,6 +111,7 @@ final class AppsViewModel: ObservableObject {
         signingHistoryStore = nil
         notificationScheduler = nil
         notificationPreferences = nil
+        signingPreferenceStore = nil
         apps = []
         accounts = []
         iconData = [:]
@@ -129,6 +134,7 @@ final class AppsViewModel: ObservableObject {
         signingHistoryStore = nil
         notificationScheduler = nil
         notificationPreferences = nil
+        signingPreferenceStore = nil
         self.apps = apps
         accounts = []
         iconData = [:]
@@ -172,6 +178,24 @@ final class AppsViewModel: ObservableObject {
 
     var verifiedAccounts: [AppleAccountRecord] {
         accounts.filter { $0.status == .verified }
+    }
+
+    func selectActiveAccount(id: UUID) async {
+        guard verifiedAccounts.contains(where: { $0.id == id }) else { return }
+        activeAccountID = id
+        await signingPreferenceStore?.setActiveAccountID(id)
+    }
+
+    func refreshActiveAccountSelection() async {
+        guard let signingPreferenceStore else { return }
+        let storedID = await signingPreferenceStore.activeAccountID()
+        if let storedID,
+           verifiedAccounts.contains(where: { $0.id == storedID }) {
+            activeAccountID = storedID
+        } else if activeAccountID == nil {
+            activeAccountID = verifiedAccounts.first?.id
+            await signingPreferenceStore.setActiveAccountID(activeAccountID)
+        }
     }
 
     private func installedSortRank(for app: AppRecord, now: Date = Date()) -> Int {
@@ -235,6 +259,20 @@ final class AppsViewModel: ObservableObject {
             await seedSigningHistoryIfNeeded(apps: fetched, accounts: fetchedAccounts)
             apps = fetched
             accounts = fetchedAccounts
+            let preferredAccountID: UUID?
+            if let signingPreferenceStore {
+                preferredAccountID = await signingPreferenceStore.activeAccountID()
+            } else {
+                preferredAccountID = nil
+            }
+            let verifiedAccounts = fetchedAccounts.filter { $0.status == .verified }
+            if let preferredAccountID,
+               verifiedAccounts.contains(where: { $0.id == preferredAccountID }) {
+                activeAccountID = preferredAccountID
+            } else {
+                activeAccountID = verifiedAccounts.first?.id
+                await signingPreferenceStore?.setActiveAccountID(activeAccountID)
+            }
             iconData = loadedIcons
             pendingRefreshCount = (try? await renewalCoordinator?.pendingCount()) ?? 0
             if let notificationScheduler, let notificationPreferences {
@@ -411,6 +449,9 @@ final class AppsViewModel: ObservableObject {
             presentVPNRecovery(for: .signing(app, accountID: accountID))
             return
         }
+        if app.state != .installed && app.isSeal == false {
+            await selectActiveAccount(id: account.id)
+        }
         startSigning(
             app: app,
             account: account,
@@ -424,6 +465,9 @@ final class AppsViewModel: ObservableObject {
     ) {
         if let accountID = app.accountID,
            let account = availableAccounts.first(where: { $0.id == accountID }) {
+            startSigning(app: app, account: account)
+        } else if let activeAccountID,
+                  let account = availableAccounts.first(where: { $0.id == activeAccountID }) {
             startSigning(app: app, account: account)
         } else if availableAccounts.count == 1, let account = availableAccounts.first {
             startSigning(app: app, account: account)
@@ -469,6 +513,9 @@ final class AppsViewModel: ObservableObject {
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
             guard Task.isCancelled == false else { return }
+            if app.state != .installed && app.isSeal == false {
+                await self?.selectActiveAccount(id: account.id)
+            }
             self?.startSigning(app: app, account: account)
         }
     }
@@ -613,7 +660,7 @@ final class AppsViewModel: ObservableObject {
         pendingVPNAction = action
         alertFailure = ImportFailure(
             title: "安装通道未就绪",
-            reason: "Seal 还没有读取到可用的 LocalDevVPN 安装通道。请保持 VPN 已连接后重新检测。",
+            reason: "Seal 还没有读取到可用的 LocalDevVPN 安装通道。请保持 VPN 已连接后返回设置运行一键检测。",
             recovery: "打开 LocalDevVPN",
             code: "SEAL-INSTALL-706"
         )
@@ -738,10 +785,13 @@ final class AppsViewModel: ObservableObject {
         guard signingTask == nil,
               batchRefreshTask == nil,
               signingCoordinator != nil else { return }
+        let selectedCertificateSerialNumber = try? SigningCertificateSelectionPolicy
+            .resolvedSerialNumber(for: app, account: account)
         signingSession = SigningSession(
             app: app,
             account: account,
             requestedBundleIdentifier: requestedBundleIdentifier,
+            selectedCertificateSerialNumber: selectedCertificateSerialNumber,
             allowsDroppingExtensions: allowDroppingExtensions,
             allowsCertificateReplacement: allowCertificateReplacement,
             status: .running(.waitingForChannel)
@@ -753,7 +803,7 @@ final class AppsViewModel: ObservableObject {
         Task { [weak self] in
             try? await self?.logStore?.append(
                 category: .signing,
-                message: "准备签名：\(app.name)，Apple ID：\(account.maskedEmail)，Team：\(account.teamID)，Bundle ID：\(targetBundleIdentifier)"
+                message: "准备签名：\(app.name)，Apple ID：\(account.maskedEmail)，Team：\(account.teamID)，证书：\(selectedCertificateSerialNumber ?? "签名时申请")，Bundle ID：\(targetBundleIdentifier)"
             )
         }
         signingTask = Task { [weak self] in
@@ -761,6 +811,7 @@ final class AppsViewModel: ObservableObject {
                 app: app,
                 account: account,
                 requestedBundleIdentifier: requestedBundleIdentifier,
+                selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
                 allowCertificateReplacement: allowCertificateReplacement
             )
@@ -783,6 +834,7 @@ final class AppsViewModel: ObservableObject {
                 app: session.app,
                 account: session.account,
                 requestedBundleIdentifier: session.requestedBundleIdentifier,
+                selectedCertificateSerialNumber: session.selectedCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
                 allowCertificateReplacement: allowCertificateReplacement
             )
@@ -793,6 +845,7 @@ final class AppsViewModel: ObservableObject {
         app: AppRecord,
         account: AppleAccountRecord,
         requestedBundleIdentifier: String? = nil,
+        selectedCertificateSerialNumber: String?,
         allowDroppingExtensions: Bool,
         allowCertificateReplacement: Bool
     ) async {
@@ -806,6 +859,7 @@ final class AppsViewModel: ObservableObject {
                 appID: app.id,
                 accountID: account.id,
                 requestedBundleIdentifier: requestedBundleIdentifier,
+                selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
                 allowCertificateReplacement: allowCertificateReplacement,
                 progress: { [weak self] stage in

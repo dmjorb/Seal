@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct AppleAccountDetailView: View {
     let account: AppleAccountRecord
@@ -6,7 +7,11 @@ struct AppleAccountDetailView: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     @State private var isReverifying = false
-    @State private var isResettingCertificate = false
+    @Environment(\.scenePhase) private var scenePhase
+
+    private var currentAccount: AppleAccountRecord {
+        viewModel.accounts.first(where: { $0.id == account.id }) ?? account
+    }
 
     private var inventory: ApplePortalInventory? {
         viewModel.certificateInventory(for: account.id)
@@ -20,44 +25,57 @@ struct AppleAccountDetailView: View {
         viewModel.isCertificateInventoryLoading(accountID: account.id)
     }
 
-    private var appleSideItems: [AppleSideCertificateDetailItem] {
-        AppleSideCertificateDetailItem.build(
-            inventory: inventory,
-            relatedApps: relatedApps
-        )
+    private var appItems: [AppleAccountAppItem] {
+        guard let inventory else { return [] }
+        return inventory.appIDs
+            .map { snapshot in
+                let localApp = matchedApp(bundleIdentifier: snapshot.bundleIdentifier)
+                let history = localApp == nil
+                    ? matchedHistory(bundleIdentifier: snapshot.bundleIdentifier)
+                    : nil
+                let iconData = localApp.flatMap { viewModel.appIconData[$0.id] }
+                    ?? history.flatMap { viewModel.signingHistoryIconData[$0.id] }
+                return AppleAccountAppItem(
+                    bundleIdentifier: snapshot.bundleIdentifier,
+                    app: localApp,
+                    history: history,
+                    iconData: iconData
+                )
+            }
+            .sorted {
+                if $0.status.sortPriority != $1.status.sortPriority {
+                    return $0.status.sortPriority < $1.status.sortPriority
+                }
+                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
     }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
-                syncStateCard
-                certificatesCard
+                accountCard
 
-                Text("Apple 侧 App ID / Profile")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .padding(.leading, 8)
+                sectionTitle("签名证书")
+                certificatesContent
 
-                if isSyncing && inventory == nil {
-                    loadingCard
-                } else if let syncFailure, inventory == nil {
-                    failureCard(syncFailure)
-                } else if appleSideItems.isEmpty {
-                    emptyAppsCard
-                } else {
-                    appsCard
-                }
+                sectionTitle("App ID")
+                appsContent
 
-                actionsCard
+                reverifyCard
             }
             .padding(20)
         }
-        .navigationTitle("证书详情")
+        .navigationTitle("Apple ID 详情")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    Task { await viewModel.refreshCertificateInventory(for: account) }
+                    Task {
+                        await viewModel.refreshCertificateInventory(
+                            for: currentAccount,
+                            force: true
+                        )
+                    }
                 } label: {
                     if isSyncing {
                         ProgressView()
@@ -69,279 +87,394 @@ struct AppleAccountDetailView: View {
             }
         }
         .fullScreenCover(isPresented: $isReverifying) {
-            AddAccountView(viewModel: viewModel, replacingAccount: account)
-        }
-        .confirmationDialog(
-            "清除本地证书缓存？",
-            isPresented: $isResettingCertificate,
-            titleVisibility: .visible
-        ) {
-            Button("清除并重新申请", role: .destructive) {
-                Task { await viewModel.resetCertificate(for: account) }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("这只清除 Seal 本地保存的 P12 和证书序列号，不会伪造 Apple 侧状态。下次签名由 Apple 返回真实结果。")
+            AddAccountView(viewModel: viewModel, replacingAccount: currentAccount)
         }
         .task {
             await viewModel.load(force: true)
-            await viewModel.refreshCertificateInventory(for: account, force: false)
+            await viewModel.refreshCertificateInventory(
+                for: currentAccount,
+                force: false
+            )
+        }
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active else { return }
+            Task {
+                await viewModel.load(force: true)
+                await viewModel.refreshCertificateInventory(
+                    for: currentAccount,
+                    force: false
+                )
+            }
+        }
+        .alert(item: $viewModel.alertFailure) { failure in
+            Alert(
+                title: Text(failure.title),
+                message: Text("\(failure.reason)\n\(failure.code)"),
+                dismissButton: .default(Text(failure.recovery))
+            )
         }
         .sealScreenBackground(.secondary)
     }
 
-    private var syncStateCard: some View {
+    private var accountCard: some View {
         VStack(spacing: 0) {
-            detailRow("账号", account.maskedEmail, Color.primary)
+            detailRow("Apple ID", viewModel.fullEmail(for: currentAccount))
             Divider()
-            detailRow("Team", account.teamName, Color.primary)
+            detailRow("Team", currentAccount.teamName)
             Divider()
-            detailRow("Team ID", account.teamID, Color.sealTextSecondary)
+            detailRow("Team ID", currentAccount.teamID)
             Divider()
-            detailRow("同步来源", "Apple 侧", Color.sealAccent)
+            detailRow("账户类型", accountTypeText)
             Divider()
-            detailRow("App ID", inventory.map { "\($0.usedBundleIDCount) 个" } ?? (isSyncing ? "同步中" : "未同步"), inventory == nil ? Color.sealTextSecondary : Color.sealAccent)
-            Divider()
-            detailRow("同步时间", inventory.map { SigningHistoryDateFormatter.string(from: $0.fetchedAt) } ?? "未同步", Color.sealTextSecondary)
+            detailRow("App ID 配额", appIDQuotaText)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .glassSurface(cornerRadius: 24)
     }
 
-    private var certificatesCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Apple Development 证书")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.sealTextSecondary)
-
-            if let certificates = inventory?.certificates, certificates.isEmpty == false {
-                ForEach(certificates) { certificate in
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: certificate.hasLocalPrivateKey ? "key.fill" : "key")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(certificate.hasLocalPrivateKey ? Color.sealSuccess : Color.sealTextSecondary)
-                            .frame(width: 28, height: 28)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(certificate.machineName)
-                                .font(.body.weight(.semibold))
-                            Text("Serial：\(certificate.serialNumber)")
-                                .font(.caption)
-                                .foregroundStyle(Color.sealTextSecondary)
-                                .textSelection(.enabled)
-                            Text(certificate.hasLocalPrivateKey ? "本地私钥可用" : "Apple 侧存在，本地无私钥")
-                                .font(.caption)
-                                .foregroundStyle(certificate.hasLocalPrivateKey ? Color.sealSuccess : Color.sealWarning)
-                        }
-                        Spacer()
-                    }
-                    if certificate.id != certificates.last?.id {
-                        Divider().padding(.leading, 40)
+    @ViewBuilder
+    private var certificatesContent: some View {
+        if isSyncing && inventory == nil {
+            loadingCard("正在读取证书")
+        } else if let syncFailure, inventory == nil {
+            failureCard(syncFailure)
+        } else if let certificates = inventory?.certificates,
+                  certificates.isEmpty == false {
+            VStack(spacing: 0) {
+                ForEach(Array(certificates.enumerated()), id: \.element.id) { index, certificate in
+                    certificateRow(certificate)
+                    if index < certificates.count - 1 {
+                        Divider().padding(.leading, 48)
                     }
                 }
-            } else if isSyncing {
-                HStack(spacing: 10) {
-                    ProgressView()
-                    Text("正在同步 Apple 侧证书")
-                        .foregroundStyle(Color.sealTextSecondary)
-                }
-            } else {
-                Text(syncFailure == nil ? "尚未同步 Apple 侧证书" : "证书同步失败")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.sealTextSecondary)
             }
+            .padding(.horizontal, 16)
+            .glassSurface(cornerRadius: 24)
+        } else {
+            emptyCard(
+                icon: "seal",
+                title: "暂无证书",
+                subtitle: "Apple 当前没有返回开发证书。首次签名时，Seal 会按需申请证书。"
+            )
         }
-        .padding(16)
-        .glassSurface(cornerRadius: 24)
     }
 
-    private var loadingCard: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-            Text("正在从 Apple 侧同步 App ID、描述文件与过期时间")
-                .font(.subheadline)
-                .foregroundStyle(Color.sealTextSecondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(26)
-        .glassSurface(cornerRadius: 24)
-    }
-
-    private func failureCard(_ failure: ImportFailure) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("同步失败", systemImage: "exclamationmark.triangle.fill")
-                .font(.headline)
-                .foregroundStyle(Color.sealDanger)
-            Text(failure.reason)
-                .font(.subheadline)
-                .foregroundStyle(Color.sealTextSecondary)
-                .textSelection(.enabled)
-            Text(failure.code)
-                .font(.caption.monospaced())
-                .foregroundStyle(Color.sealTextSecondary)
-                .textSelection(.enabled)
-            Button("重新同步") {
-                Task { await viewModel.refreshCertificateInventory(for: account) }
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(isSyncing)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .glassSurface(cornerRadius: 24)
-    }
-
-    private var emptyAppsCard: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "doc.badge.clock")
-                .font(.system(size: 34))
-                .foregroundStyle(Color.sealTextSecondary)
-            Text("Apple 侧暂无 App ID")
-                .font(.headline)
-            Text("这里不会使用本地历史冒充 Apple 侧数据。同步成功后才显示 Apple 返回的 App ID、Bundle ID 和描述文件过期时间。")
-                .font(.subheadline)
-                .foregroundStyle(Color.sealTextSecondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(26)
-        .glassSurface(cornerRadius: 24)
-    }
-
-    private var appsCard: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(appleSideItems.enumerated()), id: \.element.id) { index, item in
-                appItemRow(item)
-                if index < appleSideItems.count - 1 {
-                    Divider().padding(.leading, 44)
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .glassSurface(cornerRadius: 24)
-    }
-
-    private var actionsCard: some View {
-        VStack(spacing: 0) {
-            Button { isReverifying = true } label: {
-                actionRow("重新验证 Apple ID", systemImage: "person.crop.circle.badge.checkmark")
-            }
-            .buttonStyle(.plain)
-            Divider()
-            Button { isResettingCertificate = true } label: {
-                actionRow("清除本地证书缓存", systemImage: "trash", color: Color.sealDanger)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 4)
-        .glassSurface(cornerRadius: 24)
-    }
-
-    private func appItemRow(_ item: AppleSideCertificateDetailItem) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: item.status.iconName)
+    private func certificateRow(
+        _ certificate: ApplePortalCertificateSnapshot
+    ) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "rosette")
                 .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(item.status.color)
-                .frame(width: 32, height: 32)
-                .background(item.status.color.opacity(0.12), in: Circle())
+                .foregroundStyle(
+                    certificate.hasLocalPrivateKey
+                        ? Color.sealAccent
+                        : Color.sealTextSecondary
+                )
+                .frame(width: 36)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text(item.name)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(certificate.displayName)
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text("Bundle ID：\(item.bundleIdentifier)")
+                Text("Apple Development")
                     .font(.caption)
+                    .foregroundStyle(Color.sealTextSecondary)
+                Text("Serial：\(abbreviated(certificate.serialNumber))")
+                    .font(.caption.monospaced())
                     .foregroundStyle(Color.sealTextSecondary)
                     .textSelection(.enabled)
-                Text("描述文件过期：\(item.expirationText)")
-                    .font(.caption)
-                    .foregroundStyle(Color.sealTextSecondary)
-                if let profileMessage = item.profileMessage {
-                    Text(profileMessage)
-                        .font(.caption2)
-                        .foregroundStyle(Color.sealWarning)
-                        .textSelection(.enabled)
-                }
+                Text(
+                    certificate.hasLocalPrivateKey
+                        ? "本机可用"
+                        : "非本机创建，无本地私钥，不可用"
+                )
+                .font(.caption)
+                .foregroundStyle(
+                    certificate.hasLocalPrivateKey
+                        ? Color.sealSuccess
+                        : Color.sealTextSecondary
+                )
             }
-
             Spacer(minLength: 8)
-
-            Text(item.status.title)
+            Text(certificate.hasLocalPrivateKey ? "可用" : "不可用")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(item.status.color)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(item.status.color.opacity(0.10), in: Capsule())
+                .foregroundStyle(
+                    certificate.hasLocalPrivateKey
+                        ? Color.sealSuccess
+                        : Color.sealTextSecondary
+                )
         }
         .padding(.vertical, 14)
     }
 
-    private func detailRow(_ title: String, _ value: String, _ color: Color) -> some View {
+    @ViewBuilder
+    private var appsContent: some View {
+        if isSyncing && inventory == nil {
+            loadingCard("正在读取 App ID")
+        } else if let syncFailure, inventory == nil {
+            failureCard(syncFailure)
+        } else if appItems.isEmpty {
+            emptyCard(
+                icon: "app.dashed",
+                title: "暂无 App ID",
+                subtitle: "Apple 当前没有返回 App ID。"
+            )
+        } else {
+            VStack(spacing: 0) {
+                ForEach(Array(appItems.enumerated()), id: \.element.id) { index, item in
+                    appRow(item)
+                    if index < appItems.count - 1 {
+                        Divider().padding(.leading, 76)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .glassSurface(cornerRadius: 24)
+        }
+    }
+
+    private func appRow(_ item: AppleAccountAppItem) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            appIcon(item)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(item.name)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text(item.status.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(item.status.color)
+                }
+
+                Text("Bundle ID：")
+                    .font(.caption)
+                    .foregroundStyle(Color.sealTextSecondary)
+                Text(item.bundleIdentifier)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Color.sealTextSecondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("描述文件过期：\(item.expirationText)")
+                    .font(.caption)
+                    .foregroundStyle(Color.sealTextSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 14)
+    }
+
+    @ViewBuilder
+    private func appIcon(_ item: AppleAccountAppItem) -> some View {
+        Group {
+            if let data = item.iconData, let image = UIImage(data: data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "app.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(10)
+                    .foregroundStyle(Color.sealTextSecondary)
+                    .background(Color.sealHairline.opacity(0.35))
+            }
+        }
+        .frame(width: 52, height: 52)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var reverifyCard: some View {
+        Button { isReverifying = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle.badge.checkmark")
+                    .frame(width: 30)
+                Text("重新验证 Apple ID")
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(Color.sealAccent)
+            .frame(minHeight: 56)
+            .padding(.horizontal, 16)
+        }
+        .buttonStyle(.plain)
+        .glassSurface(cornerRadius: 18)
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Color.sealTextSecondary)
+            .padding(.leading, 8)
+    }
+
+    private func detailRow(_ title: String, _ value: String) -> some View {
         HStack(spacing: 12) {
             Text(title)
                 .foregroundStyle(Color.sealTextSecondary)
             Spacer(minLength: 12)
             Text(value)
-                .foregroundStyle(color)
+                .foregroundStyle(.primary)
                 .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+                .truncationMode(.middle)
                 .textSelection(.enabled)
         }
         .font(.subheadline)
         .padding(.vertical, 12)
     }
 
-    private func actionRow(_ title: String, systemImage: String, color: Color = Color.sealAccent) -> some View {
+    private func loadingCard(_ title: String) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .frame(width: 30)
-                .foregroundStyle(color)
+            ProgressView()
             Text(title)
-                .foregroundStyle(color)
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
                 .foregroundStyle(Color.sealTextSecondary)
         }
-        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .glassSurface(cornerRadius: 24)
+    }
+
+    private func failureCard(_ failure: ImportFailure) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("同步失败")
+                .font(.headline)
+                .foregroundStyle(Color.sealDanger)
+            Text(failure.reason)
+                .font(.subheadline)
+                .foregroundStyle(Color.sealTextSecondary)
+                .textSelection(.enabled)
+            Button("重新同步") {
+                Task {
+                    await viewModel.refreshCertificateInventory(
+                        for: currentAccount,
+                        force: true
+                    )
+                }
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .glassSurface(cornerRadius: 24)
+    }
+
+    private func emptyCard(
+        icon: String,
+        title: String,
+        subtitle: String
+    ) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 34))
+                .foregroundStyle(Color.sealTextSecondary)
+            Text(title)
+                .font(.headline)
+            Text(subtitle)
+                .font(.subheadline)
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(24)
+        .glassSurface(cornerRadius: 24)
+    }
+
+    private var accountTypeText: String {
+        switch currentAccount.isFreeTeam {
+        case true: return "个人免费团队"
+        case false: return "Apple Developer 团队"
+        case nil: return "未确认"
+        }
+    }
+
+    private var appIDQuotaText: String {
+        guard let inventory else {
+            return isSyncing ? "同步中" : "暂无法确认"
+        }
+        switch currentAccount.isFreeTeam {
+        case true:
+            return "\(inventory.usedBundleIDCount) / 10"
+        case false:
+            return "已注册 \(inventory.usedBundleIDCount) 个"
+        case nil:
+            return "暂无法确认"
+        }
+    }
+
+    private func matchedApp(bundleIdentifier: String) -> AppRecord? {
+        let matches = relatedApps.filter { app in
+            [
+                app.mappedBundleIdentifier,
+                app.preferredBundleIdentifier,
+                app.originalBundleIdentifier
+            ]
+            .compactMap { $0 }
+            .contains {
+                $0.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
+            }
+        }
+        return matches.first { $0.accountID == currentAccount.id }
+            ?? matches.first { $0.accountID == nil }
+    }
+
+    private func matchedHistory(
+        bundleIdentifier: String
+    ) -> SigningHistoryRecord? {
+        viewModel.signingHistory
+            .filter {
+                $0.accountID == currentAccount.id
+                    && $0.result == .success
+            }
+            .filter {
+                $0.displayBundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
+            }
+            .sorted { $0.signedAt > $1.signedAt }
+            .first
+    }
+
+    private func abbreviated(_ value: String) -> String {
+        guard value.count > 12 else { return value }
+        return "\(value.prefix(6))…\(value.suffix(6))"
     }
 }
 
-private struct AppleSideCertificateDetailItem: Identifiable, Equatable {
+private struct AppleAccountAppItem: Identifiable, Equatable {
     enum Status: Equatable {
         case active
         case expiringSoon
         case expired
-        case profileUnavailable
-        case unknown
+        case unlinked
 
         var title: String {
             switch self {
-            case .active: "有效"
-            case .expiringSoon: "临期"
-            case .expired: "过期"
-            case .profileUnavailable: "Profile 不可用"
-            case .unknown: "未确认"
-            }
-        }
-
-        var iconName: String {
-            switch self {
-            case .active: "checkmark.circle.fill"
-            case .expiringSoon: "clock.badge.exclamationmark.fill"
-            case .expired: "xmark.circle.fill"
-            case .profileUnavailable: "exclamationmark.triangle.fill"
-            case .unknown: "questionmark.circle.fill"
+            case .active: return "有效"
+            case .expiringSoon: return "临期"
+            case .expired: return "过期"
+            case .unlinked: return "未关联"
             }
         }
 
         var color: Color {
             switch self {
-            case .active: Color.sealSuccess
-            case .expiringSoon: Color.sealWarning
-            case .expired, .profileUnavailable: Color.sealDanger
-            case .unknown: Color.sealTextSecondary
+            case .active: return .sealSuccess
+            case .expiringSoon: return .sealWarning
+            case .expired: return .sealDanger
+            case .unlinked: return .sealTextSecondary
+            }
+        }
+
+        var sortPriority: Int {
+            switch self {
+            case .expiringSoon: return 0
+            case .active: return 1
+            case .expired: return 2
+            case .unlinked: return 3
             }
         }
     }
@@ -349,74 +482,40 @@ private struct AppleSideCertificateDetailItem: Identifiable, Equatable {
     let id: String
     let name: String
     let bundleIdentifier: String
-    let expirationDate: Date?
+    let expiryDate: Date?
+    let iconData: Data?
     let status: Status
-    let profileMessage: String?
+
+    init(
+        bundleIdentifier: String,
+        app: AppRecord?,
+        history: SigningHistoryRecord?,
+        iconData: Data?
+    ) {
+        id = bundleIdentifier.lowercased()
+        name = app?.name ?? history?.appName ?? "未关联本地应用"
+        self.bundleIdentifier = bundleIdentifier
+        expiryDate = app?.expiryDate ?? history?.expiryDate
+        self.iconData = iconData
+        status = Self.status(
+            expiryDate: app?.expiryDate ?? history?.expiryDate,
+            hasLocalRecord: app != nil || history != nil
+        )
+    }
 
     var expirationText: String {
-        guard let expirationDate else { return "Apple 未返回" }
-        return SigningHistoryDateFormatter.string(from: expirationDate)
+        guard let expiryDate else { return "未关联本机描述文件" }
+        return SigningHistoryDateFormatter.string(from: expiryDate)
     }
 
-    static func build(
-        inventory: ApplePortalInventory?,
-        relatedApps: [AppRecord]
-    ) -> [AppleSideCertificateDetailItem] {
-        guard let inventory else { return [] }
-        var localNames: [String: String] = [:]
-        for app in relatedApps {
-            let bundleID = app.mappedBundleIdentifier
-                ?? app.preferredBundleIdentifier
-                ?? app.originalBundleIdentifier
-            localNames[bundleID.lowercased()] = app.name
-        }
-
-        return inventory.appIDs.map { snapshot in
-            let key = snapshot.bundleIdentifier.lowercased()
-            let itemStatus: Status
-            let message: String?
-            switch snapshot.profileState {
-            case .available:
-                itemStatus = Self.status(expirationDate: snapshot.provisioningProfileExpirationDate)
-                message = nil
-            case let .unavailable(code, rawMessage):
-                itemStatus = .profileUnavailable
-                message = "Apple 返回：\(code) \(rawMessage)"
-            }
-            return AppleSideCertificateDetailItem(
-                id: key,
-                name: localNames[key] ?? "App ID",
-                bundleIdentifier: snapshot.bundleIdentifier,
-                expirationDate: snapshot.provisioningProfileExpirationDate,
-                status: itemStatus,
-                profileMessage: message
-            )
-        }
-        .sorted {
-            if $0.status.sortPriority != $1.status.sortPriority {
-                return $0.status.sortPriority < $1.status.sortPriority
-            }
-            return $0.bundleIdentifier < $1.bundleIdentifier
-        }
-    }
-
-    private static func status(expirationDate: Date?) -> Status {
-        guard let expirationDate else { return .unknown }
-        let interval = expirationDate.timeIntervalSince(Date())
+    private static func status(
+        expiryDate: Date?,
+        hasLocalRecord: Bool
+    ) -> Status {
+        guard hasLocalRecord, let expiryDate else { return .unlinked }
+        let interval = expiryDate.timeIntervalSinceNow
         if interval <= 0 { return .expired }
         if interval <= 86_400 * 2 { return .expiringSoon }
         return .active
-    }
-}
-
-private extension AppleSideCertificateDetailItem.Status {
-    var sortPriority: Int {
-        switch self {
-        case .expiringSoon: 0
-        case .active: 1
-        case .expired: 2
-        case .profileUnavailable: 3
-        case .unknown: 4
-        }
     }
 }

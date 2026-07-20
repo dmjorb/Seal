@@ -15,15 +15,8 @@ struct ApplePortalInventory: Equatable, Sendable {
 }
 
 struct ApplePortalAppIDSnapshot: Equatable, Identifiable, Sendable {
-    enum ProfileState: Equatable, Sendable {
-        case available
-        case unavailable(code: String, message: String)
-    }
-
     var id: String { bundleIdentifier.lowercased() }
     let bundleIdentifier: String
-    let provisioningProfileExpirationDate: Date?
-    let profileState: ProfileState
 }
 
 struct ApplePortalCertificateSnapshot: Equatable, Identifiable, Sendable {
@@ -31,6 +24,10 @@ struct ApplePortalCertificateSnapshot: Equatable, Identifiable, Sendable {
     let serialNumber: String
     let machineName: String
     let hasLocalPrivateKey: Bool
+
+    var displayName: String {
+        machineName.hasPrefix("Seal") ? "Seal" : machineName
+    }
 }
 
 actor ApplePortalInventoryService {
@@ -70,13 +67,15 @@ actor ApplePortalInventoryService {
         let teams = try await fetchTeams(account: altAccount, session: session)
         guard let team = teams.first(where: { $0.identifier == account.teamID }) else {
             throw ImportFailure(
-                title: "Apple 侧同步失败",
+                title: "Apple 同步失败",
                 reason: "Apple 返回的 Team 列表中没有当前账号保存的 Team ID：\(account.teamID)。",
                 recovery: "重新验证 Apple ID",
                 code: "SEAL-INVENTORY-101"
             )
         }
 
+        // 详情页同步必须是只读操作。这里只读取证书和 App ID，
+        // 不请求或生成 provisioning profile，避免刷新页面改变 Apple 账号状态。
         let certificates = try await fetchCertificates(team: team, session: session)
         let appIDs = try await fetchAppIDs(team: team, session: session)
 
@@ -89,36 +88,9 @@ actor ApplePortalInventoryService {
             )
         }
 
-        var appSnapshots: [ApplePortalAppIDSnapshot] = []
-        for appID in appIDs.sorted(by: { $0.bundleIdentifier < $1.bundleIdentifier }) {
-            try Task.checkCancellation()
-            do {
-                let profile = try await fetchProvisioningProfile(
-                    for: appID,
-                    team: team,
-                    session: session
-                )
-                appSnapshots.append(
-                    ApplePortalAppIDSnapshot(
-                        bundleIdentifier: appID.bundleIdentifier,
-                        provisioningProfileExpirationDate: profile.expirationDate,
-                        profileState: .available
-                    )
-                )
-            } catch {
-                let nsError = error as NSError
-                appSnapshots.append(
-                    ApplePortalAppIDSnapshot(
-                        bundleIdentifier: appID.bundleIdentifier,
-                        provisioningProfileExpirationDate: nil,
-                        profileState: .unavailable(
-                            code: "\(nsError.domain) \(nsError.code)",
-                            message: nsError.localizedDescription
-                        )
-                    )
-                )
-            }
-        }
+        let appSnapshots = appIDs
+            .map { ApplePortalAppIDSnapshot(bundleIdentifier: $0.bundleIdentifier) }
+            .sorted { $0.bundleIdentifier < $1.bundleIdentifier }
 
         return ApplePortalInventory(
             accountID: account.id,
@@ -173,29 +145,6 @@ actor ApplePortalInventoryService {
             ALTAppleAPI.shared.fetchAppIDs(for: team, session: session) { appIDs, error in
                 if let appIDs {
                     continuation.resume(returning: LegacyBox(appIDs))
-                } else {
-                    continuation.resume(throwing: error ?? URLError(.badServerResponse))
-                }
-            }
-        }
-        return box.value
-    }
-
-    private func fetchProvisioningProfile(
-        for appID: ALTAppID,
-        team: ALTTeam,
-        session: ALTAppleAPISession
-    ) async throws -> ALTProvisioningProfile {
-        let box: LegacyBox<ALTProvisioningProfile> = try await withCheckedThrowingContinuation {
-            continuation in
-            ALTAppleAPI.shared.fetchProvisioningProfile(
-                for: appID,
-                deviceType: .iphone,
-                team: team,
-                session: session
-            ) { profile, error in
-                if let profile {
-                    continuation.resume(returning: LegacyBox(profile))
                 } else {
                     continuation.resume(throwing: error ?? URLError(.badServerResponse))
                 }

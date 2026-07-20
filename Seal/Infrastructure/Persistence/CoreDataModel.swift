@@ -21,6 +21,7 @@ enum CoreDataModel {
             attribute("stateRaw", type: .stringAttributeType),
             attribute("expiryDate", type: .dateAttributeType, optional: true),
             attribute("accountID", type: .UUIDAttributeType, optional: true),
+            attribute("certificateSerialNumber", type: .stringAttributeType, optional: true),
             attribute("ipaRelativePath", type: .stringAttributeType),
             attribute("signedIPARelativePath", type: .stringAttributeType, optional: true),
             attribute("preferredBundleIdentifier", type: .stringAttributeType, optional: true),

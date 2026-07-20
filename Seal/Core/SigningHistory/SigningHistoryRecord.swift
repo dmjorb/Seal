@@ -139,7 +139,9 @@ struct SigningHistoryRecord: Codable, Equatable, Identifiable, Sendable {
             accountDisplayName: account.maskedEmail,
             teamID: account.teamID,
             teamName: account.teamName,
-            certificateSerialNumber: account.certificateSerialNumber,
+            certificateSerialNumber: app.certificateSerialNumber
+                ?? account.selectedCertificateSerialNumber
+                ?? account.certificateSerialNumber,
             action: action,
             result: result,
             signedAt: signedAt,

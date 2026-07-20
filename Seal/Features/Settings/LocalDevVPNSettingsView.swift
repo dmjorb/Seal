@@ -3,7 +3,6 @@ import SwiftUI
 struct LocalDevVPNSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
     @Environment(\.openURL) private var openURL
-    @State private var isChecking = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -65,33 +64,20 @@ struct LocalDevVPNSettingsView: View {
     }
 
     private var actions: some View {
-        VStack(spacing: 12) {
-            Button("打开 LocalDevVPN") {
-                openURL(LocalDevVPNLink.enableAndReturn) { accepted in
-                    guard accepted == false else { return }
-                    openURL(LocalDevVPNLink.appStore)
-                }
+        Button("打开 LocalDevVPN") {
+            openURL(LocalDevVPNLink.enableAndReturn) { accepted in
+                guard accepted == false else { return }
+                openURL(LocalDevVPNLink.appStore)
             }
-            .sealPrimaryAction(cornerRadius: 12)
-
-            Button(isChecking ? "检测中…" : "重新检测") {
-                guard isChecking == false else { return }
-                isChecking = true
-                Task {
-                    await viewModel.testLocalDevVPN()
-                    isChecking = false
-                }
-            }
-            .sealOutlineAction(cornerRadius: 12)
-            .disabled(isChecking)
         }
+        .sealPrimaryAction(cornerRadius: 12)
     }
 
     private var helperCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("说明")
                 .font(.headline)
-            Text("Seal 通过 LocalDevVPN 建立本机安装通道。未连接时，签名、安装和续签都会被暂停，避免生成不可安装的结果。打开 LocalDevVPN 后回到 Seal，重新检测即可继续。")
+            Text("Seal 通过 LocalDevVPN 建立本机安装通道。打开或恢复 VPN 后，请返回设置页，在 LocalDevVPN 下方点击“一键检测”，统一检查 Apple ID、证书、配对文件和安装通道。")
                 .font(.subheadline)
                 .foregroundStyle(Color.sealTextSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -156,39 +142,62 @@ struct LocalDevVPNSettingsView: View {
     }
 
     private var heroIcon: String {
-        switch viewModel.diagnosticState {
-        case .ready: return "checkmark.circle.fill"
-        case .running: return "arrow.triangle.2.circlepath"
-        case .failed: return "exclamationmark.triangle.fill"
-        case .idle: return "network"
+        if case .ready = viewModel.diagnosticState {
+            return "checkmark.circle.fill"
         }
+        if case .running = viewModel.diagnosticState {
+            return "arrow.triangle.2.circlepath"
+        }
+        if installFailure != nil {
+            return "exclamationmark.triangle.fill"
+        }
+        return "network"
     }
 
     private var statusTitle: String {
-        switch viewModel.diagnosticState {
-        case .ready: return "LocalDevVPN 已连接"
-        case .running: return "正在检测连接"
-        case .failed(let failure): return failure.title
-        case .idle: return "尚未检测"
+        if case .ready = viewModel.diagnosticState {
+            return "LocalDevVPN 已连接"
         }
+        if case .running = viewModel.diagnosticState {
+            return "正在检测连接"
+        }
+        if let installFailure {
+            return installFailure.title
+        }
+        return "尚未检测"
     }
 
     private var statusSubtitle: String {
-        switch viewModel.diagnosticState {
-        case .ready: return "安装通道可用，可以签名和续签应用"
-        case .running: return "正在分层检测 VPN 通道、配对文件、设备响应和安装服务"
-        case .failed(let failure): return failure.reason
-        case .idle: return "点击重新检测确认当前设备连接状态"
+        if case .ready = viewModel.diagnosticState {
+            return "安装通道可用，可以签名和续签应用"
         }
+        if case .running = viewModel.diagnosticState {
+            return "正在分层检测 VPN 通道、配对文件、设备响应和安装服务"
+        }
+        if let installFailure {
+            return installFailure.reason
+        }
+        return "返回设置页点击“一键检测”确认当前连接状态"
     }
 
     private var statusColor: Color {
-        switch viewModel.diagnosticState {
-        case .ready: return .sealSuccess
-        case .running: return .sealAccent
-        case .failed: return .sealDanger
-        case .idle: return Color.sealTextSecondary
+        if case .ready = viewModel.diagnosticState {
+            return .sealSuccess
         }
+        if case .running = viewModel.diagnosticState {
+            return .sealAccent
+        }
+        return installFailure == nil ? Color.sealTextSecondary : .sealDanger
+    }
+
+    private var installFailure: ImportFailure? {
+        guard case .failed(let failure) = viewModel.diagnosticState else {
+            return nil
+        }
+        return failure.code.hasPrefix("SEAL-INSTALL-")
+            || failure.code.hasPrefix("SEAL-PAIR-")
+            ? failure
+            : nil
     }
 
     private var deviceIdentifier: String {
@@ -198,7 +207,6 @@ struct LocalDevVPNSettingsView: View {
     }
 
     private var failureCode: String? {
-        if case .failed(let failure) = viewModel.diagnosticState { return failure.code }
-        return nil
+        installFailure?.code
     }
 }

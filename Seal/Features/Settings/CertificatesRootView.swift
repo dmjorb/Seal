@@ -3,17 +3,18 @@ import SwiftUI
 struct CertificatesRootView: View {
     @ObservedObject var viewModel: SettingsViewModel
     let relatedApps: [AppRecord]
+
     @State private var isAddingAccount = false
-    @State private var actionAccount: AppleAccountRecord?
     @State private var detailAccount: AppleAccountRecord?
     @State private var accountPendingDeletion: AppleAccountRecord?
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
                 header
 
-                Text("Apple ID 证书")
+                Text("Apple ID")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.sealTextSecondary)
                     .padding(.leading, 8)
@@ -26,31 +27,10 @@ struct CertificatesRootView: View {
             }
             .padding(20)
         }
-        .navigationTitle("证书")
+        .navigationTitle("Apple ID")
         .navigationBarTitleDisplayMode(.inline)
         .fullScreenCover(isPresented: $isAddingAccount) {
             AddAccountView(viewModel: viewModel)
-        }
-        .confirmationDialog(
-            actionAccount?.maskedEmail ?? "Apple ID",
-            isPresented: Binding(
-                get: { actionAccount != nil },
-                set: { if !$0 { actionAccount = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: actionAccount
-        ) { account in
-            Button("证书详情") {
-                detailAccount = account
-                actionAccount = nil
-            }
-            Button("删除", role: .destructive) {
-                accountPendingDeletion = account
-                actionAccount = nil
-            }
-            Button("取消", role: .cancel) {
-                actionAccount = nil
-            }
         }
         .confirmationDialog(
             "删除 Apple ID？",
@@ -68,7 +48,11 @@ struct CertificatesRootView: View {
             Button("取消", role: .cancel) { accountPendingDeletion = nil }
         } message: { account in
             let count = relatedApps.filter { $0.accountID == account.id }.count
-            Text(count == 0 ? "删除后将无法使用此账号签名。" : "该账号仍用于签名 \(count) 个应用，删除后这些应用无法继续续签。")
+            Text(
+                count == 0
+                    ? "删除后将无法继续使用此账号签名。"
+                    : "该账号仍绑定于 \(count) 个应用。删除后，这些应用无法继续续签。"
+            )
         }
         .navigationDestination(
             isPresented: Binding(
@@ -79,7 +63,7 @@ struct CertificatesRootView: View {
             if let account = detailAccount {
                 AppleAccountDetailView(
                     account: account,
-                    relatedApps: relatedApps.filter { $0.accountID == account.id },
+                    relatedApps: relatedApps,
                     viewModel: viewModel
                 )
             }
@@ -95,6 +79,13 @@ struct CertificatesRootView: View {
             await viewModel.load(force: true)
             await viewModel.refreshCertificateInventories()
         }
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active else { return }
+            Task {
+                await viewModel.load(force: true)
+                await viewModel.refreshCertificateInventories()
+            }
+        }
         .onChange(of: viewModel.requestedRoute) { route in
             guard route == .addAccount else { return }
             viewModel.requestedRoute = nil
@@ -105,15 +96,16 @@ struct CertificatesRootView: View {
 
     private var header: some View {
         HStack(spacing: 14) {
-            Image(systemName: "checkmark.seal.fill")
+            Image(systemName: "person.crop.circle.badge.checkmark")
                 .font(.title2)
                 .foregroundStyle(Color.sealAccent)
             VStack(alignment: .leading, spacing: 3) {
-                Text(viewModel.accounts.isEmpty ? "添加 Apple ID" : "证书")
+                Text(viewModel.accounts.isEmpty ? "添加 Apple ID" : "当前签名账号")
                     .font(.title3.weight(.semibold))
-                Text(viewModel.accounts.isEmpty ? "添加 Apple ID 后用于签名" : "\(viewModel.accounts.count) 个 Apple ID")
+                Text(activeAccountSubtitle)
                     .font(.subheadline)
                     .foregroundStyle(Color.sealTextSecondary)
+                    .lineLimit(1)
             }
             Spacer()
             Button { isAddingAccount = true } label: {
@@ -128,6 +120,13 @@ struct CertificatesRootView: View {
         .glassSurface(cornerRadius: 24)
     }
 
+    private var activeAccountSubtitle: String {
+        guard let account = viewModel.activeAccount else {
+            return "选择一个已验证账号用于新的 IPA 签名"
+        }
+        return viewModel.fullEmail(for: account)
+    }
+
     private var emptyState: some View {
         VStack(spacing: 10) {
             Image(systemName: "person.crop.circle.badge.plus")
@@ -135,9 +134,10 @@ struct CertificatesRootView: View {
                 .foregroundStyle(Color.sealAccent)
             Text("还没有 Apple ID")
                 .font(.headline)
-            Text("添加后可查看证书详情、已签应用和过期时间。")
+            Text("添加并验证后，可用于签名、续签和查看 Apple 账号状态。")
                 .font(.subheadline)
                 .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(28)
@@ -147,19 +147,9 @@ struct CertificatesRootView: View {
     private var accountsList: some View {
         VStack(spacing: 0) {
             ForEach(Array(viewModel.accounts.enumerated()), id: \.element.id) { index, account in
-                Button {
-                    actionAccount = account
-                } label: {
-                    accountRow(account)
-                }
-                .buttonStyle(.plain)
-                .contextMenu {
-                    Button("证书详情") { detailAccount = account }
-                    Button("删除", role: .destructive) { accountPendingDeletion = account }
-                }
-
+                accountRow(account)
                 if index < viewModel.accounts.count - 1 {
-                    Divider().padding(.leading, 48)
+                    Divider().padding(.leading, 52)
                 }
             }
         }
@@ -169,51 +159,91 @@ struct CertificatesRootView: View {
 
     private func accountRow(_ account: AppleAccountRecord) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: "rosette")
-                .font(.title2)
-                .foregroundStyle(Color.sealAccent)
-                .frame(width: 36)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(account.maskedEmail)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text(account.teamName)
-                    .font(.caption)
-                    .foregroundStyle(Color.sealTextSecondary)
+            Button {
+                guard account.status == .verified else {
+                    detailAccount = account
+                    return
+                }
+                Task { await viewModel.selectActiveAccount(account) }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: isActive(account) ? "checkmark.circle.fill" : "circle")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(
+                            isActive(account)
+                                ? Color.sealAccent
+                                : Color.sealTextSecondary.opacity(0.55)
+                        )
+                        .frame(width: 36)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(viewModel.fullEmail(for: account))
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text("\(account.teamName) · \(account.teamID)")
+                            .font(.caption)
+                            .foregroundStyle(Color.sealTextSecondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text(isActive(account) ? "当前使用" : accountStatusTitle(account))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(
+                                isActive(account)
+                                    ? Color.sealAccent
+                                    : accountStatusColor(account)
+                            )
+                        Text(appIDCountTitle(account))
+                            .font(.caption2)
+                            .foregroundStyle(Color.sealTextSecondary)
+                    }
+                }
+                .contentShape(Rectangle())
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(appleSideCountText(for: account))
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(appleSideCountColor(for: account))
-                Text(account.status == .verified ? "可用" : "需验证")
-                    .font(.caption)
-                    .foregroundStyle(account.status == .verified ? Color.sealSuccess : Color.sealWarning)
+            .buttonStyle(.plain)
+
+            Button {
+                detailAccount = account
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 28, height: 44)
+            }
+            .buttonStyle(.plain)
+            .contextMenu {
+                Button("删除", role: .destructive) {
+                    accountPendingDeletion = account
+                }
             }
         }
-        .padding(.vertical, 14)
+        .padding(.vertical, 12)
     }
 
-    private func appleSideCountText(for account: AppleAccountRecord) -> String {
+    private func isActive(_ account: AppleAccountRecord) -> Bool {
+        viewModel.activeAccountID == account.id
+    }
+
+    private func accountStatusTitle(_ account: AppleAccountRecord) -> String {
+        account.status == .verified ? "可用" : "需验证"
+    }
+
+    private func accountStatusColor(_ account: AppleAccountRecord) -> Color {
+        account.status == .verified ? .sealSuccess : .sealWarning
+    }
+
+    private func appIDCountTitle(_ account: AppleAccountRecord) -> String {
         if viewModel.isCertificateInventoryLoading(accountID: account.id) {
             return "同步中"
         }
         if let inventory = viewModel.certificateInventory(for: account.id) {
-            return "Apple 侧 \(inventory.usedBundleIDCount)"
+            return "App ID \(inventory.usedBundleIDCount)"
         }
         if viewModel.certificateInventoryFailure(for: account.id) != nil {
             return "同步失败"
         }
         return "未同步"
-    }
-
-    private func appleSideCountColor(for account: AppleAccountRecord) -> Color {
-        if viewModel.certificateInventoryFailure(for: account.id) != nil {
-            return Color.sealDanger
-        }
-        if viewModel.certificateInventory(for: account.id) != nil {
-            return Color.sealAccent
-        }
-        return Color.sealTextSecondary
     }
 }

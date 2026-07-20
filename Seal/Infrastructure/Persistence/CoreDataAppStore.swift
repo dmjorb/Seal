@@ -137,6 +137,7 @@ actor CoreDataAppStore: AppStore {
         object.setValue(record.state.rawValue, forKey: "stateRaw")
         object.setValue(record.expiryDate, forKey: "expiryDate")
         object.setValue(record.accountID, forKey: "accountID")
+        object.setValue(record.certificateSerialNumber, forKey: "certificateSerialNumber")
         object.setValue(record.ipaRelativePath, forKey: "ipaRelativePath")
         object.setValue(record.signedIPARelativePath, forKey: "signedIPARelativePath")
         object.setValue(record.preferredBundleIdentifier, forKey: "preferredBundleIdentifier")
@@ -214,6 +215,7 @@ actor CoreDataAppStore: AppStore {
             state: state,
             expiryDate: object.value(forKey: "expiryDate") as? Date,
             accountID: object.value(forKey: "accountID") as? UUID,
+            certificateSerialNumber: object.value(forKey: "certificateSerialNumber") as? String,
             ipaRelativePath: ipaRelativePath,
             signedIPARelativePath: object.value(forKey: "signedIPARelativePath") as? String,
             preferredBundleIdentifier: object.value(forKey: "preferredBundleIdentifier") as? String,

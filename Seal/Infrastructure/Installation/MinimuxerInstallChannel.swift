@@ -190,7 +190,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         throw ImportFailure(
             title: "安装后验证失败",
             reason: "已发送安装请求，但设备端没有确认安装后的 Bundle ID。",
-            recovery: "保持 LocalDevVPN 连接后重试；如应用已经出现在桌面，请重新检测安装通道。",
+            recovery: "保持 LocalDevVPN 连接后重试；如应用已经出现在桌面，请返回设置运行一键检测。",
             code: "SEAL-INSTALL-707"
         )
         #endif
@@ -264,7 +264,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         return ImportFailure(
             title: "安装通道不可用",
             reason: message,
-            recovery: "保持 LocalDevVPN 已连接，重新检测；如持续失败，请导出日志",
+            recovery: "保持 LocalDevVPN 已连接，返回设置运行一键检测；如持续失败，请导出日志",
             code: "SEAL-INSTALL-705"
         )
     }
@@ -313,22 +313,22 @@ actor MinimuxerInstallChannel: InstallChannel {
 
     private static let vpnTunnelUnavailableFailure = ImportFailure(
         title: "VPN 通道不可达",
-        reason: "系统 VPN 可能已显示连接，但 Seal 尚未连通 LocalDevVPN 的本机通道。请保持 VPN 开启，等待几秒后重新检测。",
-        recovery: "重新检测",
+        reason: "系统 VPN 可能已显示连接，但 Seal 尚未连通 LocalDevVPN 的本机通道。请保持 VPN 开启，等待几秒后返回设置运行一键检测。",
+        recovery: "一键检测",
         code: "SEAL-INSTALL-701"
     )
 
     private static let deviceNotRespondingFailure = ImportFailure(
         title: "设备未响应",
         reason: "LocalDevVPN 通道已打开，但 Seal 没有读取到设备 UDID。",
-        recovery: "保持 VPN 已连接后重新检测",
+        recovery: "保持 VPN 已连接后返回设置运行一键检测",
         code: "SEAL-INSTALL-708"
     )
 
     private static let channelNotReadyFailure = ImportFailure(
         title: "安装通道未就绪",
         reason: "Seal 已尝试连接 LocalDevVPN，但未能读取到设备安装通道。请确认 iOS 设置里的 VPN 状态为已连接，并保持 LocalDevVPN 在后台可用。",
-        recovery: "重新检测",
+        recovery: "一键检测",
         code: "SEAL-INSTALL-706"
     )
 }

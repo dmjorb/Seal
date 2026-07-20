@@ -41,6 +41,7 @@ struct AppContainer {
                 fileURL: sealDirectory.appending(path: "Accounts.json")
             )
             let keychain = KeychainVault()
+            let signingPreferenceStore = SigningPreferenceStore()
             let pairingStore = PairingStore(
                 fileURL: sealDirectory.appending(path: "Pairing.plist")
             )
@@ -110,7 +111,8 @@ struct AppContainer {
                     logStore: logStore,
                     signingHistoryStore: signingHistoryStore,
                     notificationScheduler: notificationScheduler,
-                    notificationPreferences: notificationPreferences
+                    notificationPreferences: notificationPreferences,
+                    signingPreferenceStore: signingPreferenceStore
                 ),
                 settingsViewModel: SettingsViewModel(
                     accountRepository: accountRepository,
@@ -126,7 +128,8 @@ struct AppContainer {
                     signingHistoryStore: signingHistoryStore,
                     notificationScheduler: notificationScheduler,
                     notificationPreferences: notificationPreferences,
-                    anisetteEnvironment: anisetteProvider
+                    anisetteEnvironment: anisetteProvider,
+                    signingPreferenceStore: signingPreferenceStore
                 )
             )
         } catch {

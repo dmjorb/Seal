@@ -5,7 +5,6 @@ struct SettingsRootView: View {
     @ObservedObject var viewModel: SettingsViewModel
     let relatedApps: [AppRecord]
 
-    @Environment(\.openURL) private var openURL
     @State private var navigationPath = NavigationPath()
     @State private var isAddingAccount = false
     @State private var isChecking = false
@@ -29,28 +28,6 @@ struct SettingsRootView: View {
                         }
                         sectionDivider
 
-                        Button {
-                            handleEnvironmentPrimaryAction()
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: isChecking ? "hourglass" : "waveform.path.ecg")
-                                    .font(.system(size: 18, weight: .semibold))
-                                Text(isChecking ? "检测中…" : primaryEnvironmentActionTitle)
-                                    .font(.system(size: 17, weight: .semibold))
-                                Spacer(minLength: 0)
-                                Circle()
-                                    .fill(diagnosticStatusColor)
-                                    .frame(width: 9, height: 9)
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 54)
-                            .padding(.horizontal, 16)
-                        }
-                        .buttonStyle(.plain)
-                        .background(Color.sealAccent.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .disabled(isChecking)
-
-                        sectionDivider
-
                         NavigationLink(value: SettingsRoute.account) {
                             settingsRow(
                                 title: "Apple ID",
@@ -61,6 +38,7 @@ struct SettingsRootView: View {
                             )
                         }
                         sectionDivider
+
                         NavigationLink(value: SettingsRoute.certificates) {
                             settingsRow(
                                 title: "签名证书",
@@ -71,6 +49,7 @@ struct SettingsRootView: View {
                             )
                         }
                         sectionDivider
+
                         NavigationLink(value: SettingsRoute.pairing) {
                             settingsRow(
                                 title: "设备配对文件",
@@ -81,6 +60,7 @@ struct SettingsRootView: View {
                             )
                         }
                         sectionDivider
+
                         NavigationLink(value: SettingsRoute.localDevVPN) {
                             settingsRow(
                                 title: "LocalDevVPN",
@@ -90,6 +70,21 @@ struct SettingsRootView: View {
                                 statusColor: localDevVPNStatusColor
                             )
                         }
+                        sectionDivider
+
+                        Button {
+                            runEnvironmentCheck()
+                        } label: {
+                            settingsRow(
+                                title: "一键检测",
+                                value: oneClickCheckSummary,
+                                icon: isChecking ? "hourglass" : "waveform.path.ecg",
+                                showsChevron: false,
+                                statusColor: diagnosticStatusColor
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isChecking)
                     }
 
                     settingsSection("自动化") {
@@ -197,7 +192,7 @@ struct SettingsRootView: View {
                     if let account = viewModel.accounts.first(where: { $0.id == id }) {
                         AppleAccountDetailView(
                             account: account,
-                            relatedApps: relatedApps.filter { $0.accountID == account.id },
+                            relatedApps: relatedApps,
                             viewModel: viewModel
                         )
                     }
@@ -226,6 +221,9 @@ struct SettingsRootView: View {
                 )
             }
             .task { await viewModel.load(force: true) }
+            .onAppear {
+                Task { await viewModel.load(force: true) }
+            }
             .refreshable {
                 await viewModel.load(force: true)
                 await viewModel.refreshStorageUsage()
@@ -299,35 +297,8 @@ struct SettingsRootView: View {
         .contentShape(Rectangle())
     }
 
-    private func compactStatusRow(_ title: String, _ value: String, _ color: Color) -> some View {
-        HStack(spacing: 10) {
-            Text(title)
-                .font(.system(size: 14, weight: .regular))
-                .foregroundStyle(Color.sealTextSecondary)
-            Spacer(minLength: 8)
-            Circle().fill(color).frame(width: 8, height: 8)
-            Text(value)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-        }
-    }
-
     private var sectionDivider: some View {
         Divider().padding(.leading, 50)
-    }
-
-    private func handleEnvironmentPrimaryAction() {
-        if case .failed(let failure) = viewModel.diagnosticState,
-           let route = repairRoute(for: failure) {
-            if route == .addAccount {
-                isAddingAccount = true
-            } else {
-                navigationPath.append(route)
-            }
-            return
-        }
-        runEnvironmentCheck()
     }
 
     private func runEnvironmentCheck() {
@@ -339,28 +310,22 @@ struct SettingsRootView: View {
         }
     }
 
-    private func repairRoute(for failure: ImportFailure) -> SettingsRoute? {
-        if failure.code.hasPrefix("SEAL-AUTH-") { return .account }
-        if failure.code.hasPrefix("SEAL-CERT-") || failure.code.contains("CERT") { return .certificates }
-        if failure.code.hasPrefix("SEAL-PAIR-") || failure.code == "SEAL-INSTALL-703" { return .pairing }
-        if failure.code.hasPrefix("SEAL-INSTALL-") { return .localDevVPN }
-        if failure.code.hasPrefix("SEAL-RENEW-") { return .logs }
-        return nil
-    }
-
     private var verifiedAccounts: [AppleAccountRecord] {
         viewModel.accounts.filter { $0.status == .verified }
     }
 
     private var accountSummary: String {
-        if let account = verifiedAccounts.first { return account.maskedEmail }
+        if let account = viewModel.activeAccount { return account.maskedEmail }
         if viewModel.accounts.isEmpty { return "未添加" }
-        return "需要验证"
+        return "请选择"
     }
 
     private var certificateSummary: String {
-        guard let account = verifiedAccounts.first else { return "不可用" }
-        return account.certificateSerialNumber == nil ? "签名时创建" : "Apple Development"
+        guard let account = viewModel.activeAccount else { return "不可用" }
+        let serial = account.selectedCertificateSerialNumber
+            ?? account.certificateSerialNumber
+        guard let serial else { return "签名时创建" }
+        return "Seal · \(abbreviated(serial))"
     }
 
     private var pairingSummary: String {
@@ -373,28 +338,16 @@ struct SettingsRootView: View {
 
     private var localDevVPNSummary: String {
         switch viewModel.diagnosticState {
-        case .ready: return "已连接"
-        case .running: return "检测中"
-        case .failed(let failure): return failure.code == "SEAL-INSTALL-701" ? "未连接" : "未确认"
-        case .idle: return viewModel.environment.channelIsReady ? "已连接" : "未检测"
-        }
-    }
-
-    private var installChannelSummary: String {
-        switch viewModel.diagnosticState {
-        case .ready: return "正常"
-        case .running: return "检测中"
-        case .failed: return "不可用"
-        case .idle: return "未检测"
-        }
-    }
-
-    private var diagnosticSummary: String {
-        switch viewModel.diagnosticState {
-        case .ready: return "正常"
-        case .running: return "检测中"
-        case .failed(let failure): return failure.recovery
-        case .idle: return "未检测"
+        case .ready:
+            return "已连接"
+        case .running:
+            return "检测中"
+        case .failed(let failure):
+            if failure.code.hasPrefix("SEAL-PAIR-") { return "待配对" }
+            if failure.code.hasPrefix("SEAL-INSTALL-") { return "连接异常" }
+            return "未检测"
+        case .idle:
+            return "未检测"
         }
     }
 
@@ -409,12 +362,25 @@ struct SettingsRootView: View {
     }
 
     private var accountStatusColor: Color {
-        if verifiedAccounts.isEmpty == false { return .sealSuccess }
-        return viewModel.accounts.isEmpty ? Color.sealTextSecondary.opacity(0.55) : .sealWarning
+        guard let account = viewModel.activeAccount else {
+            return viewModel.accounts.isEmpty
+                ? Color.sealTextSecondary.opacity(0.55)
+                : Color.sealWarning
+        }
+        return account.status == .verified ? .sealSuccess : .sealWarning
     }
 
     private var certificateStatusColor: Color {
-        verifiedAccounts.isEmpty ? Color.sealTextSecondary.opacity(0.55) : .sealSuccess
+        guard let account = viewModel.activeAccount else {
+            return Color.sealTextSecondary.opacity(0.55)
+        }
+        if let selected = account.selectedCertificateSerialNumber,
+           selected != account.certificateSerialNumber {
+            return Color.sealDanger
+        }
+        return account.certificateSerialNumber == nil
+            ? Color.sealWarning
+            : Color.sealSuccess
     }
 
     private var pairingStatusColor: Color {
@@ -423,10 +389,16 @@ struct SettingsRootView: View {
 
     private var localDevVPNStatusColor: Color {
         switch viewModel.diagnosticState {
-        case .ready: return .sealSuccess
-        case .running: return .sealAccent
-        case .failed(let failure): return failure.code == "SEAL-INSTALL-701" ? .sealDanger : .sealWarning
-        case .idle: return Color.sealTextSecondary.opacity(0.55)
+        case .ready:
+            return .sealSuccess
+        case .running:
+            return .sealAccent
+        case .failed(let failure):
+            if failure.code.hasPrefix("SEAL-INSTALL-") { return .sealDanger }
+            if failure.code.hasPrefix("SEAL-PAIR-") { return .sealWarning }
+            return Color.sealTextSecondary.opacity(0.55)
+        case .idle:
+            return Color.sealTextSecondary.opacity(0.55)
         }
     }
 
@@ -448,39 +420,19 @@ struct SettingsRootView: View {
         }
     }
 
-    private var overallStatusColor: Color {
-        if environmentIsFullyReady { return .sealSuccess }
-        if case .failed = viewModel.diagnosticState { return .sealDanger }
-        return .sealWarning
-    }
-
-    private var overallStatusTitle: String {
-        if environmentIsFullyReady { return "环境正常" }
-        if case .failed = viewModel.diagnosticState { return "需要处理" }
-        return "未完成检测"
-    }
-
-    private var overallStatusSubtitle: String {
-        if environmentIsFullyReady { return "已准备好签名和续签应用" }
-        if verifiedAccounts.isEmpty { return "先添加并验证 Apple ID" }
-        if viewModel.pairingRecord == nil { return "安装前需要导入设备配对文件" }
-        return "运行一键检测，确认 LocalDevVPN 和安装通道"
-    }
-
-    private var environmentIsFullyReady: Bool {
-        guard verifiedAccounts.isEmpty == false,
-              viewModel.pairingRecord != nil,
-              case .ready = viewModel.diagnosticState else { return false }
-        return true
-    }
-
-    private var primaryEnvironmentActionTitle: String {
+    private var oneClickCheckSummary: String {
+        if isChecking { return "检测中…" }
         switch viewModel.diagnosticState {
-        case .failed: return "去修复"
-        case .ready: return "重新检测"
+        case .ready: return "全部正常"
         case .running: return "检测中…"
-        case .idle: return "一键检测"
+        case .failed: return "发现问题"
+        case .idle: return "未检测"
         }
+    }
+
+    private func abbreviated(_ value: String) -> String {
+        guard value.count > 10 else { return value }
+        return "\(value.prefix(5))…\(value.suffix(5))"
     }
 
     private var appVersion: String {

@@ -79,6 +79,7 @@ actor SelfAppRegistrar {
                 state: .installed,
                 expiryDate: isSelfRenewalReturn ? metadata.expirationDate : (existing?.expiryDate ?? metadata.expirationDate),
                 accountID: resolvedAccountID,
+                certificateSerialNumber: existing?.certificateSerialNumber,
                 ipaRelativePath: files.ipaRelativePath,
                 signedIPARelativePath: existing?.signedIPARelativePath,
                 preferredBundleIdentifier: metadata.bundleIdentifier,

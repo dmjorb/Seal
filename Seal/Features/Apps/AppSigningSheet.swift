@@ -24,7 +24,9 @@ struct AppSigningSheet: View {
         .presentationDragIndicator(.hidden)
         .interactiveDismissDisabled(isRunning)
         .task {
+            await viewModel.load(force: true)
             currentSealSigningTeamID = SelfAppMetadata.current()?.signingTeamIdentifier
+            await viewModel.refreshActiveAccountSelection()
             selectDefaultAccount()
             resetBundleIDDraftIfNeeded()
         }
@@ -75,6 +77,9 @@ struct AppSigningSheet: View {
                 Button(primaryActionTitle(for: presentation)) {
                     if selfAccountValidationError != nil {
                         viewModel.openSettings(route: .account)
+                        dismiss()
+                    } else if certificateSelectionError != nil {
+                        viewModel.openSettings(route: .certificates)
                         dismiss()
                     } else if let selectedAccountID {
                         Task {
@@ -173,7 +178,10 @@ struct AppSigningSheet: View {
             } else {
                 Menu {
                     ForEach(viewModel.verifiedAccounts) { account in
-                        Button(accountPickerTitle(account)) { selectedAccountID = account.id }
+                        Button(accountPickerTitle(account)) {
+                            selectedAccountID = account.id
+                            Task { await viewModel.selectActiveAccount(id: account.id) }
+                        }
                     }
                 } label: {
                     summaryRow(
@@ -185,6 +193,15 @@ struct AppSigningSheet: View {
                 }
                 .disabled(isAccountSelectionLocked)
             }
+
+            Divider().padding(.leading, 16)
+
+            summaryRow(
+                title: "签名证书",
+                value: certificateSummary,
+                caption: certificateSelectionError ?? certificateCaption,
+                actionTitle: certificateSelectionError == nil ? nil : "设置"
+            )
 
             Divider().padding(.leading, 16)
 
@@ -353,7 +370,15 @@ struct AppSigningSheet: View {
     }
 
     private var signingValidationError: String? {
-        bundleIDValidationError ?? selfAccountValidationError
+        bundleIDValidationError ?? selfAccountValidationError ?? certificateSelectionError
+    }
+
+    private var certificateSelectionError: String? {
+        guard let selectedAccount else { return nil }
+        return SigningCertificateSelectionPolicy.localAvailabilityMessage(
+            for: app,
+            account: selectedAccount
+        )
     }
 
     private func resetBundleIDDraftIfNeeded() {
@@ -414,11 +439,30 @@ struct AppSigningSheet: View {
     }
 
     private var certificateSummary: String {
-        guard let selectedAccount else { return "选择 Apple ID 后自动准备" }
-        guard let serial = selectedAccount.certificateSerialNumber, serial.isEmpty == false else {
-            return "签名时自动准备"
+        guard let selectedAccount else { return "选择 Apple ID 后确认" }
+        let serial: String?
+        do {
+            serial = try SigningCertificateSelectionPolicy.resolvedSerialNumber(
+                for: app,
+                account: selectedAccount
+            )
+        } catch {
+            return "证书不匹配"
         }
-        return "Apple Development · \(Self.abbreviatedIdentifier(serial))"
+        guard let serial, serial.isEmpty == false else {
+            return "签名时申请 Seal 证书"
+        }
+        return "Seal · \(Self.abbreviatedIdentifier(serial))"
+    }
+
+    private var certificateCaption: String {
+        if app.state == .installed, app.certificateSerialNumber != nil {
+            return "续签证书已锁定"
+        }
+        if selectedAccount?.selectedCertificateSerialNumber != nil {
+            return "与设置页当前选择一致"
+        }
+        return "首次签名成功后自动设为当前证书"
     }
 
     private var operationSummary: String {
@@ -456,6 +500,7 @@ struct AppSigningSheet: View {
 
     private var preflightTitle: String {
         if selectedAccount == nil { return "签名前检查需要 Apple ID" }
+        if certificateSelectionError != nil { return "签名证书不可用" }
         if signingValidationError != nil { return app.isSeal ? "续签账号不匹配" : "Bundle ID 需要处理" }
         if viewModel.signingChannelStatus == .unavailable { return "安装通道待检测" }
         return "签名前检查"
@@ -470,6 +515,7 @@ struct AppSigningSheet: View {
 
     private func primaryActionTitle(for presentation: AppOperationPresentation) -> String {
         if selfAccountValidationError != nil { return "去添加当前签名 Apple ID" }
+        if certificateSelectionError != nil { return "去选择签名证书" }
         return selectedAccountID == nil ? "去添加 Apple ID" : presentation.primaryAction
     }
 
@@ -496,6 +542,9 @@ struct AppSigningSheet: View {
            let accountID = app.accountID,
            verifiedAccounts.contains(where: { $0.id == accountID }) {
             selectedAccountID = accountID
+        } else if let activeAccountID = viewModel.activeAccountID,
+                  verifiedAccounts.contains(where: { $0.id == activeAccountID }) {
+            selectedAccountID = activeAccountID
         } else {
             selectedAccountID = verifiedAccounts.first?.id
         }
@@ -509,7 +558,7 @@ struct AppSigningSheet: View {
             }
             return "抽屉只保留本次操作关键项；详细诊断可在签名前检查中查看。"
         case .renewal, .urgentRenewal, .expiredRenewal:
-            return "续签沿用上一次签名身份；如需更换账号或 Bundle ID，请重新导入作为新应用。"
+            return "续签沿用上一次签名身份；如需更换账号、证书或 Bundle ID，请重新导入作为新应用。"
         }
     }
 

@@ -3,72 +3,32 @@ import SwiftUI
 struct SigningCertificateSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
     let relatedApps: [AppRecord]
+
     @State private var certificatePendingReset: AppleAccountRecord?
-    @State private var certificateDetailAccount: AppleAccountRecord?
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 20) {
-                hero
+            VStack(alignment: .leading, spacing: 18) {
+                accountCard
 
-                Text("个人证书")
-                    .font(.subheadline)
+                Text("签名证书")
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.sealTextSecondary)
                     .padding(.leading, 8)
 
-                VStack(spacing: 0) {
-                    if verifiedAccounts.isEmpty {
-                        certificateRow(
-                            title: "Apple Development",
-                            subtitle: "等待 Apple ID",
-                            status: "未创建",
-                            color: Color.sealTextSecondary,
-                            account: nil
-                        )
-                    } else {
-                        ForEach(Array(verifiedAccounts.enumerated()), id: \.element.id) { index, account in
-                            certificateRow(
-                                title: "Apple Development",
-                                subtitle: account.maskedEmail,
-                                status: account.certificateSerialNumber == nil ? "签名时创建" : "可用",
-                                color: Color.sealSuccess,
-                                account: account
-                            )
-                            if index < verifiedAccounts.count - 1 {
-                                Divider().padding(.leading, 48)
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, 16)
-                .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
-                }
+                certificateContent
 
-                noteCard
+                if let account = activeAccount,
+                   account.certificateSerialNumber != nil {
+                    resetCard(account)
+                }
             }
             .padding(20)
         }
         .navigationTitle("签名证书")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(
-            isPresented: Binding(
-                get: { certificateDetailAccount != nil },
-                set: { if !$0 { certificateDetailAccount = nil } }
-            )
-        ) {
-            if let account = certificateDetailAccount {
-                AppleAccountDetailView(
-                    account: account,
-                    relatedApps: relatedApps.filter { $0.accountID == account.id },
-                    viewModel: viewModel
-                )
-            }
-        }
         .confirmationDialog(
-            "清除本地证书缓存？",
+            "清除本地证书？",
             isPresented: Binding(
                 get: { certificatePendingReset != nil },
                 set: { if !$0 { certificatePendingReset = nil } }
@@ -76,102 +36,286 @@ struct SigningCertificateSettingsView: View {
             titleVisibility: .visible,
             presenting: certificatePendingReset
         ) { account in
-            Button("清除并重新申请", role: .destructive) {
+            Button("清除本地证书", role: .destructive) {
                 Task { await viewModel.resetCertificate(for: account) }
                 certificatePendingReset = nil
             }
             Button("取消", role: .cancel) { certificatePendingReset = nil }
-        } message: { _ in
-            Text("这会清除 Seal 本地保存的 P12、证书序列号和证书机器标识。下次签名会重新向 Apple 申请证书；如果 Apple ID 的证书额度已满，签名失败页会提供更换证书并重试。")
+        } message: { account in
+            let count = boundAppCount(for: account)
+            Text(
+                count == 0
+                    ? "这会删除 Seal 本地保存的 P12 和私钥。Apple 账号中的证书记录不会被自动撤销；下次首次签名时会重新申请 Seal 证书。"
+                    : "这会删除 Seal 本地保存的 P12 和私钥。该证书已用于 \(count) 个应用；这些应用续签时必须明确选择“更换证书并重试”。Apple 账号中的证书记录不会被自动撤销。"
+            )
         }
-        .task { await viewModel.load(force: true) }
+        .task {
+            await viewModel.load(force: true)
+            if let account = activeAccount {
+                await viewModel.refreshCertificateInventory(for: account, force: true)
+            }
+        }
+        .onChange(of: viewModel.activeAccountID) { _ in
+            guard let account = activeAccount else { return }
+            Task {
+                await viewModel.refreshCertificateInventory(for: account, force: true)
+            }
+        }
+        .alert(item: $viewModel.alertFailure) { failure in
+            Alert(
+                title: Text(failure.title),
+                message: Text("\(failure.reason)\n\(failure.code)"),
+                dismissButton: .default(Text(failure.recovery))
+            )
+        }
         .sealScreenBackground(.secondary)
     }
 
-    private var hero: some View {
-        VStack(spacing: 8) {
-            Image(systemName: hasVerifiedAccount ? "checkmark.seal.fill" : "seal")
-                .font(.system(size: 52, weight: .medium))
-                .foregroundStyle(hasVerifiedAccount ? Color.sealSuccess : Color.sealAccent)
-            Text(hasVerifiedAccount ? "证书可用" : "暂无可用证书")
-                .font(.title2.weight(.semibold))
-            Text(hasVerifiedAccount ? "\(verifiedAccounts.count) 个账号可用于签名" : "添加 Apple ID 后会自动准备个人签名证书")
-                .font(.subheadline)
-                .foregroundStyle(Color.sealTextSecondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(28)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
-        }
+    private var activeAccount: AppleAccountRecord? {
+        viewModel.activeAccount
     }
 
-    private var noteCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("证书说明")
-                .font(.headline)
-            Text("证书只用于本机签名。遇到 CERT_EXPIRED、私钥丢失或证书不可用时，先清除本地证书缓存后再重试；如果 Apple 返回证书名额已满，请在失败页选择更换证书并重试。")
-                .font(.subheadline)
-                .foregroundStyle(Color.sealTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+    private var activeAccountEmail: String {
+        guard let activeAccount else { return "请先选择" }
+        return viewModel.fullEmail(for: activeAccount)
+    }
+
+    private var inventory: ApplePortalInventory? {
+        guard let account = activeAccount else { return nil }
+        return viewModel.certificateInventory(for: account.id)
+    }
+
+    private var accountCard: some View {
+        VStack(spacing: 0) {
+            detailRow("Apple ID", activeAccountEmail)
+            Divider()
+            detailRow("Team ID", activeAccount?.teamID ?? "—")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
-        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .glassSurface(cornerRadius: 24)
     }
 
-    private var verifiedAccounts: [AppleAccountRecord] {
-        viewModel.accounts.filter { $0.status == .verified }
-    }
-
-    private var hasVerifiedAccount: Bool {
-        verifiedAccounts.isEmpty == false
-    }
-
-    private func certificateRow(
-        title: String,
-        subtitle: String,
-        status: String,
-        color: Color,
-        account: AppleAccountRecord?
-    ) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "rosette")
-                .font(.title2)
-                .foregroundStyle(Color.sealAccent)
-                .frame(width: 36)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.body.weight(.semibold))
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(Color.sealTextSecondary)
+    @ViewBuilder
+    private var certificateContent: some View {
+        if let account = activeAccount {
+            if viewModel.isCertificateInventoryLoading(accountID: account.id), inventory == nil {
+                loadingCard
+            } else if let failure = viewModel.certificateInventoryFailure(for: account.id),
+                      inventory == nil {
+                failureCard(failure, account: account)
+            } else if let certificates = inventory?.certificates,
+                      certificates.isEmpty == false {
+                certificatesCard(certificates, account: account)
+            } else {
+                emptyCertificateCard(account)
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 5) {
-                Text(status)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(color)
-                if let account {
-                    Button("详情") {
-                        certificateDetailAccount = account
-                    }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.sealAccent)
-                    Button("清除缓存") {
-                        certificatePendingReset = account
-                    }
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color.sealDanger)
+        } else {
+            noAccountCard
+        }
+    }
+
+    private func certificatesCard(
+        _ certificates: [ApplePortalCertificateSnapshot],
+        account: AppleAccountRecord
+    ) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(certificates.enumerated()), id: \.element.id) { index, certificate in
+                certificateRow(certificate, account: account)
+                if index < certificates.count - 1 {
+                    Divider().padding(.leading, 52)
                 }
             }
         }
-        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
+        .glassSurface(cornerRadius: 24)
+    }
+
+    private func certificateRow(
+        _ certificate: ApplePortalCertificateSnapshot,
+        account: AppleAccountRecord
+    ) -> some View {
+        let selected = account.selectedCertificateSerialNumber == certificate.serialNumber
+        return Button {
+            guard certificate.hasLocalPrivateKey else { return }
+            Task {
+                await viewModel.selectCertificate(
+                    serialNumber: certificate.serialNumber,
+                    for: account
+                )
+            }
+        } label: {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(
+                        certificate.hasLocalPrivateKey
+                            ? Color.sealAccent
+                            : Color.sealTextSecondary.opacity(0.45)
+                    )
+                    .frame(width: 36)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(certificate.displayName)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        if selected {
+                            Text("当前使用")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Color.sealAccent)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color.sealAccent.opacity(0.10), in: Capsule())
+                        }
+                    }
+                    Text("Apple Development")
+                        .font(.caption)
+                        .foregroundStyle(Color.sealTextSecondary)
+                    Text("Serial：\(abbreviated(certificate.serialNumber))")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(Color.sealTextSecondary)
+                    Text(
+                        certificate.hasLocalPrivateKey
+                            ? "本机可用"
+                            : "非本机创建，无本地私钥，不可用"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(
+                        certificate.hasLocalPrivateKey
+                            ? Color.sealSuccess
+                            : Color.sealTextSecondary
+                    )
+                }
+                Spacer(minLength: 8)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 14)
+        }
+        .buttonStyle(.plain)
+        .disabled(certificate.hasLocalPrivateKey == false)
+    }
+
+    private var loadingCard: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+            Text("正在读取当前 Apple ID 的证书")
+                .foregroundStyle(Color.sealTextSecondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .glassSurface(cornerRadius: 24)
+    }
+
+    private func failureCard(
+        _ failure: ImportFailure,
+        account: AppleAccountRecord
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("证书读取失败")
+                .font(.headline)
+            Text(failure.reason)
+                .font(.subheadline)
+                .foregroundStyle(Color.sealTextSecondary)
+            Button("重新同步") {
+                Task {
+                    await viewModel.refreshCertificateInventory(for: account, force: true)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .glassSurface(cornerRadius: 24)
+    }
+
+    private func emptyCertificateCard(_ account: AppleAccountRecord) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: "seal")
+                .font(.system(size: 34))
+                .foregroundStyle(Color.sealTextSecondary)
+            Text("暂无签名证书")
+                .font(.headline)
+            Text("首次签名 IPA 时，Seal 会在本机生成私钥并向 Apple 申请 Seal 证书；成功后自动设为当前证书。")
+                .font(.subheadline)
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.center)
+            Button("重新同步") {
+                Task {
+                    await viewModel.refreshCertificateInventory(for: account, force: true)
+                }
+            }
+            .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(24)
+        .glassSurface(cornerRadius: 24)
+    }
+
+    private var noAccountCard: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "person.crop.circle.badge.exclamationmark")
+                .font(.system(size: 34))
+                .foregroundStyle(Color.sealWarning)
+            Text("未选择 Apple ID")
+                .font(.headline)
+            Text("返回设置中的 Apple ID 页面，选择一个已验证账号。")
+                .font(.subheadline)
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(24)
+        .glassSurface(cornerRadius: 24)
+    }
+
+
+    private func boundAppCount(for account: AppleAccountRecord) -> Int {
+        relatedApps.filter { app in
+            guard app.accountID == account.id else { return false }
+            guard let localSerial = account.certificateSerialNumber else {
+                return false
+            }
+            return app.certificateSerialNumber == nil
+                || app.certificateSerialNumber == localSerial
+        }.count
+    }
+
+    private func resetCard(_ account: AppleAccountRecord) -> some View {
+        Button(role: .destructive) {
+            certificatePendingReset = account
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "trash")
+                    .frame(width: 30)
+                Text("清除本地证书")
+                Spacer()
+            }
+            .foregroundStyle(Color.sealDanger)
+            .frame(minHeight: 56)
+            .padding(.horizontal, 16)
+        }
+        .buttonStyle(.plain)
+        .glassSurface(cornerRadius: 18)
+    }
+
+    private func detailRow(_ title: String, _ value: String) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .foregroundStyle(Color.sealTextSecondary)
+            Spacer(minLength: 12)
+            Text(value)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+        .font(.subheadline)
+        .padding(.vertical, 12)
+    }
+
+    private func abbreviated(_ value: String) -> String {
+        guard value.count > 12 else { return value }
+        return "\(value.prefix(6))…\(value.suffix(6))"
     }
 }

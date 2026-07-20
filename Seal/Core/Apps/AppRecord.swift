@@ -12,6 +12,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     var state: AppState
     var expiryDate: Date?
     var accountID: UUID?
+    var certificateSerialNumber: String?
     let ipaRelativePath: String
     var signedIPARelativePath: String?
     var preferredBundleIdentifier: String?
@@ -32,6 +33,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         state: AppState,
         expiryDate: Date? = nil,
         accountID: UUID? = nil,
+        certificateSerialNumber: String? = nil,
         ipaRelativePath: String,
         signedIPARelativePath: String? = nil,
         preferredBundleIdentifier: String? = nil,
@@ -51,6 +53,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         self.state = state
         self.expiryDate = expiryDate
         self.accountID = accountID
+        self.certificateSerialNumber = certificateSerialNumber
         self.ipaRelativePath = ipaRelativePath
         self.signedIPARelativePath = signedIPARelativePath
         self.preferredBundleIdentifier = preferredBundleIdentifier

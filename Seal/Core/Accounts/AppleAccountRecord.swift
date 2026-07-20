@@ -9,6 +9,7 @@ struct AppleAccountRecord: Codable, Equatable, Hashable, Identifiable, Sendable 
     let isFreeTeam: Bool?
     var status: AccountStatus
     var certificateSerialNumber: String?
+    var selectedCertificateSerialNumber: String?
     var lastVerifiedAt: Date
 
     init(
@@ -20,6 +21,7 @@ struct AppleAccountRecord: Codable, Equatable, Hashable, Identifiable, Sendable 
         isFreeTeam: Bool? = nil,
         status: AccountStatus = .verified,
         certificateSerialNumber: String? = nil,
+        selectedCertificateSerialNumber: String? = nil,
         lastVerifiedAt: Date
     ) {
         self.id = id
@@ -30,6 +32,7 @@ struct AppleAccountRecord: Codable, Equatable, Hashable, Identifiable, Sendable 
         self.isFreeTeam = isFreeTeam
         self.status = status
         self.certificateSerialNumber = certificateSerialNumber
+        self.selectedCertificateSerialNumber = selectedCertificateSerialNumber
         self.lastVerifiedAt = lastVerifiedAt
     }
 

@@ -68,6 +68,8 @@ struct AppDetailView: View {
         VStack(spacing: 0) {
             detailRow("签名账号", accountName(app))
             Divider()
+            detailRow("签名证书", certificateName(app))
+            Divider()
             detailRow("导入时间", app.importedAt.formatted(date: .abbreviated, time: .shortened))
             Divider()
             detailRow("原始 Bundle ID", app.originalBundleIdentifier)
@@ -79,12 +81,6 @@ struct AppDetailView: View {
             detailRow("应用大小", app.size.formatted(.byteCount(style: .file)))
             Divider()
             detailRow("扩展", app.extensions.isEmpty ? "无" : "\(app.extensions.count) 个")
-            if app.accountID != nil && viewModel.accounts.filter({ $0.status == .verified }).count > 1 {
-                Divider()
-                Button { Task { await viewModel.chooseAnotherAccount(for: app) } } label: {
-                    HStack { Text("更换签名账号"); Spacer(); Image(systemName: "chevron.right") }.foregroundStyle(Color.sealAccent).padding(.vertical, 15)
-                }.buttonStyle(.plain)
-            }
         }
         .padding(.horizontal, 16)
         .glassSurface(cornerRadius: 24)
@@ -117,7 +113,20 @@ struct AppDetailView: View {
         .frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private func accountName(_ app: AppRecord) -> String { viewModel.accounts.first { $0.id == app.accountID }?.maskedEmail ?? "签名时选择" }
+    private func accountName(_ app: AppRecord) -> String {
+        viewModel.accounts.first { $0.id == app.accountID }?.maskedEmail ?? "签名时选择"
+    }
+
+    private func certificateName(_ app: AppRecord) -> String {
+        guard let serial = app.certificateSerialNumber else {
+            return app.state == .installed ? "未记录" : "签名时确定"
+        }
+        let value = serial.count > 10
+            ? "\(serial.prefix(5))…\(serial.suffix(5))"
+            : serial
+        return "Seal · \(value)"
+    }
+
     private func displayBundleIdentifier(_ app: AppRecord) -> String {
         if app.isSeal { return Bundle.main.bundleIdentifier ?? app.mappedBundleIdentifier ?? app.originalBundleIdentifier }
         if app.state == .installed { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }

@@ -28,6 +28,7 @@ actor SigningCoordinator {
         appID: UUID,
         accountID: UUID,
         requestedBundleIdentifier: String? = nil,
+        selectedCertificateSerialNumber: String? = nil,
         allowDroppingExtensions: Bool = false,
         allowCertificateReplacement: Bool = false,
         progress: @Sendable (SigningStage) async -> Void
@@ -57,6 +58,12 @@ actor SigningCoordinator {
             account: account,
             secret: secret
         )
+        let effectiveCertificateSerialNumber = try SigningCertificateSelectionPolicy
+            .resolvedSerialNumber(
+                for: app,
+                account: account,
+                requestedSerialNumber: selectedCertificateSerialNumber
+            )
         let targetBundleIdentifier = try BundleIDPolicy.targetBundleIdentifier(
             for: app,
             requestedBundleIdentifier: requestedBundleIdentifier
@@ -88,6 +95,7 @@ actor SigningCoordinator {
                 originalIPAURL: originalURL,
                 workspaceRoot: workspaceRoot,
                 targetBundleIdentifier: targetBundleIdentifier,
+                selectedCertificateSerialNumber: effectiveCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
                 allowCertificateReplacement: allowCertificateReplacement,
                 progress: { stage in
@@ -98,6 +106,7 @@ actor SigningCoordinator {
 
             try await keychain.save(portalResult.updatedSecret, for: accountID)
             account.certificateSerialNumber = portalResult.certificateSerialNumber
+            account.selectedCertificateSerialNumber = portalResult.certificateSerialNumber
             account.status = .verified
             account.lastVerifiedAt = Date()
             try await accountRepository.save(account)
@@ -130,6 +139,7 @@ actor SigningCoordinator {
             app.mappedBundleIdentifier = portalResult.mappedMainBundleID
             app.preferredBundleIdentifier = targetBundleIdentifier
             app.accountID = accountID
+            app.certificateSerialNumber = portalResult.certificateSerialNumber
             app.signedIPARelativePath = signedPath
             app.expiryDate = portalResult.expirationDate
             app.extensions.removeAll {
@@ -155,9 +165,12 @@ actor SigningCoordinator {
                 account.status = .needsVerification
                 try? await accountRepository.save(account)
             }
-            if failure.code.hasPrefix("SEAL-CERT-") {
+            if ["SEAL-CERT-202", "SEAL-CERT-207"].contains(failure.code) {
                 try? await keychain.clearSigningMaterial(accountID: accountID)
                 account.certificateSerialNumber = nil
+                if account.selectedCertificateSerialNumber == effectiveCertificateSerialNumber {
+                    account.selectedCertificateSerialNumber = nil
+                }
                 try? await accountRepository.save(account)
             }
             app.state = originalState == .installed ? .installed : .failedRecoverable
@@ -198,13 +211,28 @@ actor SigningCoordinator {
         secret: AccountSecret
     ) async throws -> AppleAccountRecord {
         var updated = account
+        var changed = false
+
         if updated.certificateSerialNumber != secret.certificateSerialNumber {
             updated.certificateSerialNumber = secret.certificateSerialNumber
-            try await accountRepository.save(updated)
+            changed = true
         }
+
         if secret.certificateP12 == nil, secret.certificateSerialNumber != nil {
             try await keychain.clearSigningMaterial(accountID: account.id)
+            if updated.selectedCertificateSerialNumber == secret.certificateSerialNumber {
+                updated.selectedCertificateSerialNumber = nil
+            }
             updated.certificateSerialNumber = nil
+            changed = true
+        } else if updated.selectedCertificateSerialNumber == nil,
+                  let serial = secret.certificateSerialNumber,
+                  secret.certificateP12 != nil {
+            updated.selectedCertificateSerialNumber = serial
+            changed = true
+        }
+
+        if changed {
             try await accountRepository.save(updated)
         }
         return updated
