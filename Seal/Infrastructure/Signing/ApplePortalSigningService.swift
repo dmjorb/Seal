@@ -21,42 +21,6 @@ enum ApplePortalAppIDResolver {
     }
 }
 
-enum CertificateReplacementPolicy {
-    static func requiresConfirmation(machineNames: [String]) -> Bool {
-        machineNames.contains { isExternalSigningTool($0) || isUnknownDevelopmentCertificate($0) }
-    }
-
-    static func preferredReplacement(from certificates: [ALTCertificate]) -> ALTCertificate? {
-        certificates.first { ($0.machineName ?? "").hasPrefix("Seal") }
-            ?? certificates.first { isExternalSigningTool($0.machineName ?? "") }
-            ?? certificates.first { isUnknownDevelopmentCertificate($0.machineName ?? "") }
-            ?? certificates.first
-    }
-
-    private static func isExternalSigningTool(_ machineName: String) -> Bool {
-        let value = machineName.lowercased()
-        return value.contains("sidestore")
-            || value.contains("altstore")
-            || value.contains("altserver")
-            || value.contains("sideload")
-            || value.contains("signer")
-            || value.contains("esign")
-            || value.contains("scarlet")
-            || value.contains("sideloadly")
-            || value.contains("爱思")
-    }
-
-    private static func isUnknownDevelopmentCertificate(_ machineName: String) -> Bool {
-        let trimmed = machineName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.isEmpty == false else { return true }
-        return trimmed.localizedCaseInsensitiveContains("iPhone")
-            || trimmed.localizedCaseInsensitiveContains("iPad")
-            || trimmed.localizedCaseInsensitiveContains("Mac")
-            || trimmed.localizedCaseInsensitiveContains("Development")
-            || trimmed.localizedCaseInsensitiveContains("Developer")
-    }
-}
-
 enum ApplePortalSigningFailure {
     static func make(stage: ApplePortalSigningStage, error: Error) -> ImportFailure {
         let nsError = error as NSError
@@ -122,9 +86,9 @@ enum ApplePortalSigningFailure {
             || normalized.contains("invalidcertificaterequest") {
             return ImportFailure(
                 title: "证书名额已满",
-                reason: "Apple 开发证书无法创建，通常是此 Apple ID 已被其他签名工具占用证书，或证书额度已满。\(diagnostic)",
-                recovery: "到证书页面重置/接管旧证书后重试",
-                code: "SEAL-CERT-203"
+                reason: "Apple 拒绝创建新的开发证书。Seal 没有撤销任何证书，也没有自动选择替换对象。原始返回：\(diagnostic)",
+                recovery: "前往签名证书页面，选择完整 Serial 并明确确认撤销",
+                code: "SEAL-CERT-204"
             )
         }
 
@@ -155,7 +119,7 @@ enum ApplePortalSigningFailure {
         return ImportFailure(
             title: "无法准备证书",
             reason: "Apple 开发证书准备失败。\(diagnostic)",
-            recovery: "先重置证书；如果仍失败，重新验证 Apple ID",
+            recovery: "重新同步证书；不要反复创建或自动撤销证书",
             code: "SEAL-CERT-203"
         )
     }
@@ -184,21 +148,28 @@ actor ApplePortalSigningService {
         targetBundleIdentifier: String? = nil,
         selectedCertificateSerialNumber: String? = nil,
         allowDroppingExtensions: Bool,
-        allowCertificateReplacement: Bool = false,
+        persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
         progress: @Sendable (SigningStage) async -> Void
     ) async throws -> PortalSigningResult {
+        let secretState = SigningSecretState(secret)
+        let persistence: @Sendable (AccountSecret, String) async throws -> Void = {
+            updatedSecret, serialNumber in
+            try await persistSigningMaterial(updatedSecret, serialNumber)
+            await secretState.update(updatedSecret)
+        }
+
         do {
             return try await signOnce(
                 app: app,
                 account: account,
-                secret: secret,
+                secret: await secretState.value(),
                 deviceIdentifier: deviceIdentifier,
                 originalIPAURL: originalIPAURL,
                 workspaceRoot: workspaceRoot,
                 targetBundleIdentifier: targetBundleIdentifier,
                 selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
-                allowCertificateReplacement: allowCertificateReplacement,
+                persistSigningMaterial: persistence,
                 progress: progress
             )
         } catch ALTAppleAPIError.invalidAnisetteData {
@@ -207,14 +178,14 @@ actor ApplePortalSigningService {
                 return try await signOnce(
                     app: app,
                     account: account,
-                    secret: secret,
+                    secret: await secretState.value(),
                     deviceIdentifier: deviceIdentifier,
                     originalIPAURL: originalIPAURL,
                     workspaceRoot: workspaceRoot,
                     targetBundleIdentifier: targetBundleIdentifier,
                     selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                     allowDroppingExtensions: allowDroppingExtensions,
-                    allowCertificateReplacement: allowCertificateReplacement,
+                    persistSigningMaterial: persistence,
                     progress: progress
                 )
             } catch let failure as ImportFailure {
@@ -241,7 +212,7 @@ actor ApplePortalSigningService {
         targetBundleIdentifier: String?,
         selectedCertificateSerialNumber: String?,
         allowDroppingExtensions: Bool,
-        allowCertificateReplacement: Bool,
+        persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
         progress: @Sendable (SigningStage) async -> Void
     ) async throws -> PortalSigningResult {
         var stage: ApplePortalSigningStage = .account
@@ -286,7 +257,7 @@ actor ApplePortalSigningService {
                 session: session,
                 deviceName: deviceName,
                 selectedCertificateSerialNumber: selectedCertificateSerialNumber,
-                allowCertificateReplacement: allowCertificateReplacement
+                persistSigningMaterial: persistSigningMaterial
             )
             try Task.checkCancellation()
 
@@ -333,6 +304,23 @@ actor ApplePortalSigningService {
                 profiles: profilePreparation.profiles
             )
             try Task.checkCancellation()
+
+            let profileBindings = try validateEmbeddedProfiles(
+                in: prepared,
+                teamID: team.identifier,
+                certificateSerialNumber: identity.certificate.serialNumber,
+                deviceIdentifier: deviceIdentifier,
+                requestedEntitlements: profilePreparation.requestedEntitlements
+            )
+            guard let mainBinding = profileBindings[prepared.mappedMainBundleID] else {
+                throw Self.failure(
+                    title: "描述文件校验失败",
+                    reason: "签名完成后未找到主应用的 embedded.mobileprovision：\(prepared.mappedMainBundleID)。",
+                    recovery: "重新获取描述文件",
+                    code: "SEAL-PROFILE-317"
+                )
+            }
+
             stage = .packaging
             let signedIPAURL = prepared.rootURL.appending(path: "Signed.ipa")
             try signingWorkspace.package(prepared, outputURL: signedIPAURL)
@@ -340,10 +328,14 @@ actor ApplePortalSigningService {
             return PortalSigningResult(
                 mappedMainBundleID: prepared.mappedMainBundleID,
                 mappedBundleIdentifiers: prepared.bundleIDMappings,
-                expirationDate: mainProfile.expirationDate,
+                expirationDate: mainBinding.expirationDate,
                 signedIPAURL: signedIPAURL,
                 updatedSecret: identity.secret,
                 certificateSerialNumber: identity.certificate.serialNumber,
+                certificateMachineIdentifier: identity.certificate.machineIdentifier,
+                deviceIdentifier: deviceIdentifier,
+                teamID: team.identifier,
+                profileBindings: profileBindings,
                 droppedExtensionBundleIdentifiers:
                     profilePreparation.droppedExtensionBundleIdentifiers
             )
@@ -433,59 +425,41 @@ actor ApplePortalSigningService {
         session: ALTAppleAPISession,
         deviceName: String,
         selectedCertificateSerialNumber: String?,
-        allowCertificateReplacement: Bool
+        persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void
     ) async throws -> SigningIdentity {
         let certificates = try await fetchCertificates(team: team, session: session)
         try Task.checkCancellation()
 
         if let selectedCertificateSerialNumber {
-            guard secret.certificateSerialNumber == selectedCertificateSerialNumber,
-                  let data = secret.certificateP12 else {
-                guard allowCertificateReplacement else {
-                    throw Self.failure(
-                        title: "所选证书不可用",
-                        reason: "设置中选择的证书没有对应的本地私钥。Seal 未自动改用其他证书。",
-                        recovery: "返回设置重新选择证书",
-                        code: "SEAL-CERT-206"
-                    )
-                }
-                return try await createSigningIdentity(
-                    secret: secret,
-                    certificates: certificates,
-                    team: team,
-                    session: session,
-                    deviceName: deviceName,
-                    allowCertificateReplacement: true
+            guard secret.certificateSerialNumber?.caseInsensitiveCompare(
+                selectedCertificateSerialNumber
+            ) == .orderedSame,
+            let data = secret.certificateP12 else {
+                throw Self.failure(
+                    title: "所选证书不可用",
+                    reason: "所选证书 Serial：\(selectedCertificateSerialNumber) 没有对应的本地 P12 和私钥。Seal 没有自动改用或创建其他证书。",
+                    recovery: "在签名证书页面创建本机证书，或明确执行证书迁移",
+                    code: "SEAL-CERT-206"
                 )
             }
 
             guard let remote = certificates.first(where: {
-                $0.serialNumber == selectedCertificateSerialNumber
+                $0.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame
             }) else {
-                guard allowCertificateReplacement else {
-                    throw Self.failure(
-                        title: "所选证书已失效",
-                        reason: "Apple 账号中已找不到当前选择的证书。Seal 未自动申请或切换其他证书。",
-                        recovery: "返回设置重新选择证书",
-                        code: "SEAL-CERT-207"
-                    )
-                }
-                return try await createSigningIdentity(
-                    secret: secret,
-                    certificates: certificates,
-                    team: team,
-                    session: session,
-                    deviceName: deviceName,
-                    allowCertificateReplacement: true
+                throw Self.failure(
+                    title: "所选证书已失效",
+                    reason: "Apple 当前证书列表中没有 Serial：\(selectedCertificateSerialNumber)。Seal 没有自动申请或切换其他证书。",
+                    recovery: "在签名证书页面明确创建或迁移证书",
+                    code: "SEAL-CERT-207"
                 )
             }
 
             guard let local = try? ALTCertificate(p12Data: data, password: nil),
-                  local.serialNumber == selectedCertificateSerialNumber else {
+                  local.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame else {
                 throw Self.failure(
                     title: "证书私钥损坏",
-                    reason: "Seal 无法读取所选证书的本地 P12，或 P12 与所选证书不匹配。",
-                    recovery: "清除本地证书后重新申请",
+                    reason: "本地 P12 无法读取，或 P12 Serial 与所选证书不一致：\(selectedCertificateSerialNumber)。",
+                    recovery: "在签名证书页面明确执行证书迁移",
                     code: "SEAL-CERT-202"
                 )
             }
@@ -493,10 +467,27 @@ actor ApplePortalSigningService {
             return SigningIdentity(certificate: local, secret: secret)
         }
 
-        if let data = secret.certificateP12,
-           let serial = secret.certificateSerialNumber,
-           let remote = certificates.first(where: { $0.serialNumber == serial }),
-           let local = try? ALTCertificate(p12Data: data, password: nil) {
+        if let serial = secret.certificateSerialNumber,
+           let data = secret.certificateP12 {
+            guard let remote = certificates.first(where: {
+                $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
+            }) else {
+                throw Self.failure(
+                    title: "本机证书已失效",
+                    reason: "Apple 当前证书列表中没有本机保存的 Serial：\(serial)。Seal 没有静默创建新证书。",
+                    recovery: "在签名证书页面明确创建本机证书",
+                    code: "SEAL-CERT-207"
+                )
+            }
+            guard let local = try? ALTCertificate(p12Data: data, password: nil),
+                  local.serialNumber.caseInsensitiveCompare(serial) == .orderedSame else {
+                throw Self.failure(
+                    title: "证书私钥损坏",
+                    reason: "Seal 无法读取本机保存的 P12，或 P12 Serial 与记录不一致：\(serial)。",
+                    recovery: "在签名证书页面明确执行证书迁移",
+                    code: "SEAL-CERT-202"
+                )
+            }
             local.machineIdentifier = remote.machineIdentifier
             return SigningIdentity(certificate: local, secret: secret)
         }
@@ -507,7 +498,7 @@ actor ApplePortalSigningService {
             team: team,
             session: session,
             deviceName: deviceName,
-            allowCertificateReplacement: allowCertificateReplacement
+            persistSigningMaterial: persistSigningMaterial
         )
     }
 
@@ -517,9 +508,9 @@ actor ApplePortalSigningService {
         team: ALTTeam,
         session: ALTAppleAPISession,
         deviceName: String,
-        allowCertificateReplacement: Bool
+        persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void
     ) async throws -> SigningIdentity {
-        var requested: ALTCertificate
+        let requested: ALTCertificate
         do {
             requested = try await addCertificate(
                 team: team,
@@ -528,84 +519,108 @@ actor ApplePortalSigningService {
             )
             try Task.checkCancellation()
         } catch {
-            guard Self.isCertificateLimitError(error) else {
-                throw error
-            }
-            requested = try await recoverFromCertificateLimit(
-                certificates: certificates,
-                team: team,
-                session: session,
-                deviceName: deviceName,
-                allowCertificateReplacement: allowCertificateReplacement,
-                originalError: error
-            )
-        }
-
-        let refreshed = try await fetchCertificates(team: team, session: session)
-        try Task.checkCancellation()
-        guard let certificate = refreshed.first(where: {
-            $0.serialNumber == requested.serialNumber
-        }) else {
-            throw URLError(.badServerResponse)
-        }
-        certificate.privateKey = requested.privateKey
-        guard let p12 = certificate.p12Data() else {
-            throw Self.failure(
-                title: "无法准备证书",
-                reason: "新证书的私钥不可用。",
-                recovery: "重试",
-                code: "SEAL-CERT-202"
-            )
-        }
-        var updatedSecret = secret
-        updatedSecret.certificateP12 = p12
-        updatedSecret.certificateSerialNumber = certificate.serialNumber
-        updatedSecret.certificateMachineIdentifier = certificate.machineIdentifier
-        return SigningIdentity(certificate: certificate, secret: updatedSecret)
-    }
-
-    private func recoverFromCertificateLimit(
-        certificates: [ALTCertificate],
-        team: ALTTeam,
-        session: ALTAppleAPISession,
-        deviceName: String,
-        allowCertificateReplacement: Bool,
-        originalError: Error
-    ) async throws -> ALTCertificate {
-        guard allowCertificateReplacement else {
-            let names = certificates
-                .map { $0.machineName ?? "未知来源" }
-                .joined(separator: "、")
-            let suffix = names.isEmpty ? "" : " 当前证书：\(names)。"
+            guard Self.isCertificateLimitError(error) else { throw error }
+            let descriptions = certificates.map { certificate in
+                let name = certificate.machineName ?? "Apple Development"
+                return "\(name) [Serial: \(certificate.serialNumber)]"
+            }.joined(separator: "、")
+            let suffix = descriptions.isEmpty ? "" : " Apple 当前证书：\(descriptions)。"
             throw Self.failure(
                 title: "证书名额已满",
-                reason: "Apple 无法创建新的开发证书。Seal 不会在未确认时撤销现有证书。\(suffix)",
-                recovery: "确认更换证书后重试",
+                reason: "Apple 拒绝创建新的开发证书。Seal 没有撤销任何证书，也没有自动选择替换对象。\(suffix)",
+                recovery: "前往签名证书页面，选择完整 Serial 并确认撤销",
                 code: "SEAL-CERT-204"
             )
         }
 
-        guard let replacement = CertificateReplacementPolicy.preferredReplacement(
-            from: certificates
-        ) else {
-            let nsError = originalError as NSError
-            throw Self.failure(
-                title: "证书名额已满",
-                reason: "Apple 返回证书数量已满，但没有可撤销的证书。［\(nsError.domain) \(nsError.code)］\(nsError.localizedDescription)",
-                recovery: "稍后重试或使用其他 Apple ID",
-                code: "SEAL-CERT-203"
+        var wasPersisted = false
+        do {
+            let refreshed = try await fetchCertificates(team: team, session: session)
+            try Task.checkCancellation()
+            guard let certificate = refreshed.first(where: {
+                $0.serialNumber.caseInsensitiveCompare(requested.serialNumber) == .orderedSame
+            }) else {
+                throw Self.failure(
+                    title: "证书创建结果不一致",
+                    reason: "Apple 已返回新证书，但重新同步后找不到 Serial：\(requested.serialNumber)。",
+                    recovery: "重新同步证书",
+                    code: "SEAL-CERT-209"
+                )
+            }
+            certificate.privateKey = requested.privateKey
+            guard let p12 = certificate.p12Data() else {
+                throw Self.failure(
+                    title: "无法保存新证书",
+                    reason: "Apple 已创建证书，但本机无法将证书与私钥合成 P12。",
+                    recovery: "重新创建本机证书",
+                    code: "SEAL-CERT-202"
+                )
+            }
+
+            var updatedSecret = secret
+            updatedSecret.certificateP12 = p12
+            updatedSecret.certificateSerialNumber = certificate.serialNumber
+            updatedSecret.certificateMachineIdentifier = certificate.machineIdentifier
+
+            try await persistSigningMaterial(updatedSecret, certificate.serialNumber)
+            wasPersisted = true
+            return SigningIdentity(certificate: certificate, secret: updatedSecret)
+        } catch {
+            guard wasPersisted == false else { throw error }
+            let cleanedUp = await cleanUpNewCertificate(
+                serialNumber: requested.serialNumber,
+                certificate: requested,
+                team: team,
+                session: session,
+                secret: secret
             )
+            guard cleanedUp else {
+                throw Self.failure(
+                    title: "新证书回滚失败",
+                    reason: "Apple 已创建证书 Serial：\(requested.serialNumber)，但 P12 保存前发生失败，且 Seal 无法确认该证书已回滚。Seal 没有创建第二张证书，也没有撤销其他证书。",
+                    recovery: "前往签名证书页面同步并处理此完整 Serial",
+                    code: "SEAL-CERT-215"
+                )
+            }
+            if let failure = error as? ImportFailure { throw failure }
+            throw error
+        }
+    }
+
+    private func cleanUpNewCertificate(
+        serialNumber: String,
+        certificate: ALTCertificate,
+        team: ALTTeam,
+        session: ALTAppleAPISession,
+        secret: AccountSecret
+    ) async -> Bool {
+        if (try? await revokeCertificate(certificate, team: team, session: session)) != nil {
+            return true
         }
 
-        try await revokeCertificate(replacement, team: team, session: session)
-        try Task.checkCancellation()
-        let added = try await addCertificate(
-            team: team,
-            session: session,
-            deviceName: deviceName
+        await anisetteProvider.resetProvisioning()
+        guard let anisette = try? await anisetteProvider.fetch() else { return false }
+        let refreshedSession = ALTAppleAPISession(
+            dsid: secret.dsid,
+            authToken: secret.authToken,
+            anisetteData: anisette
         )
-        try Task.checkCancellation()
-        return added
+        guard let certificates = try? await fetchCertificates(
+            team: team,
+            session: refreshedSession
+        ) else {
+            return false
+        }
+        guard let exactCertificate = certificates.first(where: {
+            $0.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame
+        }) else {
+            return true
+        }
+        return (try? await revokeCertificate(
+            exactCertificate,
+            team: team,
+            session: refreshedSession
+        )) != nil
     }
 
     private static func isCertificateLimitError(_ error: Error) -> Bool {
@@ -716,6 +731,7 @@ actor ApplePortalSigningService {
         }
         var existing = existingBox.value
         var profiles: [ALTProvisioningProfile] = []
+        var requestedEntitlements: [String: [String: ProvisioningEntitlementValue]] = [:]
         var droppedExtensionBundleIdentifiers: [String] = []
 
         for (originalBundleID, mappedBundleID) in mappings.sorted(by: { $0.key < $1.key }) {
@@ -763,6 +779,19 @@ actor ApplePortalSigningService {
                 }
 
                 if let application = applications[mappedBundleID] {
+                    var entitlementValues: [String: ProvisioningEntitlementValue] = [:]
+                    for (entitlement, value) in application.entitlements {
+                        guard let converted = ProvisioningEntitlementValue.make(from: value) else {
+                            throw Self.failure(
+                                title: "应用权限无法解析",
+                                reason: "\(mappedBundleID) 的权限 \(entitlement.rawValue) 包含 Seal 无法安全校验的值类型。Seal 没有静默删除该权限。",
+                                recovery: "检查 IPA 权限或使用支持该能力的账号",
+                                code: "SEAL-ENTITLEMENT-403"
+                            )
+                        }
+                        entitlementValues[entitlement.rawValue] = converted
+                    }
+                    requestedEntitlements[mappedBundleID] = entitlementValues
                     appID = try await updateFeatures(
                         appID: appID,
                         application: application,
@@ -817,6 +846,7 @@ actor ApplePortalSigningService {
         }
         return ProfilePreparation(
             profiles: profiles,
+            requestedEntitlements: requestedEntitlements,
             droppedExtensionBundleIdentifiers: droppedExtensionBundleIdentifiers
         )
     }
@@ -964,6 +994,44 @@ actor ApplePortalSigningService {
         }
     }
 
+    private func validateEmbeddedProfiles(
+        in workspace: PreparedSigningWorkspace,
+        teamID: String,
+        certificateSerialNumber: String,
+        deviceIdentifier: String,
+        requestedEntitlements: [String: [String: ProvisioningEntitlementValue]]
+    ) throws -> [String: ProvisioningProfileBinding] {
+        let reader = ProvisioningProfileReader()
+        var bindings: [String: ProvisioningProfileBinding] = [:]
+
+        for target in try signingWorkspace.signedBundleTargets(in: workspace) {
+            let profileURL = target.bundleURL.appending(path: "embedded.mobileprovision")
+            guard FileManager.default.fileExists(atPath: profileURL.path) else {
+                throw Self.failure(
+                    title: "描述文件校验失败",
+                    reason: "\(target.bundleIdentifier) 没有 embedded.mobileprovision。主应用和每个扩展都必须独立包含正确的描述文件。",
+                    recovery: "重新获取描述文件",
+                    code: "SEAL-PROFILE-318"
+                )
+            }
+            let data = try Data(contentsOf: profileURL)
+            let binding = try reader.binding(from: data)
+                .validated(
+                    expectedTeamID: teamID,
+                    expectedBundleID: target.bundleIdentifier,
+                    expectedCertificateSerialNumber: certificateSerialNumber,
+                    expectedDeviceIdentifier: deviceIdentifier
+                )
+            try ProvisioningProfileBinding.validateEntitlements(
+                requested: requestedEntitlements[target.bundleIdentifier] ?? [:],
+                profile: binding.entitlements,
+                bundleIdentifier: target.bundleIdentifier
+            )
+            bindings[target.bundleIdentifier] = binding
+        }
+        return bindings
+    }
+
     private func signApp(
         at appURL: URL,
         team: ALTTeam,
@@ -1014,5 +1082,22 @@ private struct SigningIdentity {
 
 private struct ProfilePreparation {
     let profiles: [ALTProvisioningProfile]
+    let requestedEntitlements: [String: [String: ProvisioningEntitlementValue]]
     let droppedExtensionBundleIdentifiers: [String]
+}
+
+private actor SigningSecretState {
+    private var secret: AccountSecret
+
+    init(_ secret: AccountSecret) {
+        self.secret = secret
+    }
+
+    func update(_ secret: AccountSecret) {
+        self.secret = secret
+    }
+
+    func value() -> AccountSecret {
+        secret
+    }
 }

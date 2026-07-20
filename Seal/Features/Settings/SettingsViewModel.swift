@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+@preconcurrency import AltSign
 
 enum SettingsRoute: Hashable {
     case account
@@ -41,6 +42,7 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var certificateInventories: [UUID: ApplePortalInventory] = [:]
     @Published private(set) var certificateInventoryLoadingIDs: Set<UUID> = []
     @Published private(set) var certificateInventoryFailures: [UUID: ImportFailure] = [:]
+    @Published private(set) var isCertificateOperationRunning = false
     @Published private(set) var notificationsEnabled = false
     @Published private(set) var reminderHours = 24
     @Published private(set) var anisetteServers: [AnisetteServer] = []
@@ -63,6 +65,7 @@ final class SettingsViewModel: ObservableObject {
     private let logStore: SealLogStore?
     private let signingHistoryStore: SigningHistoryStore?
     private let applePortalInventoryService: ApplePortalInventoryService?
+    private let applePortalCertificateService: ApplePortalCertificateService?
     private let notificationScheduler: ExpiryNotificationScheduler?
     private let notificationPreferences: NotificationPreferences?
     private let anisetteEnvironment: (any AnisetteEnvironmentManaging)?
@@ -94,6 +97,7 @@ final class SettingsViewModel: ObservableObject {
         self.logStore = logStore
         self.signingHistoryStore = signingHistoryStore
         self.applePortalInventoryService = ApplePortalInventoryService()
+        self.applePortalCertificateService = ApplePortalCertificateService()
         self.notificationScheduler = notificationScheduler
         self.notificationPreferences = notificationPreferences
         self.anisetteEnvironment = anisetteEnvironment
@@ -113,6 +117,7 @@ final class SettingsViewModel: ObservableObject {
         logStore = nil
         signingHistoryStore = nil
         applePortalInventoryService = nil
+        applePortalCertificateService = nil
         notificationScheduler = nil
         notificationPreferences = nil
         anisetteEnvironment = nil
@@ -131,6 +136,7 @@ final class SettingsViewModel: ObservableObject {
         logStore = nil
         signingHistoryStore = nil
         applePortalInventoryService = nil
+        applePortalCertificateService = nil
         notificationScheduler = nil
         notificationPreferences = nil
         anisetteEnvironment = nil
@@ -261,7 +267,7 @@ final class SettingsViewModel: ObservableObject {
             await load(force: true)
             try? await logStore?.append(
                 category: .account,
-                message: "已选择签名证书：\(Self.abbreviatedIdentifier(serialNumber))"
+                message: "已选择签名证书，完整 Serial：\(serialNumber)"
             )
             logs = (try? await logStore?.entries()) ?? logs
             refreshLogExportText()
@@ -271,6 +277,265 @@ final class SettingsViewModel: ObservableObject {
                 reason: "证书选择未能保存。",
                 recovery: "重试",
                 code: "SEAL-CERT-102"
+            )
+        }
+    }
+
+    func createLocalCertificate(for account: AppleAccountRecord) async {
+        guard isCertificateOperationRunning == false,
+              let keychain,
+              let accountRepository,
+              let applePortalCertificateService else { return }
+
+        isCertificateOperationRunning = true
+        defer { isCertificateOperationRunning = false }
+
+        do {
+            guard let originalSecret = try await keychain.load(accountID: account.id) else {
+                throw Self.failure(
+                    title: "无法创建证书",
+                    reason: "本机没有当前 Apple ID 的登录凭据。",
+                    recovery: "重新验证 Apple ID",
+                    code: "SEAL-AUTH-105"
+                )
+            }
+
+            let material = try await applePortalCertificateService.createLocalCertificate(
+                account: account,
+                secret: originalSecret
+            )
+            try await persistCreatedCertificate(
+                material,
+                originalSecret: originalSecret,
+                originalAccount: account,
+                keychain: keychain,
+                accountRepository: accountRepository,
+                certificateService: applePortalCertificateService
+            )
+            await load(force: true)
+            await refreshCertificateInventory(for: account, force: true)
+            try? await logStore?.append(
+                category: .account,
+                message: "已创建并保存本机签名证书。完整 Serial：\(material.serialNumber)"
+            )
+            logs = (try? await logStore?.entries()) ?? logs
+            refreshLogExportText()
+        } catch let failure as ImportFailure {
+            alertFailure = failure
+        } catch {
+            let nsError = error as NSError
+            alertFailure = Self.failure(
+                title: "无法创建本机证书",
+                reason: "证书创建或本地保存失败。[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
+                recovery: "重新同步证书",
+                code: "SEAL-CERT-211"
+            )
+        }
+    }
+
+    func revokeCertificate(
+        serialNumber: String,
+        for account: AppleAccountRecord
+    ) async {
+        guard isCertificateOperationRunning == false,
+              let keychain,
+              let accountRepository,
+              let applePortalCertificateService else { return }
+
+        isCertificateOperationRunning = true
+        defer { isCertificateOperationRunning = false }
+
+        do {
+            guard let originalSecret = try await keychain.load(accountID: account.id) else {
+                throw Self.failure(
+                    title: "无法撤销证书",
+                    reason: "本机没有当前 Apple ID 的登录凭据。",
+                    recovery: "重新验证 Apple ID",
+                    code: "SEAL-AUTH-105"
+                )
+            }
+
+            try await applePortalCertificateService.revokeCertificate(
+                serialNumber: serialNumber,
+                account: account,
+                secret: originalSecret
+            )
+
+            if originalSecret.certificateSerialNumber?.caseInsensitiveCompare(serialNumber) == .orderedSame {
+                var clearedSecret = originalSecret
+                clearedSecret.certificateP12 = nil
+                clearedSecret.certificateSerialNumber = nil
+                clearedSecret.certificateMachineIdentifier = nil
+                var clearedAccount = account
+                clearedAccount.certificateSerialNumber = nil
+                clearedAccount.selectedCertificateSerialNumber = nil
+                try await keychain.save(clearedSecret, for: account.id)
+                try await accountRepository.save(clearedAccount)
+            }
+
+            try? await logStore?.append(
+                category: .account,
+                message: "用户已明确撤销证书。完整 Serial：\(serialNumber)"
+            )
+            await load(force: true)
+            if let refreshedAccount = accounts.first(where: { $0.id == account.id }) {
+                await refreshCertificateInventory(for: refreshedAccount, force: true)
+            }
+            logs = (try? await logStore?.entries()) ?? logs
+            refreshLogExportText()
+        } catch let failure as ImportFailure {
+            await load(force: true)
+            await refreshCertificateInventory(for: account, force: true)
+            alertFailure = failure
+        } catch {
+            await load(force: true)
+            await refreshCertificateInventory(for: account, force: true)
+            let nsError = error as NSError
+            alertFailure = Self.failure(
+                title: "无法撤销证书",
+                reason: "Apple 证书撤销失败。Seal 没有处理其他证书。[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
+                recovery: "重新同步证书后重试",
+                code: "SEAL-CERT-216"
+            )
+        }
+    }
+
+    func revokeCertificateAndCreateLocal(
+        serialNumber: String,
+        for account: AppleAccountRecord
+    ) async {
+        guard isCertificateOperationRunning == false,
+              let keychain,
+              let accountRepository,
+              let applePortalCertificateService else { return }
+
+        isCertificateOperationRunning = true
+        defer { isCertificateOperationRunning = false }
+
+        do {
+            guard let originalSecret = try await keychain.load(accountID: account.id) else {
+                throw Self.failure(
+                    title: "无法更换证书",
+                    reason: "本机没有当前 Apple ID 的登录凭据。",
+                    recovery: "重新验证 Apple ID",
+                    code: "SEAL-AUTH-105"
+                )
+            }
+
+            try await applePortalCertificateService.revokeCertificate(
+                serialNumber: serialNumber,
+                account: account,
+                secret: originalSecret
+            )
+
+            var clearedSecret = originalSecret
+            var clearedAccount = account
+            if originalSecret.certificateSerialNumber?.caseInsensitiveCompare(serialNumber) == .orderedSame {
+                clearedSecret.certificateP12 = nil
+                clearedSecret.certificateSerialNumber = nil
+                clearedSecret.certificateMachineIdentifier = nil
+                clearedAccount.certificateSerialNumber = nil
+                clearedAccount.selectedCertificateSerialNumber = nil
+                try await keychain.save(clearedSecret, for: account.id)
+                try await accountRepository.save(clearedAccount)
+            }
+
+            let material = try await applePortalCertificateService.createLocalCertificate(
+                account: clearedAccount,
+                secret: clearedSecret
+            )
+            try await persistCreatedCertificate(
+                material,
+                originalSecret: clearedSecret,
+                originalAccount: clearedAccount,
+                keychain: keychain,
+                accountRepository: accountRepository,
+                certificateService: applePortalCertificateService
+            )
+            await load(force: true)
+            if let refreshedAccount = accounts.first(where: { $0.id == account.id }) {
+                await refreshCertificateInventory(for: refreshedAccount, force: true)
+            }
+            try? await logStore?.append(
+                category: .account,
+                message: "用户已明确撤销证书 Serial：\(serialNumber)，并创建本机证书 Serial：\(material.serialNumber)"
+            )
+            logs = (try? await logStore?.entries()) ?? logs
+            refreshLogExportText()
+        } catch let failure as ImportFailure {
+            await load(force: true)
+            await refreshCertificateInventory(for: account, force: true)
+            alertFailure = failure
+        } catch {
+            await load(force: true)
+            await refreshCertificateInventory(for: account, force: true)
+            let nsError = error as NSError
+            alertFailure = Self.failure(
+                title: "无法完成证书迁移",
+                reason: "已按完整 Serial 执行明确操作，但 Apple 或本地保存阶段失败。[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
+                recovery: "重新同步证书后确认当前状态",
+                code: "SEAL-CERT-212"
+            )
+        }
+    }
+
+    private func persistCreatedCertificate(
+        _ material: CreatedCertificateMaterial,
+        originalSecret: AccountSecret,
+        originalAccount: AppleAccountRecord,
+        keychain: KeychainVault,
+        accountRepository: any AccountRepository,
+        certificateService: ApplePortalCertificateService
+    ) async throws {
+        do {
+            try await keychain.save(material.updatedSecret, for: originalAccount.id)
+            guard let reloaded = try await keychain.load(accountID: originalAccount.id),
+                  reloaded.certificateSerialNumber?.caseInsensitiveCompare(material.serialNumber) == .orderedSame,
+                  let p12 = reloaded.certificateP12,
+                  let parsed = try? ALTCertificate(p12Data: p12, password: nil),
+                  parsed.serialNumber.caseInsensitiveCompare(material.serialNumber) == .orderedSame else {
+                throw Self.failure(
+                    title: "本机证书校验失败",
+                    reason: "证书已由 Apple 创建，但从 Keychain 重新读取后，P12 或完整 Serial 校验不一致。",
+                    recovery: "重新同步证书",
+                    code: "SEAL-CERT-208"
+                )
+            }
+
+            var updatedAccount = originalAccount
+            updatedAccount.certificateSerialNumber = material.serialNumber
+            updatedAccount.selectedCertificateSerialNumber = material.serialNumber
+            updatedAccount.status = .verified
+            updatedAccount.lastVerifiedAt = Date()
+            try await accountRepository.save(updatedAccount)
+        } catch {
+            let rollbackSucceeded: Bool
+            do {
+                try await certificateService.revokeCertificate(
+                    serialNumber: material.serialNumber,
+                    account: originalAccount,
+                    secret: material.updatedSecret
+                )
+                rollbackSucceeded = true
+            } catch {
+                rollbackSucceeded = false
+            }
+            try? await keychain.save(originalSecret, for: originalAccount.id)
+            try? await accountRepository.save(originalAccount)
+            guard rollbackSucceeded else {
+                throw Self.failure(
+                    title: "新证书回滚失败",
+                    reason: "P12 本地事务保存失败，且 Seal 无法确认 Apple 新证书 Serial：\(material.serialNumber) 已撤销。Seal 没有创建第二张证书，也没有处理其他证书。",
+                    recovery: "重新同步证书并处理此完整 Serial",
+                    code: "SEAL-CERT-215"
+                )
+            }
+            if let failure = error as? ImportFailure { throw failure }
+            throw Self.failure(
+                title: "本机证书保存失败",
+                reason: "Seal 未能完成 P12 的事务保存，已只撤销本次新建证书并恢复原本地数据。",
+                recovery: "重新同步证书",
+                code: "SEAL-CERT-208"
             )
         }
     }
@@ -697,11 +962,37 @@ final class SettingsViewModel: ObservableObject {
         }
         do {
             pairingRecord = try await pairingStore.importFile(at: url)
-            diagnosticState = .idle
+            diagnosticState = .running
             installDiagnostics = .empty
+
+            if let installChannel {
+                let diagnostics = await installChannel.diagnose()
+                installDiagnostics = diagnostics
+                if let deviceIdentifier = diagnostics.deviceIdentifier {
+                    pairingRecord = try await pairingStore.markValidated(
+                        deviceIdentifier: deviceIdentifier
+                    )
+                } else {
+                    pairingRecord = try await pairingStore.markConnectionFailed()
+                }
+
+                if diagnostics.isReady, let deviceIdentifier = diagnostics.deviceIdentifier {
+                    diagnosticState = .ready(deviceIdentifier: deviceIdentifier)
+                } else if let failure = diagnostics.failure {
+                    diagnosticState = .failed(failure)
+                    alertFailure = failure
+                } else {
+                    diagnosticState = .idle
+                }
+            } else {
+                diagnosticState = .idle
+            }
+
             try? await logStore?.append(
                 category: .pairing,
-                message: "配对文件已导入"
+                message: pairingRecord?.isVerifiedForCurrentDevice == true
+                    ? "配对文件已导入并通过当前设备验证。完整 UDID：\(pairingRecord?.effectiveDeviceIdentifier ?? "")"
+                    : "配对文件已导入，等待真实设备连接验证"
             )
             logs = (try? await logStore?.entries()) ?? logs
             refreshLogExportText()
@@ -865,6 +1156,32 @@ final class SettingsViewModel: ObservableObject {
         let diagnostics = await installChannel.diagnose()
         installDiagnostics = diagnostics
         if diagnostics.isReady, let deviceIdentifier = diagnostics.deviceIdentifier {
+            if let pairingStore {
+                do {
+                    pairingRecord = try await pairingStore.markValidated(
+                        deviceIdentifier: deviceIdentifier
+                    )
+                } catch let failure as ImportFailure {
+                    await finishInstallChannelCheckWithFailure(
+                        failure,
+                        diagnostics: diagnostics,
+                        logMessage: "配对文件设备校验失败"
+                    )
+                    return
+                } catch {
+                    await finishInstallChannelCheckWithFailure(
+                        Self.failure(
+                            title: "配对验证失败",
+                            reason: "无法保存当前设备的配对验证结果。",
+                            recovery: "重新导入配对文件",
+                            code: "SEAL-PAIR-207"
+                        ),
+                        diagnostics: diagnostics,
+                        logMessage: "配对文件设备校验失败"
+                    )
+                    return
+                }
+            }
             diagnosticState = .ready(deviceIdentifier: deviceIdentifier)
             await load(force: true)
             installDiagnostics = diagnostics
@@ -888,6 +1205,15 @@ final class SettingsViewModel: ObservableObject {
         diagnostics: InstallChannelDiagnostics? = nil,
         logMessage: String
     ) async {
+        if let pairingStore {
+            if let deviceIdentifier = diagnostics?.deviceIdentifier {
+                pairingRecord = try? await pairingStore.markValidated(
+                    deviceIdentifier: deviceIdentifier
+                )
+            } else {
+                pairingRecord = try? await pairingStore.markConnectionFailed()
+            }
+        }
         await load(force: true)
         if let diagnostics { installDiagnostics = diagnostics }
         diagnosticState = .failed(failure)
@@ -1155,11 +1481,6 @@ final class SettingsViewModel: ObservableObject {
         code: "SEAL-INSTALL-706"
     )
 
-    private static func abbreviatedIdentifier(_ value: String) -> String {
-        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalized.count > 10 else { return normalized }
-        return "\(normalized.prefix(5))…\(normalized.suffix(5))"
-    }
 
     private static func failure(
         title: String,

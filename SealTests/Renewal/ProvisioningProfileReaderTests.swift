@@ -46,9 +46,9 @@ struct ProvisioningProfileReaderTests {
     }
 
     @Test
-    func returnsNilWhenProfileContainsNoPlist() throws {
-        #expect(
-            try ProvisioningProfileReader().expirationDate(from: Data([0x01, 0x02])) == nil
-        )
+    func rejectsProfileWithoutEmbeddedPlist() {
+        #expect(throws: ImportFailure.self) {
+            _ = try ProvisioningProfileReader().expirationDate(from: Data([0x01, 0x02]))
+        }
     }
 }

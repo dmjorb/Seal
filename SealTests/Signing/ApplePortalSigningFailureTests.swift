@@ -30,17 +30,19 @@ struct ApplePortalSigningFailureTests {
     }
 
     @Test
-    func requiresExplicitConfirmationBeforeReplacingASideStoreCertificate() {
-        #expect(
-            CertificateReplacementPolicy.requiresConfirmation(
-                machineNames: ["SideStore - Alex's iPhone"]
+    func certificateLimitFailureDoesNotAuthorizeAutomaticRevocation() {
+        let failure = ApplePortalSigningFailure.make(
+            stage: .certificate,
+            error: NSError(
+                domain: "ApplePortal",
+                code: 3022,
+                userInfo: [NSLocalizedDescriptionKey: "Maximum number of certificates reached"]
             )
         )
-        #expect(
-            CertificateReplacementPolicy.requiresConfirmation(
-                machineNames: ["Seal Alex's iPhone"]
-            ) == false
-        )
+
+        #expect(failure.code == "SEAL-CERT-204")
+        #expect(failure.reason.contains("没有撤销任何证书"))
+        #expect(failure.recovery.contains("完整 Serial"))
     }
 
     @Test

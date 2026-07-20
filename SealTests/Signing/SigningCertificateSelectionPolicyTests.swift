@@ -70,6 +70,39 @@ struct SigningCertificateSelectionPolicyTests {
         )
     }
 
+
+    @Test
+    func renewalRejectsDifferentAccountRecord() {
+        let account = makeAccount(localSerial: "OLD", selectedSerial: "OLD")
+        var app = makeApp(state: .installed)
+        app.accountID = UUID()
+        app.signingTeamID = account.teamID
+        app.certificateSerialNumber = "OLD"
+
+        #expect(throws: ImportFailure.self) {
+            try SigningCertificateSelectionPolicy.validateAccountAndTeam(
+                for: app,
+                account: account
+            )
+        }
+    }
+
+    @Test
+    func renewalRejectsDifferentTeam() {
+        let account = makeAccount(localSerial: "OLD", selectedSerial: "OLD")
+        var app = makeApp(state: .installed)
+        app.accountID = account.id
+        app.signingTeamID = "ORIGINALTEAM"
+        app.certificateSerialNumber = "OLD"
+
+        #expect(throws: ImportFailure.self) {
+            try SigningCertificateSelectionPolicy.validateAccountAndTeam(
+                for: app,
+                account: account
+            )
+        }
+    }
+
     private func makeAccount(
         localSerial: String?,
         selectedSerial: String?

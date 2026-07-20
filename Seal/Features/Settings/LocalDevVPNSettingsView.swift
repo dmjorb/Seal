@@ -49,7 +49,7 @@ struct LocalDevVPNSettingsView: View {
                 }
             }
             Divider()
-            detailRow("设备标识", deviceIdentifier, Color.sealTextSecondary)
+            FullIdentifierRow(title: "设备 UDID", value: deviceIdentifier)
             if let failureCode {
                 Divider()
                 detailRow("错误代码", failureCode, Color.sealDanger)
@@ -114,8 +114,8 @@ struct LocalDevVPNSettingsView: View {
             Spacer(minLength: 12)
             Text(step.valueText)
                 .foregroundStyle(color)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
         .frame(minHeight: 54)
     }
@@ -135,8 +135,8 @@ struct LocalDevVPNSettingsView: View {
             Spacer(minLength: 12)
             Text(value)
                 .foregroundStyle(color)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
         .frame(minHeight: 54)
     }

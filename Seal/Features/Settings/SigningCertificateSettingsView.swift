@@ -5,6 +5,8 @@ struct SigningCertificateSettingsView: View {
     let relatedApps: [AppRecord]
 
     @State private var certificatePendingReset: AppleAccountRecord?
+    @State private var certificatePendingReplacement: ApplePortalCertificateSnapshot?
+    @State private var certificatePendingRevocation: ApplePortalCertificateSnapshot?
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -19,6 +21,11 @@ struct SigningCertificateSettingsView: View {
                 certificateContent
 
                 if let account = activeAccount,
+                   hasLocalCertificate == false {
+                    createCertificateCard(account)
+                }
+
+                if let account = activeAccount,
                    account.certificateSerialNumber != nil {
                     resetCard(account)
                 }
@@ -28,6 +35,59 @@ struct SigningCertificateSettingsView: View {
         .navigationTitle("签名证书")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
+            "撤销证书并创建本机证书？",
+            isPresented: Binding(
+                get: { certificatePendingReplacement != nil },
+                set: { if !$0 { certificatePendingReplacement = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: certificatePendingReplacement
+        ) { certificate in
+            Button("撤销所选证书并创建本机证书", role: .destructive) {
+                guard let account = activeAccount else { return }
+                let serial = certificate.serialNumber
+                certificatePendingReplacement = nil
+                Task {
+                    await viewModel.revokeCertificateAndCreateLocal(
+                        serialNumber: serial,
+                        for: account
+                    )
+                }
+            }
+            Button("取消", role: .cancel) {
+                certificatePendingReplacement = nil
+            }
+        } message: { certificate in
+            let affectedCount = activeAccount.map(boundAppCount) ?? 0
+            Text("只会撤销你明确选择的证书。\n\n名称：\(certificate.displayName)\n完整 Serial：\(certificate.serialNumber)\n\n随后将创建并立即保存新的本机证书。使用旧证书的描述文件可能失效，当前账号关联应用数：\(affectedCount)。Seal 不会自动撤销其他证书。")
+        }
+        .confirmationDialog(
+            "撤销所选证书？",
+            isPresented: Binding(
+                get: { certificatePendingRevocation != nil },
+                set: { if !$0 { certificatePendingRevocation = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: certificatePendingRevocation
+        ) { certificate in
+            Button("只撤销所选证书", role: .destructive) {
+                guard let account = activeAccount else { return }
+                let serial = certificate.serialNumber
+                certificatePendingRevocation = nil
+                Task {
+                    await viewModel.revokeCertificate(
+                        serialNumber: serial,
+                        for: account
+                    )
+                }
+            }
+            Button("取消", role: .cancel) {
+                certificatePendingRevocation = nil
+            }
+        } message: { certificate in
+            Text("只会撤销你明确选择的证书。\n\n名称：\(certificate.displayName)\n完整 Serial：\(certificate.serialNumber)\n\n使用该证书的描述文件可能失效。Seal 不会创建新证书，也不会处理其他证书。")
+        }
+        .confirmationDialog(
             "清除本地证书？",
             isPresented: Binding(
                 get: { certificatePendingReset != nil },
@@ -36,18 +96,14 @@ struct SigningCertificateSettingsView: View {
             titleVisibility: .visible,
             presenting: certificatePendingReset
         ) { account in
-            Button("清除本地证书", role: .destructive) {
+            Button("只清除 Seal 本地 P12", role: .destructive) {
                 Task { await viewModel.resetCertificate(for: account) }
                 certificatePendingReset = nil
             }
             Button("取消", role: .cancel) { certificatePendingReset = nil }
         } message: { account in
             let count = boundAppCount(for: account)
-            Text(
-                count == 0
-                    ? "这会删除 Seal 本地保存的 P12 和私钥。Apple 账号中的证书记录不会被自动撤销；下次首次签名时会重新申请 Seal 证书。"
-                    : "这会删除 Seal 本地保存的 P12 和私钥。该证书已用于 \(count) 个应用；这些应用续签时必须明确选择“更换证书并重试”。Apple 账号中的证书记录不会被自动撤销。"
-            )
+            Text("这只会删除 Seal 本地保存的 P12 和私钥，不会撤销 Apple 端证书。关联应用数：\(count)。之后续签必须明确完成证书迁移。")
         }
         .task {
             await viewModel.load(force: true)
@@ -75,21 +131,30 @@ struct SigningCertificateSettingsView: View {
         viewModel.activeAccount
     }
 
-    private var activeAccountEmail: String {
-        guard let activeAccount else { return "请先选择" }
-        return viewModel.fullEmail(for: activeAccount)
-    }
-
     private var inventory: ApplePortalInventory? {
         guard let account = activeAccount else { return nil }
         return viewModel.certificateInventory(for: account.id)
     }
 
+    private var hasLocalCertificate: Bool {
+        inventory?.certificates.contains(where: { $0.hasLocalPrivateKey }) == true
+    }
+
     private var accountCard: some View {
         VStack(spacing: 0) {
-            detailRow("Apple ID", activeAccountEmail)
-            Divider()
-            detailRow("Team ID", activeAccount?.teamID ?? "—")
+            if let account = activeAccount {
+                FullIdentifierRow(
+                    title: "Apple ID",
+                    value: viewModel.fullEmail(for: account)
+                )
+                Divider()
+                FullIdentifierRow(title: "Team ID", value: account.teamID)
+            } else {
+                Text("请先选择已验证的 Apple ID")
+                    .foregroundStyle(Color.sealTextSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 16)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -123,7 +188,7 @@ struct SigningCertificateSettingsView: View {
             ForEach(Array(certificates.enumerated()), id: \.element.id) { index, certificate in
                 certificateRow(certificate, account: account)
                 if index < certificates.count - 1 {
-                    Divider().padding(.leading, 52)
+                    Divider().padding(.leading, 16)
                 }
             }
         }
@@ -135,65 +200,101 @@ struct SigningCertificateSettingsView: View {
         _ certificate: ApplePortalCertificateSnapshot,
         account: AppleAccountRecord
     ) -> some View {
-        let selected = account.selectedCertificateSerialNumber == certificate.serialNumber
-        return Button {
-            guard certificate.hasLocalPrivateKey else { return }
-            Task {
-                await viewModel.selectCertificate(
-                    serialNumber: certificate.serialNumber,
-                    for: account
-                )
-            }
-        } label: {
+        let selected = account.selectedCertificateSerialNumber?.caseInsensitiveCompare(
+            certificate.serialNumber
+        ) == .orderedSame
+
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 12) {
-                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                    .font(.system(size: 20, weight: .semibold))
+                Image(systemName: selected ? "checkmark.seal.fill" : "seal")
+                    .font(.system(size: 23, weight: .semibold))
                     .foregroundStyle(
                         certificate.hasLocalPrivateKey
                             ? Color.sealAccent
-                            : Color.sealTextSecondary.opacity(0.45)
+                            : Color.sealTextSecondary
                     )
-                    .frame(width: 36)
+                    .frame(width: 34)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text(certificate.displayName)
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.primary)
-                        if selected {
-                            Text("当前使用")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(Color.sealAccent)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(Color.sealAccent.opacity(0.10), in: Capsule())
-                        }
-                    }
+                    Text(certificate.displayName)
+                        .font(.body.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("Apple Development")
                         .font(.caption)
                         .foregroundStyle(Color.sealTextSecondary)
-                    Text("Serial：\(abbreviated(certificate.serialNumber))")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(Color.sealTextSecondary)
-                    Text(
-                        certificate.hasLocalPrivateKey
-                            ? "本机可用"
-                            : "非本机创建，无本地私钥，不可用"
-                    )
-                    .font(.caption)
+                }
+                Spacer(minLength: 8)
+                Text(selected ? "当前使用" : certificate.hasLocalPrivateKey ? "本机可用" : "本机无私钥")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(
                         certificate.hasLocalPrivateKey
                             ? Color.sealSuccess
                             : Color.sealTextSecondary
                     )
-                }
-                Spacer(minLength: 8)
             }
-            .contentShape(Rectangle())
-            .padding(.vertical, 14)
+
+            FullIdentifierRow(title: "Serial Number", value: certificate.serialNumber)
+
+            if let machineIdentifier = certificate.machineIdentifier,
+               machineIdentifier.isEmpty == false {
+                FullIdentifierRow(
+                    title: "Machine Identifier",
+                    value: machineIdentifier
+                )
+            }
+
+            if certificate.hasLocalPrivateKey, selected == false {
+                Button("设为当前使用") {
+                    Task {
+                        await viewModel.selectCertificate(
+                            serialNumber: certificate.serialNumber,
+                            for: account
+                        )
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isCertificateOperationRunning)
+            }
+
+            if certificate.hasLocalPrivateKey || hasLocalCertificate == false {
+                Button(
+                    certificate.hasLocalPrivateKey
+                        ? "撤销当前证书并重新创建"
+                        : "撤销此证书并创建本机证书",
+                    role: .destructive
+                ) {
+                    certificatePendingReplacement = certificate
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isCertificateOperationRunning)
+            } else {
+                Button("只撤销此证书", role: .destructive) {
+                    certificatePendingRevocation = certificate
+                }
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isCertificateOperationRunning)
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(certificate.hasLocalPrivateKey == false)
+        .padding(.vertical, 14)
+    }
+
+    private func createCertificateCard(_ account: AppleAccountRecord) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("当前没有本机可用证书")
+                .font(.headline)
+            Text("Seal 将在本机生成私钥，向 Apple 申请 Apple Development 证书，并立即保存 P12 与完整 Serial。")
+                .font(.subheadline)
+                .foregroundStyle(Color.sealTextSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(viewModel.isCertificateOperationRunning ? "正在创建…" : "创建本机 Seal 证书") {
+                Task { await viewModel.createLocalCertificate(for: account) }
+            }
+            .sealPrimaryAction(cornerRadius: 12)
+            .disabled(viewModel.isCertificateOperationRunning)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .glassSurface(cornerRadius: 20)
     }
 
     private var loadingCard: some View {
@@ -217,6 +318,7 @@ struct SigningCertificateSettingsView: View {
             Text(failure.reason)
                 .font(.subheadline)
                 .foregroundStyle(Color.sealTextSecondary)
+                .textSelection(.enabled)
             Button("重新同步") {
                 Task {
                     await viewModel.refreshCertificateInventory(for: account, force: true)
@@ -234,12 +336,8 @@ struct SigningCertificateSettingsView: View {
             Image(systemName: "seal")
                 .font(.system(size: 34))
                 .foregroundStyle(Color.sealTextSecondary)
-            Text("暂无签名证书")
+            Text("Apple 当前没有返回开发证书")
                 .font(.headline)
-            Text("首次签名 IPA 时，Seal 会在本机生成私钥并向 Apple 申请 Seal 证书；成功后自动设为当前证书。")
-                .font(.subheadline)
-                .foregroundStyle(Color.sealTextSecondary)
-                .multilineTextAlignment(.center)
             Button("重新同步") {
                 Task {
                     await viewModel.refreshCertificateInventory(for: account, force: true)
@@ -269,16 +367,8 @@ struct SigningCertificateSettingsView: View {
         .glassSurface(cornerRadius: 24)
     }
 
-
     private func boundAppCount(for account: AppleAccountRecord) -> Int {
-        relatedApps.filter { app in
-            guard app.accountID == account.id else { return false }
-            guard let localSerial = account.certificateSerialNumber else {
-                return false
-            }
-            return app.certificateSerialNumber == nil
-                || app.certificateSerialNumber == localSerial
-        }.count
+        relatedApps.filter { $0.accountID == account.id }.count
     }
 
     private func resetCard(_ account: AppleAccountRecord) -> some View {
@@ -288,7 +378,7 @@ struct SigningCertificateSettingsView: View {
             HStack(spacing: 12) {
                 Image(systemName: "trash")
                     .frame(width: 30)
-                Text("清除本地证书")
+                Text("只清除本地 P12")
                 Spacer()
             }
             .foregroundStyle(Color.sealDanger)
@@ -297,25 +387,5 @@ struct SigningCertificateSettingsView: View {
         }
         .buttonStyle(.plain)
         .glassSurface(cornerRadius: 18)
-    }
-
-    private func detailRow(_ title: String, _ value: String) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-                .foregroundStyle(Color.sealTextSecondary)
-            Spacer(minLength: 12)
-            Text(value)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-        }
-        .font(.subheadline)
-        .padding(.vertical, 12)
-    }
-
-    private func abbreviated(_ value: String) -> String {
-        guard value.count > 12 else { return value }
-        return "\(value.prefix(6))…\(value.suffix(6))"
     }
 }

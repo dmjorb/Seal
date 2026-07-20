@@ -46,7 +46,7 @@ struct AboutView: View {
             Divider()
             infoRow("构建号", build)
             Divider()
-            infoRow("Bundle ID", bundleID)
+            FullIdentifierRow(title: "Bundle ID", value: bundleID)
             Divider()
             infoRow("系统", "iOS \(UIDevice.current.systemVersion)")
         }

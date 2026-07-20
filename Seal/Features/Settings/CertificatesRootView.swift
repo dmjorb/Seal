@@ -180,11 +180,12 @@ struct CertificatesRootView: View {
                         Text(viewModel.fullEmail(for: account))
                             .font(.body.weight(.semibold))
                             .foregroundStyle(.primary)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text("\(account.teamName) · \(account.teamID)")
-                            .font(.caption)
+                            .font(.caption.monospaced())
                             .foregroundStyle(Color.sealTextSecondary)
-                            .lineLimit(1)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
                     Spacer(minLength: 8)
                     VStack(alignment: .trailing, spacing: 4) {

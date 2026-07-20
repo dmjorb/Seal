@@ -29,16 +29,12 @@ struct AppleAccountDetailView: View {
         guard let inventory else { return [] }
         return inventory.appIDs
             .map { snapshot in
-                let localApp = matchedApp(bundleIdentifier: snapshot.bundleIdentifier)
-                let history = localApp == nil
-                    ? matchedHistory(bundleIdentifier: snapshot.bundleIdentifier)
-                    : nil
+                let localApp = matchedApp(for: snapshot)
+                let history = localApp == nil ? matchedHistory(for: snapshot) : nil
                 let iconData = localApp.flatMap { viewModel.appIconData[$0.id] }
                     ?? history.flatMap { viewModel.signingHistoryIconData[$0.id] }
                 return AppleAccountAppItem(
-                    bundleIdentifier: snapshot.bundleIdentifier,
-                    app: localApp,
-                    history: history,
+                    snapshot: snapshot,
                     iconData: iconData
                 )
             }
@@ -126,7 +122,7 @@ struct AppleAccountDetailView: View {
             Divider()
             detailRow("账户类型", accountTypeText)
             Divider()
-            detailRow("App ID 配额", appIDQuotaText)
+            detailRow("Apple 返回的 App ID", appIDQuotaText)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -163,46 +159,39 @@ struct AppleAccountDetailView: View {
     private func certificateRow(
         _ certificate: ApplePortalCertificateSnapshot
     ) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "rosette")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(
-                    certificate.hasLocalPrivateKey
-                        ? Color.sealAccent
-                        : Color.sealTextSecondary
-                )
-                .frame(width: 36)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "rosette")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(
+                        certificate.hasLocalPrivateKey
+                            ? Color.sealAccent
+                            : Color.sealTextSecondary
+                    )
+                    .frame(width: 36)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(certificate.displayName)
-                    .font(.body.weight(.semibold))
-                Text("Apple Development")
-                    .font(.caption)
-                    .foregroundStyle(Color.sealTextSecondary)
-                Text("Serial：\(abbreviated(certificate.serialNumber))")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .textSelection(.enabled)
-                Text(
-                    certificate.hasLocalPrivateKey
-                        ? "本机可用"
-                        : "非本机创建，无本地私钥，不可用"
-                )
-                .font(.caption)
-                .foregroundStyle(
-                    certificate.hasLocalPrivateKey
-                        ? Color.sealSuccess
-                        : Color.sealTextSecondary
-                )
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(certificate.displayName)
+                        .font(.body.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Apple Development")
+                        .font(.caption)
+                        .foregroundStyle(Color.sealTextSecondary)
+                }
+                Spacer(minLength: 8)
+                Text(certificate.hasLocalPrivateKey ? "本机可用" : "本机无私钥")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(
+                        certificate.hasLocalPrivateKey
+                            ? Color.sealSuccess
+                            : Color.sealTextSecondary
+                    )
             }
-            Spacer(minLength: 8)
-            Text(certificate.hasLocalPrivateKey ? "可用" : "不可用")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(
-                    certificate.hasLocalPrivateKey
-                        ? Color.sealSuccess
-                        : Color.sealTextSecondary
-                )
+            FullIdentifierRow(title: "Serial Number", value: certificate.serialNumber)
+            if let machineIdentifier = certificate.machineIdentifier,
+               machineIdentifier.isEmpty == false {
+                FullIdentifierRow(title: "Machine Identifier", value: machineIdentifier)
+            }
         }
         .padding(.vertical, 14)
     }
@@ -234,34 +223,33 @@ struct AppleAccountDetailView: View {
     }
 
     private func appRow(_ item: AppleAccountAppItem) -> some View {
-        HStack(alignment: .center, spacing: 14) {
-            appIcon(item)
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .center, spacing: 14) {
+                appIcon(item)
+                VStack(alignment: .leading, spacing: 5) {
                     Text(item.name)
                         .font(.body.weight(.semibold))
                         .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(item.status.title)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(item.status.color)
+                    Text("App ID 到期：\(item.appIDExpirationText)")
+                        .font(.caption)
+                        .foregroundStyle(Color.sealTextSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("描述文件过期：\(item.expirationText)")
+                        .font(.caption)
+                        .foregroundStyle(Color.sealTextSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                Spacer(minLength: 8)
+            }
 
-                Text("Bundle ID：")
-                    .font(.caption)
-                    .foregroundStyle(Color.sealTextSecondary)
-                Text(item.bundleIdentifier)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text("描述文件过期：\(item.expirationText)")
-                    .font(.caption)
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            FullIdentifierRow(title: "App ID Identifier", value: item.appIDIdentifier)
+            FullIdentifierRow(title: "Bundle ID", value: item.bundleIdentifier)
+            if let profileName = item.profileName, profileName.isEmpty == false {
+                FullIdentifierRow(title: "Provisioning Profile", value: profileName)
             }
         }
         .padding(.vertical, 14)
@@ -314,18 +302,27 @@ struct AppleAccountDetailView: View {
     }
 
     private func detailRow(_ title: String, _ value: String) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-                .foregroundStyle(Color.sealTextSecondary)
-            Spacer(minLength: 12)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Text(title)
+                    .foregroundStyle(Color.sealTextSecondary)
+                Spacer(minLength: 12)
+                Button {
+                    UIPasteboard.general.string = value
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.sealAccent)
+            }
             Text(value)
+                .font(.system(size: 13, weight: .regular, design: .monospaced))
                 .foregroundStyle(.primary)
-                .multilineTextAlignment(.trailing)
-                .lineLimit(2)
-                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .font(.subheadline)
         .padding(.vertical, 12)
     }
 
@@ -397,18 +394,11 @@ struct AppleAccountDetailView: View {
         guard let inventory else {
             return isSyncing ? "同步中" : "暂无法确认"
         }
-        switch currentAccount.isFreeTeam {
-        case true:
-            return "\(inventory.usedBundleIDCount) / 10"
-        case false:
-            return "已注册 \(inventory.usedBundleIDCount) 个"
-        case nil:
-            return "暂无法确认"
-        }
+        return "Apple 当前返回 \(inventory.usedBundleIDCount) 个"
     }
 
-    private func matchedApp(bundleIdentifier: String) -> AppRecord? {
-        let matches = relatedApps.filter { app in
+    private func matchedApp(for snapshot: ApplePortalAppIDSnapshot) -> AppRecord? {
+        let bundleMatches = relatedApps.filter { app in
             [
                 app.mappedBundleIdentifier,
                 app.preferredBundleIdentifier,
@@ -416,32 +406,28 @@ struct AppleAccountDetailView: View {
             ]
             .compactMap { $0 }
             .contains {
-                $0.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
+                $0.caseInsensitiveCompare(snapshot.bundleIdentifier) == .orderedSame
             }
         }
-        return matches.first { $0.accountID == currentAccount.id }
-            ?? matches.first { $0.accountID == nil }
+        return bundleMatches.first(where: { $0.accountID == currentAccount.id })
+            ?? bundleMatches.first(where: { $0.accountID == nil })
+            ?? bundleMatches.first
     }
 
     private func matchedHistory(
-        bundleIdentifier: String
+        for snapshot: ApplePortalAppIDSnapshot
     ) -> SigningHistoryRecord? {
-        viewModel.signingHistory
-            .filter {
-                $0.accountID == currentAccount.id
-                    && $0.result == .success
-            }
-            .filter {
-                $0.displayBundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
-            }
-            .sorted { $0.signedAt > $1.signedAt }
-            .first
+        let successfulRecords = viewModel.signingHistory.filter {
+            $0.accountID == currentAccount.id && $0.result == .success
+        }
+        return successfulRecords.filter { record in
+            record.displayBundleIdentifier.caseInsensitiveCompare(snapshot.bundleIdentifier) == .orderedSame
+        }
+        .sorted(by: { $0.signedAt > $1.signedAt })
+        .first
     }
 
-    private func abbreviated(_ value: String) -> String {
-        guard value.count > 12 else { return value }
-        return "\(value.prefix(6))…\(value.suffix(6))"
-    }
+
 }
 
 private struct AppleAccountAppItem: Identifiable, Equatable {
@@ -449,14 +435,14 @@ private struct AppleAccountAppItem: Identifiable, Equatable {
         case active
         case expiringSoon
         case expired
-        case unlinked
+        case unavailable
 
         var title: String {
             switch self {
             case .active: return "有效"
             case .expiringSoon: return "临期"
             case .expired: return "过期"
-            case .unlinked: return "未关联"
+            case .unavailable: return "无描述文件"
             }
         }
 
@@ -465,7 +451,7 @@ private struct AppleAccountAppItem: Identifiable, Equatable {
             case .active: return .sealSuccess
             case .expiringSoon: return .sealWarning
             case .expired: return .sealDanger
-            case .unlinked: return .sealTextSecondary
+            case .unavailable: return .sealTextSecondary
             }
         }
 
@@ -474,45 +460,54 @@ private struct AppleAccountAppItem: Identifiable, Equatable {
             case .expiringSoon: return 0
             case .active: return 1
             case .expired: return 2
-            case .unlinked: return 3
+            case .unavailable: return 3
             }
         }
     }
 
     let id: String
     let name: String
+    let appIDIdentifier: String
     let bundleIdentifier: String
+    let profileName: String?
+    let appIDExpirationDate: Date?
     let expiryDate: Date?
     let iconData: Data?
     let status: Status
 
     init(
-        bundleIdentifier: String,
-        app: AppRecord?,
-        history: SigningHistoryRecord?,
+        snapshot: ApplePortalAppIDSnapshot,
         iconData: Data?
     ) {
-        id = bundleIdentifier.lowercased()
-        name = app?.name ?? history?.appName ?? "未关联本地应用"
-        self.bundleIdentifier = bundleIdentifier
-        expiryDate = app?.expiryDate ?? history?.expiryDate
+        id = snapshot.id
+        name = snapshot.name
+        appIDIdentifier = snapshot.identifier
+        bundleIdentifier = snapshot.bundleIdentifier
+        profileName = snapshot.provisioningProfileName
+        appIDExpirationDate = snapshot.appIDExpirationDate
+        expiryDate = snapshot.provisioningProfileExpirationDate
         self.iconData = iconData
         status = Self.status(
-            expiryDate: app?.expiryDate ?? history?.expiryDate,
-            hasLocalRecord: app != nil || history != nil
+            expiryDate: snapshot.provisioningProfileExpirationDate,
+            profileState: snapshot.provisioningProfileState
         )
     }
 
+    var appIDExpirationText: String {
+        guard let appIDExpirationDate else { return "Apple 未返回" }
+        return SigningHistoryDateFormatter.string(from: appIDExpirationDate)
+    }
+
     var expirationText: String {
-        guard let expiryDate else { return "未关联本机描述文件" }
+        guard let expiryDate else { return "Apple 未返回描述文件" }
         return SigningHistoryDateFormatter.string(from: expiryDate)
     }
 
     private static func status(
         expiryDate: Date?,
-        hasLocalRecord: Bool
+        profileState: ApplePortalAppIDSnapshot.ProvisioningProfileState
     ) -> Status {
-        guard hasLocalRecord, let expiryDate else { return .unlinked }
+        guard profileState == .available, let expiryDate else { return .unavailable }
         let interval = expiryDate.timeIntervalSinceNow
         if interval <= 0 { return .expired }
         if interval <= 86_400 * 2 { return .expiringSoon }

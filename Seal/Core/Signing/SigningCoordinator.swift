@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import AltSign
 
 actor SigningCoordinator {
     private let appStore: any AppStore
@@ -30,7 +31,6 @@ actor SigningCoordinator {
         requestedBundleIdentifier: String? = nil,
         selectedCertificateSerialNumber: String? = nil,
         allowDroppingExtensions: Bool = false,
-        allowCertificateReplacement: Bool = false,
         progress: @Sendable (SigningStage) async -> Void
     ) async throws -> AppRecord {
         guard var app = try await appStore.fetchAll().first(where: { $0.id == appID }) else {
@@ -58,6 +58,10 @@ actor SigningCoordinator {
             account: account,
             secret: secret
         )
+        try SigningCertificateSelectionPolicy.validateAccountAndTeam(
+            for: app,
+            account: account
+        )
         let effectiveCertificateSerialNumber = try SigningCertificateSelectionPolicy
             .resolvedSerialNumber(
                 for: app,
@@ -78,12 +82,26 @@ actor SigningCoordinator {
         let workspaceRoot = try await fileStore.signingWorkspace(appID: appID)
         defer { try? FileManager.default.removeItem(at: workspaceRoot) }
         let originalState = app.state
+        let originalSecret = secret
+        let originalAccount = account
 
         do {
             try Task.checkCancellation()
             try await updateState(appID: appID, stage: .waitingForChannel)
             await progress(.waitingForChannel)
             let deviceIdentifier = try await installChannel.start()
+
+            if let cached = try await installCachedSignedIPAIfPossible(
+                app: app,
+                account: account,
+                targetBundleIdentifier: targetBundleIdentifier,
+                certificateSerialNumber: effectiveCertificateSerialNumber,
+                deviceIdentifier: deviceIdentifier,
+                progress: progress
+            ) {
+                return cached
+            }
+
             let originalURL = try await fileStore.fileURL(
                 relativePath: app.ipaRelativePath
             )
@@ -97,14 +115,21 @@ actor SigningCoordinator {
                 targetBundleIdentifier: targetBundleIdentifier,
                 selectedCertificateSerialNumber: effectiveCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
-                allowCertificateReplacement: allowCertificateReplacement,
+                persistSigningMaterial: { updatedSecret, serialNumber in
+                    try await self.persistNewSigningMaterial(
+                        updatedSecret,
+                        serialNumber: serialNumber,
+                        accountID: accountID,
+                        originalSecret: originalSecret,
+                        originalAccount: originalAccount
+                    )
+                },
                 progress: { stage in
                     try? await self.updateState(appID: appID, stage: stage)
                     await progress(stage)
                 }
             )
 
-            try await keychain.save(portalResult.updatedSecret, for: accountID)
             account.certificateSerialNumber = portalResult.certificateSerialNumber
             account.selectedCertificateSerialNumber = portalResult.certificateSerialNumber
             account.status = .verified
@@ -115,47 +140,23 @@ actor SigningCoordinator {
                 sourceURL: portalResult.signedIPAURL,
                 appID: appID
             )
-            try Task.checkCancellation()
-            try await updateState(appID: appID, stage: .installing)
-            await progress(.installing)
-            let signedData = try await fileStore.read(relativePath: signedPath)
-            if app.isSeal {
-                SelfRenewalTracker.markPending(
-                    bundleIdentifier: portalResult.mappedMainBundleID,
-                    version: app.version
-                )
-            }
-            try await installChannel.install(
-                ipaData: signedData,
-                bundleID: portalResult.mappedMainBundleID
+            applySigningResult(
+                portalResult,
+                signedPath: signedPath,
+                accountID: accountID,
+                to: &app
             )
-
-            try await updateState(appID: appID, stage: .verifying)
-            await progress(.verifying)
-            try await installChannel.verifyInstalled(
-                bundleID: portalResult.mappedMainBundleID
-            )
-
-            app.mappedBundleIdentifier = portalResult.mappedMainBundleID
-            app.preferredBundleIdentifier = targetBundleIdentifier
-            app.accountID = accountID
-            app.certificateSerialNumber = portalResult.certificateSerialNumber
-            app.signedIPARelativePath = signedPath
-            app.expiryDate = portalResult.expirationDate
-            app.extensions.removeAll {
-                portalResult.droppedExtensionBundleIdentifiers.contains(
-                    $0.originalBundleIdentifier
-                )
-            }
-            for index in app.extensions.indices {
-                app.extensions[index].mappedBundleIdentifier =
-                    portalResult.mappedBundleIdentifiers[
-                        app.extensions[index].originalBundleIdentifier
-                    ]
-            }
-            app.state = .installed
+            app.state = originalState == .installed ? .installed : .waitingForInstallChannel
             try await appStore.save(app)
-            return app
+
+            let installed = try await installSignedIPA(
+                app: app,
+                signedPath: signedPath,
+                bundleIdentifier: portalResult.mappedMainBundleID,
+                expirationDate: portalResult.expirationDate,
+                progress: progress
+            )
+            return installed
         } catch is CancellationError {
             app.state = originalState
             try? await appStore.save(app)
@@ -163,14 +164,6 @@ actor SigningCoordinator {
         } catch let failure as ImportFailure {
             if failure.code.hasPrefix("SEAL-AUTH-") {
                 account.status = .needsVerification
-                try? await accountRepository.save(account)
-            }
-            if ["SEAL-CERT-202", "SEAL-CERT-207"].contains(failure.code) {
-                try? await keychain.clearSigningMaterial(accountID: accountID)
-                account.certificateSerialNumber = nil
-                if account.selectedCertificateSerialNumber == effectiveCertificateSerialNumber {
-                    account.selectedCertificateSerialNumber = nil
-                }
                 try? await accountRepository.save(account)
             }
             app.state = originalState == .installed ? .installed : .failedRecoverable
@@ -181,6 +174,155 @@ actor SigningCoordinator {
             try? await appStore.save(app)
             throw error
         }
+    }
+
+    private func persistNewSigningMaterial(
+        _ updatedSecret: AccountSecret,
+        serialNumber: String,
+        accountID: UUID,
+        originalSecret: AccountSecret,
+        originalAccount: AppleAccountRecord
+    ) async throws {
+        do {
+            try await keychain.save(updatedSecret, for: accountID)
+            guard let reloaded = try await keychain.load(accountID: accountID),
+                  reloaded.certificateSerialNumber?.caseInsensitiveCompare(serialNumber) == .orderedSame,
+                  let p12 = reloaded.certificateP12,
+                  let certificate = try? ALTCertificate(p12Data: p12, password: nil),
+                  certificate.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame else {
+                throw Self.failure(
+                    reason: "新证书 P12 写入 Keychain 后无法完整读取，或 Serial 不一致：\(serialNumber)。",
+                    recovery: "解锁设备后重新创建证书",
+                    code: "SEAL-CERT-210"
+                )
+            }
+
+            var updatedAccount = originalAccount
+            updatedAccount.certificateSerialNumber = serialNumber
+            updatedAccount.selectedCertificateSerialNumber = serialNumber
+            updatedAccount.status = .verified
+            updatedAccount.lastVerifiedAt = Date()
+            try await accountRepository.save(updatedAccount)
+        } catch {
+            try? await keychain.save(originalSecret, for: accountID)
+            try? await accountRepository.save(originalAccount)
+            throw error
+        }
+    }
+
+    private func applySigningResult(
+        _ result: PortalSigningResult,
+        signedPath: String,
+        accountID: UUID,
+        to app: inout AppRecord
+    ) {
+        let mainBinding = result.profileBindings[result.mappedMainBundleID]
+        app.mappedBundleIdentifier = result.mappedMainBundleID
+        app.preferredBundleIdentifier = result.mappedMainBundleID
+        app.accountID = accountID
+        app.signingTeamID = result.teamID
+        app.certificateSerialNumber = result.certificateSerialNumber
+        app.signedDeviceIdentifier = result.deviceIdentifier
+        app.signedIPARelativePath = signedPath
+        app.provisioningProfileUUID = mainBinding?.profileUUID
+        app.provisioningProfileName = mainBinding?.profileName
+        app.provisioningProfileCreationDate = mainBinding?.creationDate
+        app.provisioningProfileExpirationDate = mainBinding?.expirationDate
+        app.entitlementValidationStatus = "已按 embedded.mobileprovision 校验"
+        app.capabilityValidationStatus = "已按 Apple App ID 与描述文件校验"
+        app.lastSignedAt = Date()
+        app.removedExtensionBundleIdentifiers = result.droppedExtensionBundleIdentifiers
+        app.signingTargets = result.profileBindings.values
+            .map(SigningTargetRecord.init(binding:))
+            .sorted { $0.bundleIdentifier < $1.bundleIdentifier }
+
+        app.extensions.removeAll {
+            result.droppedExtensionBundleIdentifiers.contains(
+                $0.originalBundleIdentifier
+            )
+        }
+        for index in app.extensions.indices {
+            let mapped = result.mappedBundleIdentifiers[
+                app.extensions[index].originalBundleIdentifier
+            ]
+            app.extensions[index].mappedBundleIdentifier = mapped
+            if let mapped, let binding = result.profileBindings[mapped] {
+                app.extensions[index].provisioningProfileUUID = binding.profileUUID
+                app.extensions[index].provisioningProfileName = binding.profileName
+                app.extensions[index].provisioningProfileExpirationDate = binding.expirationDate
+                app.extensions[index].certificateSerialNumber = result.certificateSerialNumber
+            }
+        }
+    }
+
+    private func installCachedSignedIPAIfPossible(
+        app: AppRecord,
+        account: AppleAccountRecord,
+        targetBundleIdentifier: String,
+        certificateSerialNumber: String?,
+        deviceIdentifier: String,
+        progress: @Sendable (SigningStage) async -> Void
+    ) async throws -> AppRecord? {
+        guard let signedPath = app.signedIPARelativePath,
+              let mappedBundleIdentifier = app.mappedBundleIdentifier,
+              mappedBundleIdentifier.caseInsensitiveCompare(targetBundleIdentifier) == .orderedSame,
+              app.accountID == account.id,
+              app.signingTeamID?.caseInsensitiveCompare(account.teamID) == .orderedSame,
+              let storedSerial = app.certificateSerialNumber,
+              let certificateSerialNumber,
+              storedSerial.caseInsensitiveCompare(certificateSerialNumber) == .orderedSame,
+              app.signedDeviceIdentifier?.caseInsensitiveCompare(deviceIdentifier) == .orderedSame,
+              let pendingExpiration = app.provisioningProfileExpirationDate,
+              pendingExpiration > Date(),
+              app.state != .installed || app.expiryDate != pendingExpiration else {
+            return nil
+        }
+
+        do {
+            _ = try await fileStore.fileURL(relativePath: signedPath)
+        } catch {
+            return nil
+        }
+        return try await installSignedIPA(
+            app: app,
+            signedPath: signedPath,
+            bundleIdentifier: mappedBundleIdentifier,
+            expirationDate: pendingExpiration,
+            progress: progress
+        )
+    }
+
+    private func installSignedIPA(
+        app: AppRecord,
+        signedPath: String,
+        bundleIdentifier: String,
+        expirationDate: Date,
+        progress: @Sendable (SigningStage) async -> Void
+    ) async throws -> AppRecord {
+        var updated = app
+        try await updateState(appID: app.id, stage: .installing)
+        await progress(.installing)
+        let signedData = try await fileStore.read(relativePath: signedPath)
+        if app.isSeal {
+            SelfRenewalTracker.markPending(
+                bundleIdentifier: bundleIdentifier,
+                version: app.version
+            )
+        }
+        try await installChannel.install(
+            ipaData: signedData,
+            bundleID: bundleIdentifier
+        )
+
+        try await updateState(appID: app.id, stage: .verifying)
+        await progress(.verifying)
+        try await installChannel.verifyInstalled(bundleID: bundleIdentifier)
+
+        updated.state = .installed
+        updated.expiryDate = expirationDate
+        updated.lastInstalledAt = Date()
+        try await appStore.save(updated)
+        return updated
     }
 
     private func validateAccountSession(

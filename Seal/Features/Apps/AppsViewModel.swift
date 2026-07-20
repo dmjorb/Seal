@@ -449,7 +449,7 @@ final class AppsViewModel: ObservableObject {
             presentVPNRecovery(for: .signing(app, accountID: accountID))
             return
         }
-        if app.state != .installed && app.isSeal == false {
+        if app.requiresLockedSigningIdentity == false && app.isSeal == false {
             await selectActiveAccount(id: account.id)
         }
         startSigning(
@@ -513,7 +513,7 @@ final class AppsViewModel: ObservableObject {
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
             guard Task.isCancelled == false else { return }
-            if app.state != .installed && app.isSeal == false {
+            if app.requiresLockedSigningIdentity == false && app.isSeal == false {
                 await self?.selectActiveAccount(id: account.id)
             }
             self?.startSigning(app: app, account: account)
@@ -538,8 +538,7 @@ final class AppsViewModel: ObservableObject {
         guard let session = signingSession else { return }
         restartSigning(
             session,
-            allowDroppingExtensions: session.allowsDroppingExtensions,
-            allowCertificateReplacement: session.allowsCertificateReplacement
+            allowDroppingExtensions: session.allowsDroppingExtensions
         )
     }
 
@@ -547,18 +546,100 @@ final class AppsViewModel: ObservableObject {
         guard let session = signingSession else { return }
         restartSigning(
             session,
-            allowDroppingExtensions: true,
-            allowCertificateReplacement: session.allowsCertificateReplacement
+            allowDroppingExtensions: true
         )
     }
 
-    func retryByReplacingCertificate() {
-        guard let session = signingSession else { return }
-        restartSigning(
-            session,
-            allowDroppingExtensions: session.allowsDroppingExtensions,
-            allowCertificateReplacement: true
-        )
+
+    func confirmCertificateMigrationAndSign(
+        app: AppRecord,
+        accountID: UUID,
+        requestedBundleIdentifier: String? = nil
+    ) async {
+        guard signingTask == nil,
+              batchRefreshTask == nil,
+              let appStore,
+              let fileStore,
+              let account = accounts.first(where: { $0.id == accountID }) else { return }
+
+        do {
+            guard app.accountID == account.id else {
+                throw ImportFailure(
+                    title: "证书迁移账号不匹配",
+                    reason: "应用绑定的 Apple ID 与当前选择不一致。Seal 没有迁移账号。",
+                    recovery: "选择首次签名使用的 Apple ID",
+                    code: "SEAL-AUTH-111"
+                )
+            }
+            if let originalTeamID = app.signingTeamID,
+               originalTeamID.caseInsensitiveCompare(account.teamID) != .orderedSame {
+                throw ImportFailure(
+                    title: "证书迁移 Team 不匹配",
+                    reason: "应用绑定 Team：\(originalTeamID)，当前 Team：\(account.teamID)。Seal 没有迁移 Team。",
+                    recovery: "选择首次签名使用的 Apple ID / Team",
+                    code: "SEAL-AUTH-112"
+                )
+            }
+            guard let newSerial = account.selectedCertificateSerialNumber
+                    ?? account.certificateSerialNumber,
+                  account.certificateSerialNumber?.caseInsensitiveCompare(newSerial) == .orderedSame else {
+                throw ImportFailure(
+                    title: "没有本机可用证书",
+                    reason: "请先在签名证书页面创建或选择包含本机私钥的证书。",
+                    recovery: "前往签名证书",
+                    code: "SEAL-CERT-206"
+                )
+            }
+            guard let oldSerial = app.certificateSerialNumber,
+                  oldSerial.caseInsensitiveCompare(newSerial) != .orderedSame else {
+                throw ImportFailure(
+                    title: "无需迁移证书",
+                    reason: "应用已经绑定当前本机证书 Serial：\(newSerial)。",
+                    recovery: "直接重试",
+                    code: "SEAL-CERT-213"
+                )
+            }
+
+            var current = try await appStore.fetchAll().first(where: { $0.id == app.id }) ?? app
+            current.certificateSerialNumber = newSerial
+            current.provisioningProfileUUID = nil
+            current.provisioningProfileName = nil
+            current.provisioningProfileCreationDate = nil
+            current.provisioningProfileExpirationDate = nil
+            current.entitlementValidationStatus = nil
+            current.capabilityValidationStatus = nil
+            current.signingTargets = []
+            current.signedIPARelativePath = nil
+            current.lastSignedAt = nil
+            for index in current.extensions.indices {
+                current.extensions[index].certificateSerialNumber = nil
+                current.extensions[index].provisioningProfileUUID = nil
+                current.extensions[index].provisioningProfileName = nil
+                current.extensions[index].provisioningProfileExpirationDate = nil
+            }
+            try await appStore.save(current)
+            try? await fileStore.removeSignedIPA(appID: current.id)
+            try? await logStore?.append(
+                category: .signing,
+                message: "用户明确确认应用证书迁移。原 Serial：\(oldSerial)，新 Serial：\(newSerial)，Team：\(account.teamID)，Bundle ID：\(current.mappedBundleIdentifier ?? current.originalBundleIdentifier)"
+            )
+            await load(force: true)
+            startSigning(
+                app: current,
+                account: account,
+                requestedBundleIdentifier: requestedBundleIdentifier
+            )
+        } catch let failure as ImportFailure {
+            alertFailure = failure
+        } catch {
+            let nsError = error as NSError
+            alertFailure = ImportFailure(
+                title: "无法迁移证书",
+                reason: "本地签名记录更新失败。[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)",
+                recovery: "重试",
+                code: "SEAL-CERT-214"
+            )
+        }
     }
 
     func cancelSigning() {
@@ -779,8 +860,7 @@ final class AppsViewModel: ObservableObject {
         app: AppRecord,
         account: AppleAccountRecord,
         requestedBundleIdentifier: String? = nil,
-        allowDroppingExtensions: Bool = false,
-        allowCertificateReplacement: Bool = false
+        allowDroppingExtensions: Bool = false
     ) {
         guard signingTask == nil,
               batchRefreshTask == nil,
@@ -793,7 +873,6 @@ final class AppsViewModel: ObservableObject {
             requestedBundleIdentifier: requestedBundleIdentifier,
             selectedCertificateSerialNumber: selectedCertificateSerialNumber,
             allowsDroppingExtensions: allowDroppingExtensions,
-            allowsCertificateReplacement: allowCertificateReplacement,
             status: .running(.waitingForChannel)
         )
         let targetBundleIdentifier = (try? BundleIDPolicy.targetBundleIdentifier(
@@ -812,22 +891,19 @@ final class AppsViewModel: ObservableObject {
                 account: account,
                 requestedBundleIdentifier: requestedBundleIdentifier,
                 selectedCertificateSerialNumber: selectedCertificateSerialNumber,
-                allowDroppingExtensions: allowDroppingExtensions,
-                allowCertificateReplacement: allowCertificateReplacement
+                allowDroppingExtensions: allowDroppingExtensions
             )
         }
     }
 
     private func restartSigning(
         _ session: SigningSession,
-        allowDroppingExtensions: Bool,
-        allowCertificateReplacement: Bool
+        allowDroppingExtensions: Bool
     ) {
         guard signingTask == nil,
               batchRefreshTask == nil,
               signingCoordinator != nil else { return }
         signingSession?.allowsDroppingExtensions = allowDroppingExtensions
-        signingSession?.allowsCertificateReplacement = allowCertificateReplacement
         signingSession?.status = .running(.waitingForChannel)
         signingTask = Task { [weak self] in
             await self?.runSigning(
@@ -835,8 +911,7 @@ final class AppsViewModel: ObservableObject {
                 account: session.account,
                 requestedBundleIdentifier: session.requestedBundleIdentifier,
                 selectedCertificateSerialNumber: session.selectedCertificateSerialNumber,
-                allowDroppingExtensions: allowDroppingExtensions,
-                allowCertificateReplacement: allowCertificateReplacement
+                allowDroppingExtensions: allowDroppingExtensions
             )
         }
     }
@@ -846,8 +921,7 @@ final class AppsViewModel: ObservableObject {
         account: AppleAccountRecord,
         requestedBundleIdentifier: String? = nil,
         selectedCertificateSerialNumber: String?,
-        allowDroppingExtensions: Bool,
-        allowCertificateReplacement: Bool
+        allowDroppingExtensions: Bool
     ) async {
         guard let signingCoordinator else { return }
         let attemptedBundleIdentifier = try? BundleIDPolicy.targetBundleIdentifier(
@@ -861,7 +935,6 @@ final class AppsViewModel: ObservableObject {
                 requestedBundleIdentifier: requestedBundleIdentifier,
                 selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
-                allowCertificateReplacement: allowCertificateReplacement,
                 progress: { [weak self] stage in
                     await self?.updateSigningStage(stage)
                 }
@@ -893,8 +966,9 @@ final class AppsViewModel: ObservableObject {
                 message: "\(failure.title)：\(failure.reason)",
                 code: failure.code
             )
+            let latestApp = await latestStoredApp(for: app)
             await recordSigningHistory(
-                app: app,
+                app: latestApp,
                 account: account,
                 action: app.state == .installed ? .renew : .sign,
                 result: .failed,
@@ -912,8 +986,9 @@ final class AppsViewModel: ObservableObject {
                 message: failure.reason,
                 code: failure.code
             )
+            let latestApp = await latestStoredApp(for: app)
             await recordSigningHistory(
-                app: app,
+                app: latestApp,
                 account: account,
                 action: app.state == .installed ? .renew : .sign,
                 result: .failed,
@@ -924,6 +999,16 @@ final class AppsViewModel: ObservableObject {
             await load(force: true)
         }
         signingTask = nil
+    }
+
+    private func latestStoredApp(for fallback: AppRecord) async -> AppRecord {
+        guard let appStore,
+              let stored = try? await appStore.fetchAll().first(where: {
+                  $0.id == fallback.id
+              }) else {
+            return fallback
+        }
+        return stored
     }
 
     private func updateSigningStage(_ stage: SigningStage) {

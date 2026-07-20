@@ -194,7 +194,7 @@ struct SigningProgressView: View {
             Divider().padding(.leading, 14)
             runtimeRow("Team ID", session.account.teamID)
             Divider().padding(.leading, 14)
-            runtimeRow("证书", session.account.certificateSerialNumber ?? "签名时准备 / 自动恢复")
+            runtimeRow("证书", session.selectedCertificateSerialNumber ?? session.account.certificateSerialNumber ?? "签名时创建并立即保存本机证书")
             Divider().padding(.leading, 14)
             runtimeRow("目标 Bundle ID", runtimeBundleIdentifier(session))
         }
@@ -207,20 +207,8 @@ struct SigningProgressView: View {
     }
 
     private func runtimeRow(_ title: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(title)
-                .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(.primary)
-            Spacer(minLength: 12)
-            Text(value)
-                .font(.system(size: 13, weight: .regular, design: .monospaced))
-                .foregroundStyle(Color.sealTextSecondary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .multilineTextAlignment(.trailing)
-                .textSelection(.enabled)
-        }
-        .frame(minHeight: 44)
+        FullIdentifierRow(title: title, value: value)
+            .frame(minHeight: 44)
     }
 
     private func runtimeBundleIdentifier(_ session: SigningSession) -> String {
@@ -245,10 +233,10 @@ struct SigningProgressView: View {
                         .lineLimit(1)
                 }
                 Text(displayBundleIdentifier(app))
-                    .font(.system(size: 16, weight: .regular))
+                    .font(.system(size: 13, weight: .regular, design: .monospaced))
                     .foregroundStyle(Color.sealTextSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
             Spacer(minLength: 8)
         }
@@ -416,7 +404,7 @@ struct SigningProgressView: View {
     private func primaryRecoveryTitle(_ failure: ImportFailure) -> String {
         if isSelfAppIDOwnershipFailure(failure) { return "切换到当前签名 Apple ID" }
         if isAuthFailure(failure) { return "重新验证 Apple ID" }
-        if isCertificateFailure(failure) { return "更换证书并重试" }
+        if isCertificateFailure(failure) { return "前往签名证书" }
         if isAppIDFailure(failure) { return "更换 Apple ID 或 Bundle ID" }
         if isPairingFailure(failure) { return "重新导入配对文件" }
         if isInstallChannelFailure(failure) { return "打开 LocalDevVPN" }
@@ -430,7 +418,7 @@ struct SigningProgressView: View {
         } else if isAuthFailure(failure) {
             openSettings(.account)
         } else if isCertificateFailure(failure) {
-            viewModel.retryByReplacingCertificate()
+            openSettings(.certificates)
         } else if isAppIDFailure(failure) {
             if session?.app.isSeal == true || session?.app.state == .installed {
                 openSettings(.account)
@@ -450,7 +438,11 @@ struct SigningProgressView: View {
     }
 
     private func shouldOfferRetry(_ failure: ImportFailure) -> Bool {
-        isCertificateFailure(failure)
+        if isCertificateFailure(failure) { return false }
+        if isAuthFailure(failure) || isAppIDFailure(failure) || isPairingFailure(failure) {
+            return false
+        }
+        return true
     }
 
     private func userFacingReason(_ failure: ImportFailure) -> String {

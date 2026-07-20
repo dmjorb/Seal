@@ -46,7 +46,11 @@ struct AppDetailView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(app.name).font(.title2.weight(.semibold)).lineLimit(1)
                 Text("v\(app.version) (\(app.buildNumber))").font(.subheadline).foregroundStyle(.secondary)
-                Text(displayBundleIdentifier(app)).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Text(displayBundleIdentifier(app))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
             Spacer()
         }
@@ -65,24 +69,98 @@ struct AppDetailView: View {
     }
 
     private func infoCard(_ app: AppRecord) -> some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             detailRow("签名账号", accountName(app))
             Divider()
-            detailRow("签名证书", certificateName(app))
+            if let teamID = app.signingTeamID ?? viewModel.accounts.first(where: { $0.id == app.accountID })?.teamID {
+                FullIdentifierRow(title: "Team ID", value: teamID)
+                Divider()
+            }
+            if let serial = app.certificateSerialNumber {
+                FullIdentifierRow(title: "证书 Serial", value: serial)
+                Divider()
+            } else {
+                detailRow("签名证书", app.state == .installed ? "未记录" : "签名时创建或选择")
+                Divider()
+            }
+            if let udid = app.signedDeviceIdentifier {
+                FullIdentifierRow(title: "设备 UDID", value: udid)
+                Divider()
+            }
+            FullIdentifierRow(title: "原始 Bundle ID", value: app.originalBundleIdentifier)
+            Divider()
+            FullIdentifierRow(
+                title: app.state == .installed ? "签名后 Bundle ID" : "目标 Bundle ID",
+                value: displayBundleIdentifier(app)
+            )
+            if let profileUUID = app.provisioningProfileUUID {
+                Divider()
+                FullIdentifierRow(title: "Profile UUID", value: profileUUID)
+            }
+            if let profileName = app.provisioningProfileName {
+                Divider()
+                FullIdentifierRow(title: "Profile 名称", value: profileName)
+            }
             Divider()
             detailRow("导入时间", app.importedAt.formatted(date: .abbreviated, time: .shortened))
-            Divider()
-            detailRow("原始 Bundle ID", app.originalBundleIdentifier)
-            Divider()
-            detailRow(app.state == .installed ? "签名后 Bundle ID" : "推荐 Bundle ID", displayBundleIdentifier(app))
-            Divider()
-            detailRow("Bundle ID 规则", BundleIDPolicy.displayMode(for: app))
             Divider()
             detailRow("应用大小", app.size.formatted(.byteCount(style: .file)))
             Divider()
             detailRow("扩展", app.extensions.isEmpty ? "无" : "\(app.extensions.count) 个")
+
+            ForEach(Array(app.extensions.enumerated()), id: \.offset) { index, appExtension in
+                Divider()
+                FullIdentifierRow(
+                    title: "扩展 \(index + 1) Bundle ID",
+                    value: appExtension.mappedBundleIdentifier ?? appExtension.originalBundleIdentifier
+                )
+                if let profileUUID = appExtension.provisioningProfileUUID {
+                    FullIdentifierRow(
+                        title: "扩展 \(index + 1) Profile UUID",
+                        value: profileUUID
+                    )
+                }
+            }
+
+            ForEach(Array(app.signingTargets.enumerated()), id: \.element.id) { index, target in
+                Divider()
+                Text("签名目标 \(index + 1)")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.vertical, 12)
+                FullIdentifierRow(title: "Bundle ID", value: target.bundleIdentifier)
+                if let profileUUID = target.profileUUID, profileUUID.isEmpty == false {
+                    FullIdentifierRow(title: "Profile UUID", value: profileUUID)
+                }
+                if let profileName = target.profileName, profileName.isEmpty == false {
+                    FullIdentifierRow(title: "Profile 名称", value: profileName)
+                }
+                FullIdentifierRow(title: "Profile Team ID", value: target.teamIdentifier)
+                if target.certificateSerialNumbers.isEmpty == false {
+                    FullIdentifierRow(
+                        title: "Profile 证书 Serial",
+                        value: target.certificateSerialNumbers.joined(separator: "\n")
+                    )
+                }
+                if target.deviceIdentifiers.isEmpty == false {
+                    FullIdentifierRow(
+                        title: "Profile 设备 UDID",
+                        value: target.deviceIdentifiers.joined(separator: "\n")
+                    )
+                }
+                if target.entitlementKeys.isEmpty == false {
+                    FullIdentifierRow(
+                        title: "Profile Entitlements",
+                        value: target.entitlementKeys.joined(separator: "\n")
+                    )
+                }
+                detailRow(
+                    "Profile 到期",
+                    target.profileExpirationDate.formatted(date: .abbreviated, time: .shortened)
+                )
+            }
         }
         .padding(.horizontal, 16)
+        .padding(.vertical, 8)
         .glassSurface(cornerRadius: 24)
     }
 
@@ -90,8 +168,13 @@ struct AppDetailView: View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
             Text(title).foregroundStyle(.primary)
             Spacer(minLength: 12)
-            Text(value).foregroundStyle(.secondary).multilineTextAlignment(.trailing).lineLimit(2).truncationMode(.middle)
-        }.padding(.vertical, 15)
+            Text(value)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .padding(.vertical, 15)
     }
 
     private func actionBar(_ app: AppRecord) -> some View {
@@ -117,15 +200,6 @@ struct AppDetailView: View {
         viewModel.accounts.first { $0.id == app.accountID }?.maskedEmail ?? "签名时选择"
     }
 
-    private func certificateName(_ app: AppRecord) -> String {
-        guard let serial = app.certificateSerialNumber else {
-            return app.state == .installed ? "未记录" : "签名时确定"
-        }
-        let value = serial.count > 10
-            ? "\(serial.prefix(5))…\(serial.suffix(5))"
-            : serial
-        return "Seal · \(value)"
-    }
 
     private func displayBundleIdentifier(_ app: AppRecord) -> String {
         if app.isSeal { return Bundle.main.bundleIdentifier ?? app.mappedBundleIdentifier ?? app.originalBundleIdentifier }

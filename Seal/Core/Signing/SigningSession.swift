@@ -13,7 +13,6 @@ struct SigningSession: Identifiable, Equatable, Sendable {
     let requestedBundleIdentifier: String?
     let selectedCertificateSerialNumber: String?
     var allowsDroppingExtensions: Bool
-    var allowsCertificateReplacement: Bool
     var status: Status
 
     init(
@@ -23,7 +22,6 @@ struct SigningSession: Identifiable, Equatable, Sendable {
         requestedBundleIdentifier: String? = nil,
         selectedCertificateSerialNumber: String? = nil,
         allowsDroppingExtensions: Bool = false,
-        allowsCertificateReplacement: Bool = false,
         status: Status
     ) {
         self.id = id
@@ -32,7 +30,6 @@ struct SigningSession: Identifiable, Equatable, Sendable {
         self.requestedBundleIdentifier = requestedBundleIdentifier
         self.selectedCertificateSerialNumber = selectedCertificateSerialNumber
         self.allowsDroppingExtensions = allowsDroppingExtensions
-        self.allowsCertificateReplacement = allowsCertificateReplacement
         self.status = status
     }
 }

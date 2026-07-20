@@ -57,6 +57,15 @@ struct SigningHistoryRecord: Codable, Equatable, Identifiable, Sendable {
     let teamID: String
     let teamName: String
     let certificateSerialNumber: String?
+    let signedDeviceIdentifier: String?
+    let provisioningProfileUUID: String?
+    let provisioningProfileName: String?
+    let provisioningProfileExpirationDate: Date?
+    let entitlementValidationStatus: String?
+    let capabilityValidationStatus: String?
+    let extensionBundleIdentifiers: [String]?
+    let removedExtensionBundleIdentifiers: [String]?
+    let signingTargets: [SigningTargetRecord]?
     let action: Action
     let result: Result
     let signedAt: Date
@@ -81,6 +90,15 @@ struct SigningHistoryRecord: Codable, Equatable, Identifiable, Sendable {
         teamID: String,
         teamName: String,
         certificateSerialNumber: String?,
+        signedDeviceIdentifier: String? = nil,
+        provisioningProfileUUID: String? = nil,
+        provisioningProfileName: String? = nil,
+        provisioningProfileExpirationDate: Date? = nil,
+        entitlementValidationStatus: String? = nil,
+        capabilityValidationStatus: String? = nil,
+        extensionBundleIdentifiers: [String]? = nil,
+        removedExtensionBundleIdentifiers: [String]? = nil,
+        signingTargets: [SigningTargetRecord]? = nil,
         action: Action,
         result: Result,
         signedAt: Date = Date(),
@@ -104,6 +122,15 @@ struct SigningHistoryRecord: Codable, Equatable, Identifiable, Sendable {
         self.teamID = teamID
         self.teamName = teamName
         self.certificateSerialNumber = certificateSerialNumber
+        self.signedDeviceIdentifier = signedDeviceIdentifier
+        self.provisioningProfileUUID = provisioningProfileUUID
+        self.provisioningProfileName = provisioningProfileName
+        self.provisioningProfileExpirationDate = provisioningProfileExpirationDate
+        self.entitlementValidationStatus = entitlementValidationStatus
+        self.capabilityValidationStatus = capabilityValidationStatus
+        self.extensionBundleIdentifiers = extensionBundleIdentifiers
+        self.removedExtensionBundleIdentifiers = removedExtensionBundleIdentifiers
+        self.signingTargets = signingTargets
         self.action = action
         self.result = result
         self.signedAt = signedAt
@@ -142,6 +169,17 @@ struct SigningHistoryRecord: Codable, Equatable, Identifiable, Sendable {
             certificateSerialNumber: app.certificateSerialNumber
                 ?? account.selectedCertificateSerialNumber
                 ?? account.certificateSerialNumber,
+            signedDeviceIdentifier: app.signedDeviceIdentifier,
+            provisioningProfileUUID: app.provisioningProfileUUID,
+            provisioningProfileName: app.provisioningProfileName,
+            provisioningProfileExpirationDate: app.provisioningProfileExpirationDate,
+            entitlementValidationStatus: app.entitlementValidationStatus,
+            capabilityValidationStatus: app.capabilityValidationStatus,
+            extensionBundleIdentifiers: app.extensions.compactMap {
+                $0.mappedBundleIdentifier ?? $0.originalBundleIdentifier
+            },
+            removedExtensionBundleIdentifiers: app.removedExtensionBundleIdentifiers,
+            signingTargets: app.signingTargets,
             action: action,
             result: result,
             signedAt: signedAt,

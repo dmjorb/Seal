@@ -68,6 +68,72 @@ struct CoreDataAppStoreTests {
         #expect(records == [record])
     }
 
+
+    @Test
+    func persistsCompleteSigningIdentityAndTargetProfiles() async throws {
+        let store = try CoreDataAppStore(inMemory: true)
+        let accountID = UUID()
+        let profileExpiration = Date(timeIntervalSince1970: 1_900_000_000)
+        let signingTarget = SigningTargetRecord(
+            bundleIdentifier: "com.example.signed",
+            profileUUID: "PROFILE-UUID-COMPLETE",
+            profileName: "Apple Development Profile",
+            profileCreationDate: Date(timeIntervalSince1970: 1_800_000_000),
+            profileExpirationDate: profileExpiration,
+            teamIdentifier: "TEAM-COMPLETE",
+            certificateSerialNumbers: ["00AABBCCDDEEFF"],
+            deviceIdentifiers: ["00008110-001A388E0A13801E"],
+            entitlementKeys: ["application-identifier", "get-task-allow"]
+        )
+        let extensionRecord = AppExtensionRecord(
+            name: "Share",
+            originalBundleIdentifier: "com.example.original.share",
+            mappedBundleIdentifier: "com.example.signed.share",
+            kind: .share,
+            provisioningProfileUUID: "EXT-PROFILE-UUID",
+            provisioningProfileName: "Share Profile",
+            provisioningProfileExpirationDate: profileExpiration,
+            certificateSerialNumber: "00AABBCCDDEEFF"
+        )
+        let record = AppRecord(
+            originalBundleIdentifier: "com.example.original",
+            mappedBundleIdentifier: "com.example.signed",
+            name: "Complete",
+            version: "2.0",
+            buildNumber: "20",
+            size: 4_096,
+            state: .installed,
+            expiryDate: profileExpiration,
+            accountID: accountID,
+            signingTeamID: "TEAM-COMPLETE",
+            certificateSerialNumber: "00AABBCCDDEEFF",
+            signedDeviceIdentifier: "00008110-001A388E0A13801E",
+            provisioningProfileUUID: "PROFILE-UUID-COMPLETE",
+            provisioningProfileName: "Apple Development Profile",
+            provisioningProfileCreationDate: Date(timeIntervalSince1970: 1_800_000_000),
+            provisioningProfileExpirationDate: profileExpiration,
+            entitlementValidationStatus: "validated",
+            capabilityValidationStatus: "validated",
+            lastSignedAt: Date(timeIntervalSince1970: 1_800_000_100),
+            lastInstalledAt: Date(timeIntervalSince1970: 1_800_000_200),
+            removedExtensionBundleIdentifiers: ["com.example.original.widget"],
+            signingTargets: [signingTarget],
+            ipaRelativePath: "Apps/complete/Original.ipa",
+            signedIPARelativePath: "Apps/complete/Signed.ipa",
+            preferredBundleIdentifier: "com.example.signed",
+            importedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            extensions: [extensionRecord]
+        )
+
+        try await store.save(record)
+        let saved = try #require(try await store.fetchAll().first)
+
+        #expect(saved == record)
+        #expect(saved.hasPersistedSigningIdentity)
+        #expect(saved.requiresLockedSigningIdentity)
+        #expect(saved.signingTargets == [signingTarget])
+    }
+
     @Test
     func deletesRecordByID() async throws {
         let store = try CoreDataAppStore(inMemory: true)

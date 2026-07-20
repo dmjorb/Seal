@@ -41,6 +41,32 @@ struct AppRecordTests {
         #expect(record.isPinned == false)
     }
 
+
+    @Test
+    func signedButNotInstalledRecordLocksSigningIdentity() {
+        let expiration = Date(timeIntervalSinceNow: 86_400)
+        let record = AppRecord(
+            originalBundleIdentifier: "com.example.original",
+            mappedBundleIdentifier: "com.example.signed",
+            name: "Pending Install",
+            version: "1.0",
+            buildNumber: "1",
+            size: 1,
+            state: .failedRecoverable,
+            accountID: UUID(),
+            signingTeamID: "TEAM123",
+            certificateSerialNumber: "ABCDEF123456",
+            signedDeviceIdentifier: "UDID-123",
+            provisioningProfileExpirationDate: expiration,
+            ipaRelativePath: "Apps/pending/Original.ipa",
+            signedIPARelativePath: "Apps/pending/Signed.ipa",
+            importedAt: Date()
+        )
+
+        #expect(record.hasPersistedSigningIdentity)
+        #expect(record.requiresLockedSigningIdentity)
+    }
+
     @Test(arguments: [
         (AppState.imported, "imported"),
         (AppState.preflightPassed, "preflightPassed"),

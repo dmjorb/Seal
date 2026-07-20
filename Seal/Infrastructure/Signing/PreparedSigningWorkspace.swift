@@ -9,3 +9,9 @@ struct PreparedSigningWorkspace: Sendable {
 
     var targetMainBundleIdentifier: String { mappedMainBundleID }
 }
+
+struct SignedBundleTarget: Sendable, Equatable {
+    let bundleURL: URL
+    let bundleIdentifier: String
+    let isMainApplication: Bool
+}

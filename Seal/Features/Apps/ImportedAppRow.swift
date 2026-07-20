@@ -25,8 +25,7 @@ struct ImportedAppRow: View {
                 Text(displayBundleIdentifier)
                     .font(.system(size: 15, weight: .regular))
                     .foregroundStyle(Color.sealTextSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 10)

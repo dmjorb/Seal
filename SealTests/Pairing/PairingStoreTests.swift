@@ -4,14 +4,14 @@ import Testing
 
 struct PairingStoreTests {
     @Test
-    func importsNormalizesProtectsAndRemovesPairingFile() async throws {
+    func importsValidatesProtectsAndRemovesStandardPairingFile() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let source = root.appending(path: "Source.plist")
         let destination = root.appending(path: "Stored/Pairing.plist")
         let data = try PropertyListSerialization.data(
-            fromPropertyList: ["UDID": "device-123", "HostID": "host"],
+            fromPropertyList: standardPairingDictionary(udid: "device-123"),
             format: .binary,
             options: 0
         )
@@ -22,10 +22,14 @@ struct PairingStoreTests {
         )
 
         let imported = try await store.importFile(at: source)
-
         #expect(imported.deviceIdentifier == "device-123")
         #expect(imported.isRemotePairing == false)
-        #expect(try await store.current() == imported)
+        #expect(imported.validationStatus == .unverified)
+
+        let validated = try await store.markValidated(deviceIdentifier: "device-123")
+        #expect(validated.isVerifiedForCurrentDevice)
+        #expect(validated.validatedDeviceIdentifier == "device-123")
+        #expect(try await store.current() == validated)
         #expect(try await store.contents().contains("device-123"))
         #expect(FileManager.default.fileExists(
             atPath: destination.appendingPathExtension("protected").path
@@ -36,13 +40,35 @@ struct PairingStoreTests {
     }
 
     @Test
-    func rejectsUnrelatedPropertyList() async throws {
+    func rejectsPairingFileForAnotherConnectedDevice() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appending(path: "Source.plist")
+        let destination = root.appending(path: "Pairing.plist")
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: standardPairingDictionary(udid: "device-A"),
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: source)
+        let store = PairingStore(fileURL: destination)
+        _ = try await store.importFile(at: source)
+
+        await #expect(throws: ImportFailure.self) {
+            try await store.markValidated(deviceIdentifier: "device-B")
+        }
+        #expect(try await store.current()?.validationStatus == .deviceMismatch)
+    }
+
+    @Test
+    func rejectsStructurallyIncompletePropertyList() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let source = root.appending(path: "Invalid.plist")
         let data = try PropertyListSerialization.data(
-            fromPropertyList: ["Name": "Not pairing"],
+            fromPropertyList: ["UDID": "device-123", "HostID": "host"],
             format: .xml,
             options: 0
         )
@@ -66,6 +92,18 @@ struct PairingStoreTests {
         await #expect(throws: ImportFailure.self) {
             try await store.importFile(at: source)
         }
+    }
+
+    private func standardPairingDictionary(udid: String) -> [String: Any] {
+        [
+            "UDID": udid,
+            "HostID": "host-id",
+            "SystemBUID": "system-buid",
+            "HostCertificate": Data([1, 2, 3]),
+            "HostPrivateKey": Data([4, 5, 6]),
+            "RootCertificate": Data([7, 8, 9]),
+            "RootPrivateKey": Data([10, 11, 12])
+        ]
     }
 
     private func temporaryDirectory() -> URL {

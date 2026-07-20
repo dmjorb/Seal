@@ -176,9 +176,9 @@ private struct SigningHistoryRow: View {
                         .foregroundStyle(Color.sealTextSecondary)
 
                     Text(record.displayBundleIdentifier)
-                        .font(.caption)
+                        .font(.system(size: 12, weight: .regular, design: .monospaced))
                         .foregroundStyle(Color.sealTextSecondary)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
             }
@@ -189,11 +189,49 @@ private struct SigningHistoryRow: View {
                 row("操作", record.action.displayTitle, Color.primary)
                 row("时间", SigningHistoryDateFormatter.string(from: record.signedAt), Color.primary)
                 row("状态", record.statusText(), statusColor)
-                row("尝试 ID", record.attemptedDisplayBundleIdentifier, Color.sealTextSecondary)
+                FullIdentifierRow(title: "尝试 Bundle ID", value: record.attemptedDisplayBundleIdentifier)
                 if let final = record.finalSignedBundleIdentifier, final.isEmpty == false {
-                    row("最终 ID", final, Color.sealTextSecondary)
+                    FullIdentifierRow(title: "最终 Bundle ID", value: final)
                 }
-                row("Team ID", record.teamID, Color.sealTextSecondary)
+                FullIdentifierRow(title: "Team ID", value: record.teamID)
+                if let serial = record.certificateSerialNumber, serial.isEmpty == false {
+                    FullIdentifierRow(title: "证书 Serial", value: serial)
+                }
+                if let udid = record.signedDeviceIdentifier, udid.isEmpty == false {
+                    FullIdentifierRow(title: "设备 UDID", value: udid)
+                }
+                if let profileUUID = record.provisioningProfileUUID, profileUUID.isEmpty == false {
+                    FullIdentifierRow(title: "Profile UUID", value: profileUUID)
+                }
+                if let profileName = record.provisioningProfileName, profileName.isEmpty == false {
+                    FullIdentifierRow(title: "Profile 名称", value: profileName)
+                }
+                if let targets = record.signingTargets, targets.isEmpty == false {
+                    ForEach(Array(targets.enumerated()), id: \.element.id) { index, target in
+                        FullIdentifierRow(
+                            title: "目标 \(index + 1) Bundle ID",
+                            value: target.bundleIdentifier
+                        )
+                        if let profileUUID = target.profileUUID, profileUUID.isEmpty == false {
+                            FullIdentifierRow(
+                                title: "目标 \(index + 1) Profile UUID",
+                                value: profileUUID
+                            )
+                        }
+                        if target.certificateSerialNumbers.isEmpty == false {
+                            FullIdentifierRow(
+                                title: "目标 \(index + 1) 证书 Serial",
+                                value: target.certificateSerialNumbers.joined(separator: "\n")
+                            )
+                        }
+                        if target.deviceIdentifiers.isEmpty == false {
+                            FullIdentifierRow(
+                                title: "目标 \(index + 1) 设备 UDID",
+                                value: target.deviceIdentifiers.joined(separator: "\n")
+                            )
+                        }
+                    }
+                }
                 if let errorReason = record.errorReason, record.result == .failed {
                     row("原因", errorReason, Color.sealDanger)
                 }
@@ -233,7 +271,7 @@ private struct SigningHistoryRow: View {
             Text(value)
                 .font(.caption)
                 .foregroundStyle(color)
-                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .textSelection(.enabled)
         }

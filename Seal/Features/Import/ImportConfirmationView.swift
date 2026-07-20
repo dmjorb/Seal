@@ -116,8 +116,7 @@ struct ImportConfirmationView: View {
             Text(value)
                 .font(.system(size: 14, weight: .regular, design: monospaced ? .monospaced : .default))
                 .foregroundStyle(Color.sealTextSecondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(minHeight: 54)
     }

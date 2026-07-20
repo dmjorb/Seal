@@ -105,6 +105,27 @@ struct SigningWorkspace: Sendable {
         try? FileManager.default.removeItem(at: workspace.rootURL)
     }
 
+
+    func signedBundleTargets(in workspace: PreparedSigningWorkspace) throws -> [SignedBundleTarget] {
+        var targets = [
+            SignedBundleTarget(
+                bundleURL: workspace.appURL,
+                bundleIdentifier: try bundleIdentifier(at: workspace.appURL),
+                isMainApplication: true
+            )
+        ]
+        for extensionURL in try appExtensionURLs(in: workspace.appURL) {
+            targets.append(
+                SignedBundleTarget(
+                    bundleURL: extensionURL,
+                    bundleIdentifier: try bundleIdentifier(at: extensionURL),
+                    isMainApplication: false
+                )
+            )
+        }
+        return targets
+    }
+
     func removeExtension(
         mappedBundleIdentifier: String,
         from workspace: PreparedSigningWorkspace
@@ -144,13 +165,27 @@ struct SigningWorkspace: Sendable {
     }
 
     private func appExtensionURLs(in appURL: URL) throws -> [URL] {
-        let plugInsURL = appURL.appending(path: "PlugIns", directoryHint: .isDirectory)
-        guard FileManager.default.fileExists(atPath: plugInsURL.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(
-            at: plugInsURL,
-            includingPropertiesForKeys: [.isDirectoryKey],
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: appURL,
+            includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles]
-        ).filter { $0.pathExtension.lowercased() == "appex" }
+        ) else { return [] }
+
+        var values: [URL] = []
+        for case let url as URL in enumerator {
+            let resourceValues = try url.resourceValues(forKeys: Set(keys))
+            if resourceValues.isSymbolicLink == true {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard resourceValues.isDirectory == true else { continue }
+            if url.pathExtension.lowercased() == "appex" {
+                values.append(url)
+                enumerator.skipDescendants()
+            }
+        }
+        return values.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
     private func bundleIdentifier(at bundleURL: URL) throws -> String {

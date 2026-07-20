@@ -50,17 +50,6 @@ struct SettingsRootView: View {
                         }
                         sectionDivider
 
-                        NavigationLink(value: SettingsRoute.pairing) {
-                            settingsRow(
-                                title: "设备配对文件",
-                                value: pairingSummary,
-                                icon: "link",
-                                showsChevron: true,
-                                statusColor: pairingStatusColor
-                            )
-                        }
-                        sectionDivider
-
                         NavigationLink(value: SettingsRoute.localDevVPN) {
                             settingsRow(
                                 title: "LocalDevVPN",
@@ -324,16 +313,13 @@ struct SettingsRootView: View {
         guard let account = viewModel.activeAccount else { return "不可用" }
         let serial = account.selectedCertificateSerialNumber
             ?? account.certificateSerialNumber
-        guard let serial else { return "签名时创建" }
-        return "Seal · \(abbreviated(serial))"
-    }
-
-    private var pairingSummary: String {
-        viewModel.pairingRecord == nil ? "未导入" : "已导入"
+        guard serial != nil else { return "签名时创建" }
+        return "本机可用"
     }
 
     private var devicePairingSummary: String {
-        viewModel.pairingRecord == nil ? "未配对" : "已配对"
+        guard let pairing = viewModel.pairingRecord else { return "未导入" }
+        return pairing.validationStatus.title
     }
 
     private var localDevVPNSummary: String {
@@ -384,7 +370,12 @@ struct SettingsRootView: View {
     }
 
     private var pairingStatusColor: Color {
-        viewModel.pairingRecord == nil ? .sealWarning : .sealSuccess
+        guard let pairing = viewModel.pairingRecord else { return .sealWarning }
+        switch pairing.validationStatus {
+        case .verified: return .sealSuccess
+        case .deviceMismatch: return .sealDanger
+        case .unverified, .connectionFailed: return .sealWarning
+        }
     }
 
     private var localDevVPNStatusColor: Color {
@@ -430,10 +421,7 @@ struct SettingsRootView: View {
         }
     }
 
-    private func abbreviated(_ value: String) -> String {
-        guard value.count > 10 else { return value }
-        return "\(value.prefix(5))…\(value.suffix(5))"
-    }
+
 
     private var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"

@@ -37,7 +37,7 @@ enum BundleIDPolicy {
             return try validated(identifier)
         }
 
-        if app.state == .installed {
+        if app.requiresLockedSigningIdentity {
             let identifier = app.mappedBundleIdentifier
                 ?? app.preferredBundleIdentifier
                 ?? app.originalBundleIdentifier
@@ -62,12 +62,12 @@ enum BundleIDPolicy {
     }
 
     static func isEditable(_ app: AppRecord) -> Bool {
-        app.isSeal == false && app.state != .installed
+        app.isSeal == false && app.requiresLockedSigningIdentity == false
     }
 
     static func displayMode(for app: AppRecord) -> String {
         if app.isSeal { return "Seal 自刷新已锁定" }
-        if app.state == .installed { return "续签已锁定" }
+        if app.requiresLockedSigningIdentity { return "续签已锁定" }
         return "首次签名可修改"
     }
 

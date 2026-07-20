@@ -88,6 +88,9 @@ actor CoreDataAppStore: AppStore {
         storeType: String,
         storeURL: URL?
     ) throws -> NSManagedObjectContext {
+        if storeType == NSSQLiteStoreType, let storeURL {
+            try migrateLegacyStoreIfNeeded(at: storeURL)
+        }
         let coordinator = NSPersistentStoreCoordinator(
             managedObjectModel: CoreDataModel.make()
         )
@@ -111,6 +114,76 @@ actor CoreDataAppStore: AppStore {
         )
         context.undoManager = nil
         return context
+    }
+
+    private static func migrateLegacyStoreIfNeeded(at storeURL: URL) throws {
+        guard FileManager.default.fileExists(atPath: storeURL.path) else { return }
+
+        let metadata = try NSPersistentStoreCoordinator.metadataForPersistentStore(
+            ofType: NSSQLiteStoreType,
+            at: storeURL,
+            options: nil
+        )
+        let currentModel = CoreDataModel.make()
+        if currentModel.isConfiguration(
+            withName: nil,
+            compatibleWithStoreMetadata: metadata
+        ) {
+            return
+        }
+
+        let legacyModel = CoreDataModel.makeLegacyV1()
+        guard legacyModel.isConfiguration(
+            withName: nil,
+            compatibleWithStoreMetadata: metadata
+        ) else {
+            throw AppStoreError.invalidConfiguration
+        }
+
+        let mapping = try NSMappingModel.inferredMappingModel(
+            forSourceModel: legacyModel,
+            destinationModel: currentModel
+        )
+        let temporaryURL = storeURL.deletingLastPathComponent().appending(
+            path: "Seal-Migration-\(UUID().uuidString).sqlite"
+        )
+        defer { removeSQLiteStoreFiles(at: temporaryURL) }
+
+        let migrationManager = NSMigrationManager(
+            sourceModel: legacyModel,
+            destinationModel: currentModel
+        )
+        try migrationManager.migrateStore(
+            from: storeURL,
+            sourceType: NSSQLiteStoreType,
+            options: nil,
+            with: mapping,
+            toDestinationURL: temporaryURL,
+            destinationType: NSSQLiteStoreType,
+            destinationOptions: [
+                NSPersistentStoreFileProtectionKey:
+                    FileProtectionType.completeUntilFirstUserAuthentication
+            ]
+        )
+
+        let replacementCoordinator = NSPersistentStoreCoordinator(
+            managedObjectModel: currentModel
+        )
+        try replacementCoordinator.replacePersistentStore(
+            at: storeURL,
+            destinationOptions: nil,
+            withPersistentStoreFrom: temporaryURL,
+            sourceOptions: nil,
+            ofType: NSSQLiteStoreType
+        )
+    }
+
+    private static func removeSQLiteStoreFiles(at url: URL) {
+        let fileManager = FileManager.default
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate = URL(fileURLWithPath: url.path + suffix)
+            try? fileManager.removeItem(at: candidate)
+        }
     }
 
     private static func fetchApp(
@@ -137,7 +210,25 @@ actor CoreDataAppStore: AppStore {
         object.setValue(record.state.rawValue, forKey: "stateRaw")
         object.setValue(record.expiryDate, forKey: "expiryDate")
         object.setValue(record.accountID, forKey: "accountID")
+        object.setValue(record.signingTeamID, forKey: "signingTeamID")
         object.setValue(record.certificateSerialNumber, forKey: "certificateSerialNumber")
+        object.setValue(record.signedDeviceIdentifier, forKey: "signedDeviceIdentifier")
+        object.setValue(record.provisioningProfileUUID, forKey: "provisioningProfileUUID")
+        object.setValue(record.provisioningProfileName, forKey: "provisioningProfileName")
+        object.setValue(record.provisioningProfileCreationDate, forKey: "provisioningProfileCreationDate")
+        object.setValue(record.provisioningProfileExpirationDate, forKey: "provisioningProfileExpirationDate")
+        object.setValue(record.entitlementValidationStatus, forKey: "entitlementValidationStatus")
+        object.setValue(record.capabilityValidationStatus, forKey: "capabilityValidationStatus")
+        object.setValue(record.lastSignedAt, forKey: "lastSignedAt")
+        object.setValue(record.lastInstalledAt, forKey: "lastInstalledAt")
+        object.setValue(
+            try? JSONEncoder().encode(record.removedExtensionBundleIdentifiers),
+            forKey: "removedExtensionBundleIdentifiersData"
+        )
+        object.setValue(
+            try? JSONEncoder().encode(record.signingTargets),
+            forKey: "signingTargetsData"
+        )
         object.setValue(record.ipaRelativePath, forKey: "ipaRelativePath")
         object.setValue(record.signedIPARelativePath, forKey: "signedIPARelativePath")
         object.setValue(record.preferredBundleIdentifier, forKey: "preferredBundleIdentifier")
@@ -175,6 +266,10 @@ actor CoreDataAppStore: AppStore {
         object.setValue(record.originalBundleIdentifier, forKey: "originalBundleIdentifier")
         object.setValue(record.mappedBundleIdentifier, forKey: "mappedBundleIdentifier")
         object.setValue(record.kind.rawValue, forKey: "kindRaw")
+        object.setValue(record.provisioningProfileUUID, forKey: "provisioningProfileUUID")
+        object.setValue(record.provisioningProfileName, forKey: "provisioningProfileName")
+        object.setValue(record.provisioningProfileExpirationDate, forKey: "provisioningProfileExpirationDate")
+        object.setValue(record.certificateSerialNumber, forKey: "certificateSerialNumber")
     }
 
     private static func decode(_ object: NSManagedObject) throws -> AppRecord {
@@ -215,7 +310,23 @@ actor CoreDataAppStore: AppStore {
             state: state,
             expiryDate: object.value(forKey: "expiryDate") as? Date,
             accountID: object.value(forKey: "accountID") as? UUID,
+            signingTeamID: object.value(forKey: "signingTeamID") as? String,
             certificateSerialNumber: object.value(forKey: "certificateSerialNumber") as? String,
+            signedDeviceIdentifier: object.value(forKey: "signedDeviceIdentifier") as? String,
+            provisioningProfileUUID: object.value(forKey: "provisioningProfileUUID") as? String,
+            provisioningProfileName: object.value(forKey: "provisioningProfileName") as? String,
+            provisioningProfileCreationDate: object.value(forKey: "provisioningProfileCreationDate") as? Date,
+            provisioningProfileExpirationDate: object.value(forKey: "provisioningProfileExpirationDate") as? Date,
+            entitlementValidationStatus: object.value(forKey: "entitlementValidationStatus") as? String,
+            capabilityValidationStatus: object.value(forKey: "capabilityValidationStatus") as? String,
+            lastSignedAt: object.value(forKey: "lastSignedAt") as? Date,
+            lastInstalledAt: object.value(forKey: "lastInstalledAt") as? Date,
+            removedExtensionBundleIdentifiers: Self.decodeStringArray(
+                object.value(forKey: "removedExtensionBundleIdentifiersData") as? Data
+            ),
+            signingTargets: Self.decodeSigningTargets(
+                object.value(forKey: "signingTargetsData") as? Data
+            ),
             ipaRelativePath: ipaRelativePath,
             signedIPARelativePath: object.value(forKey: "signedIPARelativePath") as? String,
             preferredBundleIdentifier: object.value(forKey: "preferredBundleIdentifier") as? String,
@@ -244,7 +355,21 @@ actor CoreDataAppStore: AppStore {
             name: name,
             originalBundleIdentifier: originalBundleIdentifier,
             mappedBundleIdentifier: object.value(forKey: "mappedBundleIdentifier") as? String,
-            kind: kind
+            kind: kind,
+            provisioningProfileUUID: object.value(forKey: "provisioningProfileUUID") as? String,
+            provisioningProfileName: object.value(forKey: "provisioningProfileName") as? String,
+            provisioningProfileExpirationDate: object.value(forKey: "provisioningProfileExpirationDate") as? Date,
+            certificateSerialNumber: object.value(forKey: "certificateSerialNumber") as? String
         )
+    }
+
+    private static func decodeStringArray(_ data: Data?) -> [String] {
+        guard let data else { return [] }
+        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
+
+    private static func decodeSigningTargets(_ data: Data?) -> [SigningTargetRecord] {
+        guard let data else { return [] }
+        return (try? JSONDecoder().decode([SigningTargetRecord].self, from: data)) ?? []
     }
 }
