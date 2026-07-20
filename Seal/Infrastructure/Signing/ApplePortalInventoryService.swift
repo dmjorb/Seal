@@ -125,12 +125,15 @@ actor ApplePortalInventoryService {
                 team: team,
                 session: session
             )
-            let normalizedName = appID.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayName = Self.displayName(
+                from: appID.name,
+                fallbackBundleIdentifier: appID.bundleIdentifier
+            )
 
             appSnapshots.append(
                 ApplePortalAppIDSnapshot(
                     identifier: appID.identifier,
-                    name: normalizedName.isEmpty ? appID.bundleIdentifier : normalizedName,
+                    name: displayName,
                     bundleIdentifier: appID.bundleIdentifier,
                     appIDExpirationDate: appID.expirationDate,
                     provisioningProfileName: profile?.name,
@@ -156,6 +159,21 @@ actor ApplePortalInventoryService {
             certificates: certificateSnapshots,
             fetchedAt: Date()
         )
+    }
+
+
+    private static func displayName(
+        from rawName: String,
+        fallbackBundleIdentifier: String
+    ) -> String {
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return fallbackBundleIdentifier }
+        let prefix = "Seal "
+        if trimmed.hasPrefix(prefix) {
+            let original = trimmed.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+            return original.isEmpty ? fallbackBundleIdentifier : original
+        }
+        return trimmed
     }
 
     private func fetchTeams(

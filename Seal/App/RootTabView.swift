@@ -5,8 +5,11 @@ struct RootTabView: View {
     @ObservedObject var settingsViewModel: SettingsViewModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var selection: AppSection = .apps
+    @State private var isNetworkPromptPresented = false
     @AppStorage("behavior.autoRenew") private var autoRenew = false
     @AppStorage("behavior.autoRenew.lastCheckAt") private var lastAutoRenewCheckAt = 0.0
+    @AppStorage("onboarding.networkPromptShown") private var networkPromptShown = false
+    @AppStorage("onboarding.notificationPromptRequested") private var notificationPromptRequested = false
 
     var body: some View {
         TabView(selection: $selection) {
@@ -31,7 +34,15 @@ struct RootTabView: View {
         .tint(.sealAccent)
         .sealScreenBackground()
         .task {
-            await settingsViewModel.requestInitialPermissionsIfNeeded()
+            await runInitialPermissionFlow()
+        }
+        .alert("需要开启网络访问", isPresented: $isNetworkPromptPresented) {
+            Button("继续") {
+                networkPromptShown = true
+                Task { await requestNotificationPermissionIfNeeded() }
+            }
+        } message: {
+            Text("Seal 需要连接 Apple 签名服务、同步 App ID 和描述文件，并通过本地安装通道连接当前设备。请在后续系统弹窗中允许相关访问。")
         }
         .onChange(of: appsViewModel.shouldOpenSettings) { shouldOpen in
             guard shouldOpen else { return }
@@ -71,6 +82,22 @@ struct RootTabView: View {
 
     private var shouldRunAutoRenewCheck: Bool {
         Date().timeIntervalSince1970 - lastAutoRenewCheckAt >= 21_600
+    }
+
+    @MainActor
+    private func runInitialPermissionFlow() async {
+        guard networkPromptShown else {
+            isNetworkPromptPresented = true
+            return
+        }
+        await requestNotificationPermissionIfNeeded()
+    }
+
+    @MainActor
+    private func requestNotificationPermissionIfNeeded() async {
+        guard notificationPromptRequested == false else { return }
+        notificationPromptRequested = true
+        await settingsViewModel.requestInitialPermissionsIfNeeded()
     }
 }
 

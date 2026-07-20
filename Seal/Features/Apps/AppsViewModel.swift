@@ -449,9 +449,7 @@ final class AppsViewModel: ObservableObject {
             presentVPNRecovery(for: .signing(app, accountID: accountID))
             return
         }
-        if app.requiresLockedSigningIdentity == false && app.isSeal == false {
-            await selectActiveAccount(id: account.id)
-        }
+        await selectActiveAccount(id: account.id)
         startSigning(
             app: app,
             account: account,
@@ -463,11 +461,8 @@ final class AppsViewModel: ObservableObject {
         for app: AppRecord,
         availableAccounts: [AppleAccountRecord]
     ) {
-        if let accountID = app.accountID,
-           let account = availableAccounts.first(where: { $0.id == accountID }) {
-            startSigning(app: app, account: account)
-        } else if let activeAccountID,
-                  let account = availableAccounts.first(where: { $0.id == activeAccountID }) {
+        if let activeAccountID,
+           let account = availableAccounts.first(where: { $0.id == activeAccountID }) {
             startSigning(app: app, account: account)
         } else if availableAccounts.count == 1, let account = availableAccounts.first {
             startSigning(app: app, account: account)
@@ -513,9 +508,7 @@ final class AppsViewModel: ObservableObject {
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(350))
             guard Task.isCancelled == false else { return }
-            if app.requiresLockedSigningIdentity == false && app.isSeal == false {
-                await self?.selectActiveAccount(id: account.id)
-            }
+            await self?.selectActiveAccount(id: account.id)
             self?.startSigning(app: app, account: account)
         }
     }
@@ -550,97 +543,6 @@ final class AppsViewModel: ObservableObject {
         )
     }
 
-
-    func confirmCertificateMigrationAndSign(
-        app: AppRecord,
-        accountID: UUID,
-        requestedBundleIdentifier: String? = nil
-    ) async {
-        guard signingTask == nil,
-              batchRefreshTask == nil,
-              let appStore,
-              let fileStore,
-              let account = accounts.first(where: { $0.id == accountID }) else { return }
-
-        do {
-            guard app.accountID == account.id else {
-                throw ImportFailure(
-                    title: "证书迁移账号不匹配",
-                    reason: "应用绑定的 Apple ID 与当前选择不一致。Seal 没有迁移账号。",
-                    recovery: "选择首次签名使用的 Apple ID",
-                    code: "SEAL-AUTH-111"
-                )
-            }
-            if let originalTeamID = app.signingTeamID,
-               originalTeamID.caseInsensitiveCompare(account.teamID) != .orderedSame {
-                throw ImportFailure(
-                    title: "证书迁移 Team 不匹配",
-                    reason: "应用绑定 Team：\(originalTeamID)，当前 Team：\(account.teamID)。Seal 没有迁移 Team。",
-                    recovery: "选择首次签名使用的 Apple ID / Team",
-                    code: "SEAL-AUTH-112"
-                )
-            }
-            guard let newSerial = account.selectedCertificateSerialNumber
-                    ?? account.certificateSerialNumber,
-                  account.certificateSerialNumber?.caseInsensitiveCompare(newSerial) == .orderedSame else {
-                throw ImportFailure(
-                    title: "没有本机可用证书",
-                    reason: "请先在签名证书页面创建或选择包含本机私钥的证书。",
-                    recovery: "前往签名证书",
-                    code: "SEAL-CERT-206"
-                )
-            }
-            guard let oldSerial = app.certificateSerialNumber,
-                  oldSerial.caseInsensitiveCompare(newSerial) != .orderedSame else {
-                throw ImportFailure(
-                    title: "无需迁移证书",
-                    reason: "应用已经绑定当前本机证书 Serial：\(newSerial)。",
-                    recovery: "直接重试",
-                    code: "SEAL-CERT-213"
-                )
-            }
-
-            var current = try await appStore.fetchAll().first(where: { $0.id == app.id }) ?? app
-            current.certificateSerialNumber = newSerial
-            current.provisioningProfileUUID = nil
-            current.provisioningProfileName = nil
-            current.provisioningProfileCreationDate = nil
-            current.provisioningProfileExpirationDate = nil
-            current.entitlementValidationStatus = nil
-            current.capabilityValidationStatus = nil
-            current.signingTargets = []
-            current.signedIPARelativePath = nil
-            current.lastSignedAt = nil
-            for index in current.extensions.indices {
-                current.extensions[index].certificateSerialNumber = nil
-                current.extensions[index].provisioningProfileUUID = nil
-                current.extensions[index].provisioningProfileName = nil
-                current.extensions[index].provisioningProfileExpirationDate = nil
-            }
-            try await appStore.save(current)
-            try? await fileStore.removeSignedIPA(appID: current.id)
-            try? await logStore?.append(
-                category: .signing,
-                message: "用户明确确认应用证书迁移。原 Serial：\(oldSerial)，新 Serial：\(newSerial)，Team：\(account.teamID)，Bundle ID：\(current.mappedBundleIdentifier ?? current.originalBundleIdentifier)"
-            )
-            await load(force: true)
-            startSigning(
-                app: current,
-                account: account,
-                requestedBundleIdentifier: requestedBundleIdentifier
-            )
-        } catch let failure as ImportFailure {
-            alertFailure = failure
-        } catch {
-            let nsError = error as NSError
-            alertFailure = ImportFailure(
-                title: "无法迁移证书",
-                reason: "本地签名记录更新失败。",
-                recovery: "重试",
-                code: "SEAL-CERT-214"
-            )
-        }
-    }
 
     func cancelSigning() {
         signingTask?.cancel()

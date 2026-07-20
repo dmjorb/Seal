@@ -470,7 +470,7 @@ final class SettingsViewModel: ObservableObject {
             await refreshCertificateInventory(for: account, force: true)
             let nsError = error as NSError
             alertFailure = Self.failure(
-                title: "无法完成证书迁移",
+                title: "无法完成证书处理",
                 reason: "已按用户选择处理证书，但 Apple 或本地保存阶段没有返回明确失败原因。",
                 recovery: "重新同步证书后确认当前状态",
                 code: "SEAL-CERT-212"
@@ -643,7 +643,7 @@ final class SettingsViewModel: ObservableObject {
 
     func refreshCertificateInventories() async {
         for account in accounts where account.status == .verified {
-            await refreshCertificateInventory(for: account, force: false)
+            await refreshCertificateInventory(for: account, force: true)
         }
     }
 
@@ -652,11 +652,7 @@ final class SettingsViewModel: ObservableObject {
         force: Bool = true
     ) async {
         guard let keychain, let applePortalInventoryService else { return }
-        if force == false,
-           let existing = certificateInventories[account.id],
-           Date().timeIntervalSince(existing.fetchedAt) < 300 {
-            return
-        }
+        // App ID、描述文件和证书有效期必须以 Apple 当前返回为准，不使用本地刷新时间推算。
         if certificateInventoryLoadingIDs.contains(account.id) { return }
 
         certificateInventoryLoadingIDs.insert(account.id)
@@ -819,25 +815,19 @@ final class SettingsViewModel: ObservableObject {
             )
             try Task.checkCancellation()
 
-            if let existingAccount,
-               existingAccount.accountIdentifier != authenticated.record.accountIdentifier
-                    || existingAccount.teamID != authenticated.record.teamID {
-                throw Self.failure(
-                    title: "账号不匹配",
-                    reason: "重新验证必须使用原来的 Apple ID 和 Team。当前输入的账号属于另一组 Apple ID / Team，Seal 已阻止覆盖原账号绑定。",
-                    recovery: "返回后选择添加新账号",
-                    code: "SEAL-AUTH-110"
-                )
-            }
+            let canReplaceExistingAccount = existingAccount.map { account in
+                account.accountIdentifier == authenticated.record.accountIdentifier
+                    && account.teamID == authenticated.record.teamID
+            } ?? false
 
             let storedAccounts = (try? await accountRepository.fetchAll()) ?? []
-            let replacingAccountID = existingAccount?.id
+            let replacingAccountID = canReplaceExistingAccount ? existingAccount?.id : nil
             let duplicateAccount = storedAccounts.first { candidate in
                 if let replacingAccountID, candidate.id == replacingAccountID { return false }
                 return candidate.accountIdentifier == authenticated.record.accountIdentifier
                     && candidate.teamID == authenticated.record.teamID
             }
-            let baseAccount = existingAccount ?? duplicateAccount
+            let baseAccount = canReplaceExistingAccount ? existingAccount : duplicateAccount
             let record = baseAccount.map {
                 AppleAccountRecord(
                     id: $0.id,

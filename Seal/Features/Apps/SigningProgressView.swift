@@ -419,7 +419,6 @@ struct SigningProgressView: View {
     }
 
     private func primaryRecoveryTitle(_ failure: ImportFailure) -> String {
-        if isSelfAppIDOwnershipFailure(failure) { return "切换到当前签名 Apple ID" }
         if isAuthFailure(failure) { return "重新验证 Apple ID" }
         if isCertificateFailure(failure) { return "前往签名证书" }
         if isAppIDFailure(failure) { return "更换 Apple ID 或 Bundle ID" }
@@ -430,9 +429,7 @@ struct SigningProgressView: View {
     }
 
     private func performPrimaryRecovery(_ failure: ImportFailure) {
-        if isSelfAppIDOwnershipFailure(failure) {
-            openSettings(.account)
-        } else if isAuthFailure(failure) {
+        if isAuthFailure(failure) {
             openSettings(.account)
         } else if isCertificateFailure(failure) {
             openSettings(.certificates)
@@ -463,12 +460,6 @@ struct SigningProgressView: View {
     }
 
     private func userFacingReason(_ failure: ImportFailure) -> String {
-        if isSelfAppIDOwnershipFailure(failure) {
-            return failure.userReason
-        }
-        if isAppIDFailure(failure), session?.app.isSeal == true {
-            return "当前 Apple ID / Team 无法使用当前安装的 Bundle ID。Seal 自续签只沿用当前安装 Bundle ID，请使用签出当前 Seal 的 Apple ID / Team。"
-        }
         if isAuthFailure(failure) {
             return "Apple ID 登录状态已失效，请重新验证后重试"
         }
@@ -491,10 +482,6 @@ struct SigningProgressView: View {
 
     private func isAppIDFailure(_ failure: ImportFailure) -> Bool {
         failure.code.hasPrefix("SEAL-APPID-")
-    }
-
-    private func isSelfAppIDOwnershipFailure(_ failure: ImportFailure) -> Bool {
-        failure.code == "SEAL-SELF-102" || failure.code == "SEAL-SELF-103"
     }
 
     private func isPairingFailure(_ failure: ImportFailure) -> Bool {

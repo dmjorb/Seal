@@ -76,7 +76,7 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
             .sorted()
         guard missing.isEmpty else {
             throw Self.failure(
-                reason: "描述文件未授权 \(bundleIdentifier) 请求的权限：\(missing.joined(separator: "、"))。Seal 没有静默删除这些权限。",
+                reason: "描述文件未授权 \(bundleIdentifier) 请求的权限：\(missing.joined(separator: "、"))。",
                 code: "SEAL-ENTITLEMENT-401"
             )
         }
@@ -91,7 +91,7 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
         }
         guard mismatched.isEmpty else {
             throw Self.failure(
-                reason: "描述文件中的权限值与 \(bundleIdentifier) 请求不一致：\(mismatched.joined(separator: "、"))。Seal 没有改写或放宽权限。",
+                reason: "描述文件中的权限值与 \(bundleIdentifier) 请求不一致：\(mismatched.joined(separator: "、"))。",
                 code: "SEAL-ENTITLEMENT-402"
             )
         }

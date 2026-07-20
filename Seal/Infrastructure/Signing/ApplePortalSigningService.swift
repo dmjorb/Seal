@@ -430,64 +430,24 @@ actor ApplePortalSigningService {
         let certificates = try await fetchCertificates(team: team, session: session)
         try Task.checkCancellation()
 
-        if let selectedCertificateSerialNumber {
-            guard secret.certificateSerialNumber?.caseInsensitiveCompare(
-                selectedCertificateSerialNumber
-            ) == .orderedSame,
-            let data = secret.certificateP12 else {
-                throw Self.failure(
-                    title: "所选证书不可用",
-                    reason: "所选证书 Serial：\(selectedCertificateSerialNumber) 没有对应的本地 P12 和私钥。Seal 没有自动改用或创建其他证书。",
-                    recovery: "在签名证书页面创建本机证书，或明确执行证书迁移",
-                    code: "SEAL-CERT-206"
-                )
-            }
-
-            guard let remote = certificates.first(where: {
-                $0.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame
-            }) else {
-                throw Self.failure(
-                    title: "所选证书已失效",
-                    reason: "Apple 当前证书列表中没有 Serial：\(selectedCertificateSerialNumber)。Seal 没有自动申请或切换其他证书。",
-                    recovery: "在签名证书页面明确创建或迁移证书",
-                    code: "SEAL-CERT-207"
-                )
-            }
-
-            guard let local = try? ALTCertificate(p12Data: data, password: nil),
-                  local.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame else {
-                throw Self.failure(
-                    title: "证书私钥损坏",
-                    reason: "本地 P12 无法读取，或 P12 Serial 与所选证书不一致：\(selectedCertificateSerialNumber)。",
-                    recovery: "在签名证书页面明确执行证书迁移",
-                    code: "SEAL-CERT-202"
-                )
-            }
+        if let selectedCertificateSerialNumber,
+           let data = secret.certificateP12,
+           let remote = certificates.first(where: {
+               $0.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame
+           }),
+           let local = try? ALTCertificate(p12Data: data, password: nil),
+           local.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame {
             local.machineIdentifier = remote.machineIdentifier
             return SigningIdentity(certificate: local, secret: secret)
         }
 
         if let serial = secret.certificateSerialNumber,
-           let data = secret.certificateP12 {
-            guard let remote = certificates.first(where: {
-                $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
-            }) else {
-                throw Self.failure(
-                    title: "本机证书已失效",
-                    reason: "Apple 当前证书列表中没有本机保存的 Serial：\(serial)。Seal 没有静默创建新证书。",
-                    recovery: "在签名证书页面明确创建本机证书",
-                    code: "SEAL-CERT-207"
-                )
-            }
-            guard let local = try? ALTCertificate(p12Data: data, password: nil),
-                  local.serialNumber.caseInsensitiveCompare(serial) == .orderedSame else {
-                throw Self.failure(
-                    title: "证书私钥损坏",
-                    reason: "Seal 无法读取本机保存的 P12，或 P12 Serial 与记录不一致：\(serial)。",
-                    recovery: "在签名证书页面明确执行证书迁移",
-                    code: "SEAL-CERT-202"
-                )
-            }
+           let data = secret.certificateP12,
+           let remote = certificates.first(where: {
+               $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
+           }),
+           let local = try? ALTCertificate(p12Data: data, password: nil),
+           local.serialNumber.caseInsensitiveCompare(serial) == .orderedSame {
             local.machineIdentifier = remote.machineIdentifier
             return SigningIdentity(certificate: local, secret: secret)
         }
@@ -527,8 +487,8 @@ actor ApplePortalSigningService {
             let suffix = descriptions.isEmpty ? "" : " Apple 当前证书：\(descriptions)。"
             throw Self.failure(
                 title: "证书名额已满",
-                reason: "Apple 拒绝创建新的开发证书。Seal 没有撤销任何证书，也没有自动选择替换对象。\(suffix)",
-                recovery: "前往签名证书页面，选择完整 Serial 并确认撤销",
+                reason: "Apple 拒绝创建新的开发证书。\(suffix)",
+                recovery: "前往签名证书页面处理证书名额",
                 code: "SEAL-CERT-204"
             )
         }
@@ -749,10 +709,9 @@ actor ApplePortalSigningService {
                     do {
                         let createdBox: LegacyBox<ALTAppID> =
                             try await withCheckedThrowingContinuation { continuation in
-                                let preferredName = "Seal \(appName)"
-                                let appIDName = preferredName.allSatisfy(\.isASCII)
-                                    ? String(preferredName.prefix(50))
-                                    : mappedBundleID
+                                let normalizedName = appName.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let appIDNameSource = normalizedName.isEmpty ? mappedBundleID : normalizedName
+                                let appIDName = String(appIDNameSource.prefix(50))
                                 ALTAppleAPI.shared.addAppID(
                                     withName: appIDName,
                                     bundleIdentifier: mappedBundleID,
@@ -784,7 +743,7 @@ actor ApplePortalSigningService {
                         guard let converted = ProvisioningEntitlementValue.make(from: value) else {
                             throw Self.failure(
                                 title: "应用权限无法解析",
-                                reason: "\(mappedBundleID) 的权限 \(entitlement.rawValue) 包含 Seal 无法安全校验的值类型。Seal 没有静默删除该权限。",
+                                reason: "\(mappedBundleID) 的权限 \(entitlement.rawValue) 包含无法校验的值类型。",
                                 recovery: "检查 IPA 权限或使用支持该能力的账号",
                                 code: "SEAL-ENTITLEMENT-403"
                             )

@@ -209,10 +209,6 @@ actor ImportWorkflow {
         for parsed: ParsedIPA,
         in records: [AppRecord]
     ) -> AppRecord? {
-        let isImportedSealPackage = SelfManagedSealMigrationPolicy.isSealIPAPackage(
-            name: parsed.name,
-            bundleIdentifier: parsed.bundleIdentifier
-        )
         let isCurrentRunningSealPackage = isCurrentSealBundle(parsed.bundleIdentifier)
 
         if isCurrentRunningSealPackage,
@@ -220,18 +216,6 @@ actor ImportWorkflow {
                record.isSeal && matchesSealRecord(record, bundleIdentifier: parsed.bundleIdentifier)
            }) {
             return currentSeal
-        }
-
-        if isImportedSealPackage && isCurrentRunningSealPackage == false {
-            // A GitHub-built Seal.ipa imported into an externally signed Seal is not the
-            // currently running app. Keep it as a migration package so it can be signed into
-            // a new self-managed Seal instead of being absorbed into the installed Seal record.
-            return records.first(where: { record in
-                record.isSeal == false
-                    && record.state != .installed
-                    && SelfManagedSealMigrationPolicy.isMigrationPackage(record)
-                    && record.originalBundleIdentifier == parsed.bundleIdentifier
-            })
         }
 
         return records.first(where: { record in

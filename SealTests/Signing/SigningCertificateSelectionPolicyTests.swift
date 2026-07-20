@@ -20,7 +20,7 @@ struct SigningCertificateSelectionPolicyTests {
     }
 
     @Test
-    func renewalUsesActualPreviousCertificate() throws {
+    func renewalUsesCurrentlySelectedAccountCertificate() throws {
         let account = makeAccount(
             localSerial: "OLD",
             selectedSerial: "NEW"
@@ -32,30 +32,30 @@ struct SigningCertificateSelectionPolicyTests {
             try SigningCertificateSelectionPolicy.resolvedSerialNumber(
                 for: app,
                 account: account
-            ) == "OLD"
+            ) == "NEW"
         )
     }
 
     @Test
-    func renewalRejectsDifferentRequestedCertificate() {
+    func requestedCertificateWinsForRenewal() throws {
         let account = makeAccount(
             localSerial: "OLD",
-            selectedSerial: "NEW"
+            selectedSerial: "SELECTED"
         )
         var app = makeApp(state: .installed)
         app.certificateSerialNumber = "OLD"
 
-        #expect(throws: ImportFailure.self) {
-            _ = try SigningCertificateSelectionPolicy.resolvedSerialNumber(
+        #expect(
+            try SigningCertificateSelectionPolicy.resolvedSerialNumber(
                 for: app,
                 account: account,
-                requestedSerialNumber: "NEW"
-            )
-        }
+                requestedSerialNumber: "REQUESTED"
+            ) == "REQUESTED"
+        )
     }
 
     @Test
-    func localAvailabilityDetectsMissingPrivateKey() {
+    func localAvailabilityDetectsMissingPrivateKeyForSelectedCertificate() {
         let account = makeAccount(
             localSerial: nil,
             selectedSerial: "REMOTE"
@@ -70,37 +70,18 @@ struct SigningCertificateSelectionPolicyTests {
         )
     }
 
-
     @Test
-    func renewalRejectsDifferentAccountRecord() {
-        let account = makeAccount(localSerial: "OLD", selectedSerial: "OLD")
+    func accountAndTeamHistoryDoesNotBlockBeforeAppleValidation() throws {
+        let account = makeAccount(localSerial: "LOCAL", selectedSerial: "LOCAL")
         var app = makeApp(state: .installed)
         app.accountID = UUID()
-        app.signingTeamID = account.teamID
-        app.certificateSerialNumber = "OLD"
-
-        #expect(throws: ImportFailure.self) {
-            try SigningCertificateSelectionPolicy.validateAccountAndTeam(
-                for: app,
-                account: account
-            )
-        }
-    }
-
-    @Test
-    func renewalRejectsDifferentTeam() {
-        let account = makeAccount(localSerial: "OLD", selectedSerial: "OLD")
-        var app = makeApp(state: .installed)
-        app.accountID = account.id
         app.signingTeamID = "ORIGINALTEAM"
         app.certificateSerialNumber = "OLD"
 
-        #expect(throws: ImportFailure.self) {
-            try SigningCertificateSelectionPolicy.validateAccountAndTeam(
-                for: app,
-                account: account
-            )
-        }
+        try SigningCertificateSelectionPolicy.validateAccountAndTeam(
+            for: app,
+            account: account
+        )
     }
 
     private func makeAccount(

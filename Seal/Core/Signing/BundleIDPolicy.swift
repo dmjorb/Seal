@@ -1,12 +1,10 @@
 import Foundation
 
-/// Central Bundle ID rules used by first signing, renewals, and Seal self-renewal.
+/// Central Bundle ID helpers.
 ///
-/// Rules:
-/// - First sign: default to `<original bundle id>.seal`.
-/// - Renewal: keep the previously signed bundle id.
-/// - Seal self-renewal: keep the currently running Seal bundle id.
-/// - Advanced first sign: allow a validated custom bundle id.
+/// Seal does not impose a private renewal lock here. The selected/requested
+/// Bundle ID is used when provided; Apple portal and the iOS install channel
+/// decide whether that identifier can be signed and installed.
 enum BundleIDPolicy {
     static let sealSuffix = "seal"
 
@@ -30,22 +28,16 @@ enum BundleIDPolicy {
         requestedBundleIdentifier: String? = nil,
         currentSealBundleIdentifier: String? = Bundle.main.bundleIdentifier
     ) throws -> String {
-        if app.isSeal {
-            let identifier = currentSealBundleIdentifier
-                ?? app.mappedBundleIdentifier
-                ?? app.originalBundleIdentifier
-            return try validated(identifier)
-        }
-
-        if app.requiresLockedSigningIdentity {
-            let identifier = app.mappedBundleIdentifier
-                ?? app.preferredBundleIdentifier
-                ?? app.originalBundleIdentifier
-            return try validated(identifier)
-        }
-
         if let requested = normalized(requestedBundleIdentifier), requested.isEmpty == false {
             return try validated(requested)
+        }
+
+        if app.isSeal, let current = normalized(currentSealBundleIdentifier), current.isEmpty == false {
+            return try validated(current)
+        }
+
+        if let mapped = normalized(app.mappedBundleIdentifier), mapped.isEmpty == false {
+            return try validated(mapped)
         }
 
         if let preferred = normalized(app.preferredBundleIdentifier), preferred.isEmpty == false {
@@ -62,13 +54,11 @@ enum BundleIDPolicy {
     }
 
     static func isEditable(_ app: AppRecord) -> Bool {
-        app.isSeal == false && app.requiresLockedSigningIdentity == false
+        true
     }
 
     static func displayMode(for app: AppRecord) -> String {
-        if app.isSeal { return "Seal 自刷新已锁定" }
-        if app.requiresLockedSigningIdentity { return "续签已锁定" }
-        return "首次签名可修改"
+        "按 Apple 签名与安装结果判断"
     }
 
     static func validationError(for value: String) -> String? {

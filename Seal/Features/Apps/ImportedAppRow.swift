@@ -42,7 +42,6 @@ struct ImportedAppRow: View {
     private var displayBundleIdentifier: String {
         if app.isSeal { return Bundle.main.bundleIdentifier ?? app.mappedBundleIdentifier ?? app.originalBundleIdentifier }
         if app.state == .installed { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
-        if SelfManagedSealMigrationPolicy.isMigrationPackage(app) { return "Seal 自续签版" }
         return app.preferredBundleIdentifier ?? BundleIDPolicy.recommendedBundleIdentifier(for: app.originalBundleIdentifier)
     }
 

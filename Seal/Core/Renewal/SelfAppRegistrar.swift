@@ -62,7 +62,6 @@ actor SelfAppRegistrar {
             )
             try? await fileStore.cancel(staged)
 
-            let isSelfRenewalReturn = SelfRenewalTracker.pendingBundleIdentifier == metadata.bundleIdentifier
             let record = AppRecord(
                 id: id,
                 originalBundleIdentifier: SelfAppBundleIdentity.originalBundleIdentifier(
@@ -77,7 +76,7 @@ actor SelfAppRegistrar {
                 size: size,
                 iconRelativePath: files.iconRelativePath,
                 state: .installed,
-                expiryDate: isSelfRenewalReturn ? metadata.expirationDate : (existing?.expiryDate ?? metadata.expirationDate),
+                expiryDate: metadata.expirationDate ?? existing?.expiryDate,
                 accountID: resolvedAccountID,
                 certificateSerialNumber: existing?.certificateSerialNumber,
                 ipaRelativePath: files.ipaRelativePath,

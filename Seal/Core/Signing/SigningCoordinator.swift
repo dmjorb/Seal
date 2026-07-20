@@ -72,13 +72,6 @@ actor SigningCoordinator {
             for: app,
             requestedBundleIdentifier: requestedBundleIdentifier
         )
-        try await validateSelfAppRenewalContext(
-            app: app,
-            selectedAccountID: accountID,
-            selectedAccount: account,
-            targetBundleIdentifier: targetBundleIdentifier
-        )
-
         let workspaceRoot = try await fileStore.signingWorkspace(appID: appID)
         defer { try? FileManager.default.removeItem(at: workspaceRoot) }
         let originalState = app.state
@@ -378,41 +371,6 @@ actor SigningCoordinator {
             try await accountRepository.save(updated)
         }
         return updated
-    }
-
-    private func validateSelfAppRenewalContext(
-        app: AppRecord,
-        selectedAccountID: UUID,
-        selectedAccount: AppleAccountRecord,
-        targetBundleIdentifier: String
-    ) async throws {
-        guard app.isSeal else { return }
-
-        let currentBundleIdentifier = BundleIDPolicy.currentSealBundleIdentifier()
-            ?? app.mappedBundleIdentifier
-            ?? app.preferredBundleIdentifier
-            ?? app.originalBundleIdentifier
-        let currentSigningTeamID = await Self.currentInstalledSealTeamIdentifier()
-        try SelfRenewalContextValidator.validate(
-            currentBundleIdentifier: currentBundleIdentifier,
-            targetBundleIdentifier: targetBundleIdentifier,
-            currentSigningTeamIdentifier: currentSigningTeamID,
-            selectedAccount: selectedAccount,
-            boundAccountID: app.accountID,
-            selectedAccountID: selectedAccountID
-        )
-    }
-
-    @MainActor
-    private static func currentInstalledSealTeamIdentifier() -> String? {
-        guard let profileURL = Bundle.main.url(
-            forResource: "embedded",
-            withExtension: "mobileprovision"
-        ), let data = try? Data(contentsOf: profileURL, options: .mappedIfSafe),
-           let summary = try? ProvisioningProfileReader().summary(from: data) else {
-            return nil
-        }
-        return summary.teamIdentifier
     }
 
     private func updateState(appID: UUID, stage: SigningStage) async throws {

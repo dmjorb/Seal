@@ -83,7 +83,7 @@ struct AppsRootView: View {
                 .presentationDetents([.large])
                 .compatiblePresentationCornerRadius(28)
             }
-            .alert("删除记录？", isPresented: Binding(
+            .alert(deleteAlertTitle, isPresented: Binding(
                 get: { pendingDeleteApp != nil },
                 set: { if !$0 { pendingDeleteApp = nil } }
             )) {
@@ -94,7 +94,7 @@ struct AppsRootView: View {
                     Task { _ = await viewModel.delete(app) }
                 }
             } message: {
-                Text("该应用已过期。删除后将从 Seal 的已安装列表中移除，不会卸载手机上的应用。")
+                Text(deleteAlertMessage)
             }
 
             .alert(item: rootAlertFailure) { failure in
@@ -123,17 +123,9 @@ struct AppsRootView: View {
                 viewModel.presentImporter()
             } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 24, weight: .regular))
+                    .font(.system(size: 32, weight: .regular))
                     .foregroundStyle(Color.sealAccent)
-                    .frame(width: 56, height: 56)
-                    .background(
-                        Color.sealSurfaceElevated,
-                        in: Circle()
-                    )
-                    .overlay {
-                        Circle()
-                            .stroke(Color.sealHairline.opacity(0.55), lineWidth: 1)
-                    }
+                    .frame(width: 44, height: 44)
             }
             .accessibilityLabel("导入应用")
             .accessibilityIdentifier("import-toolbar-button")
@@ -195,6 +187,18 @@ struct AppsRootView: View {
         }
     }
 
+
+    private var deleteAlertTitle: String {
+        pendingDeleteApp?.state == .installed ? "删除记录？" : "删除应用？"
+    }
+
+    private var deleteAlertMessage: String {
+        guard pendingDeleteApp?.state == .installed else {
+            return "删除后将从 Seal 的待签名列表中移除，并删除 Seal 保存的 IPA 文件，不会影响手机上已安装的应用。"
+        }
+        return "该应用已过期。删除后将从 Seal 的已安装列表中移除，不会卸载手机上的应用。"
+    }
+
     private var batchRefreshMenu: some View {
         Menu {
             Button("续签临期应用") {
@@ -254,7 +258,11 @@ struct AppsRootView: View {
                     .contentShape(Rectangle())
                     .contextMenu {
                         Button("查看详情") { detailApp = app }
-                        if mode == .installed, app.isSeal == false, isExpired(app) {
+                        if mode == .unsigned {
+                            Button(role: .destructive) { pendingDeleteApp = app } label: {
+                                Text("删除应用")
+                            }
+                        } else if mode == .installed, app.isSeal == false, isExpired(app) {
                             Button(role: .destructive) { pendingDeleteApp = app } label: {
                                 Text("删除记录")
                             }

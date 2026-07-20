@@ -166,12 +166,6 @@ struct ImportConfirmationView: View {
     }
 
     private var migrationSummary: String {
-        if SelfManagedSealMigrationPolicy.isSealIPAPackage(
-            name: draft.parsedIPA.name,
-            bundleIdentifier: draft.parsedIPA.bundleIdentifier
-        ) {
-            return "Seal 自续签版安装包"
-        }
-        return "可导入"
+        "可导入"
     }
 }
