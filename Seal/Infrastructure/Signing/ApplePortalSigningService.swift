@@ -519,7 +519,7 @@ actor ApplePortalSigningService {
         deviceName: String,
         allowCertificateReplacement: Bool
     ) async throws -> SigningIdentity {
-        let requested: ALTCertificate
+        var requested: ALTCertificate
         do {
             requested = try await addCertificate(
                 team: team,
