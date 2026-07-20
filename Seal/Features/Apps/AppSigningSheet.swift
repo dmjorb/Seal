@@ -470,7 +470,7 @@ struct AppSigningSheet: View {
 
     private func primaryActionTitle(for presentation: AppOperationPresentation) -> String {
         if selfAccountValidationError != nil { return "去添加当前签名 Apple ID" }
-        selectedAccountID == nil ? "去添加 Apple ID" : presentation.primaryAction
+        return selectedAccountID == nil ? "去添加 Apple ID" : presentation.primaryAction
     }
 
     private var isRunning: Bool {
@@ -509,7 +509,7 @@ struct AppSigningSheet: View {
             }
             return "抽屉只保留本次操作关键项；详细诊断可在签名前检查中查看。"
         case .renewal, .urgentRenewal, .expiredRenewal:
-            "续签沿用上一次签名身份；如需更换账号或 Bundle ID，请重新导入作为新应用。"
+            return "续签沿用上一次签名身份；如需更换账号或 Bundle ID，请重新导入作为新应用。"
         }
     }
 

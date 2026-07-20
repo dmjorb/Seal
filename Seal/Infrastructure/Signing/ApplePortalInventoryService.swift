@@ -77,10 +77,8 @@ actor ApplePortalInventoryService {
             )
         }
 
-        async let certificatesTask = fetchCertificates(team: team, session: session)
-        async let appIDsTask = fetchAppIDs(team: team, session: session)
-        let certificates = try await certificatesTask
-        let appIDs = try await appIDsTask
+        let certificates = try await fetchCertificates(team: team, session: session)
+        let appIDs = try await fetchAppIDs(team: team, session: session)
 
         let certificateSnapshots = certificates.map { certificate in
             ApplePortalCertificateSnapshot(
