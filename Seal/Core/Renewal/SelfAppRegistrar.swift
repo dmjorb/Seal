@@ -1,38 +1,35 @@
 import Foundation
 import ZIPFoundation
 
-enum SelfAppBundleIdentity {
-    static func originalBundleIdentifier(
-        currentBundleIdentifier: String,
-        declaredOriginalBundleIdentifier: String?,
-        existingOriginalBundleIdentifier: String?
-    ) -> String {
-        existingOriginalBundleIdentifier
-            ?? declaredOriginalBundleIdentifier
-            ?? currentBundleIdentifier
-    }
-}
-
 actor SelfAppRegistrar {
     private let metadata: SelfAppMetadata
     private let appStore: any AppStore
+    private let accountRepository: any AccountRepository
     private let fileStore: AppFileStore
 
     init(
         metadata: SelfAppMetadata,
         appStore: any AppStore,
+        accountRepository: any AccountRepository,
         fileStore: AppFileStore
     ) {
         self.metadata = metadata
         self.appStore = appStore
+        self.accountRepository = accountRepository
         self.fileStore = fileStore
     }
 
     func ensureRegistered() async throws {
         let records = try await appStore.fetchAll()
-        let existing = Self.preferredExistingSealRecord(
+        let accounts = (try? await accountRepository.fetchAll()) ?? []
+        let existing = SelfAppRecordSelection.preferredExistingSealRecord(
             in: records,
             currentBundleIdentifier: metadata.bundleIdentifier
+        )
+        let resolvedAccountID = SelfAppAccountBinding.resolvedAccountID(
+            teamIdentifier: metadata.signingTeamIdentifier,
+            accounts: accounts,
+            fallbackAccountID: existing?.accountID
         )
         let id = existing?.id ?? UUID()
         let workspace = try await fileStore.signingWorkspace(appID: UUID())
@@ -73,7 +70,7 @@ actor SelfAppRegistrar {
                     declaredOriginalBundleIdentifier: metadata.originalBundleIdentifier,
                     existingOriginalBundleIdentifier: existing?.originalBundleIdentifier
                 ),
-                mappedBundleIdentifier: existing?.mappedBundleIdentifier ?? metadata.bundleIdentifier,
+                mappedBundleIdentifier: metadata.bundleIdentifier,
                 name: metadata.name,
                 version: metadata.version,
                 buildNumber: metadata.buildNumber,
@@ -81,9 +78,10 @@ actor SelfAppRegistrar {
                 iconRelativePath: files.iconRelativePath,
                 state: .installed,
                 expiryDate: isSelfRenewalReturn ? metadata.expirationDate : (existing?.expiryDate ?? metadata.expirationDate),
-                accountID: existing?.accountID,
+                accountID: resolvedAccountID,
                 ipaRelativePath: files.ipaRelativePath,
                 signedIPARelativePath: existing?.signedIPARelativePath,
+                preferredBundleIdentifier: metadata.bundleIdentifier,
                 isSeal: true,
                 isPinned: true,
                 importedAt: existing?.importedAt ?? Date(),
@@ -104,25 +102,6 @@ actor SelfAppRegistrar {
             throw error
         }
     }
-    private static func preferredExistingSealRecord(
-        in records: [AppRecord],
-        currentBundleIdentifier: String
-    ) -> AppRecord? {
-        let matchingSeal = records.first { record in
-            record.isSeal && matchesSealBundleIdentifier(
-                currentBundleIdentifier,
-                record: record
-            )
-        }
-        if let matchingSeal { return matchingSeal }
-
-        if let installedSeal = records.first(where: { $0.isSeal && $0.state == .installed }) {
-            return installedSeal
-        }
-
-        return records.first(where: \.isSeal)
-    }
-
     private static func removeDuplicateSealRecords(
         _ records: [AppRecord],
         keeping keptID: UUID,
@@ -131,15 +110,6 @@ actor SelfAppRegistrar {
         for record in records where record.id != keptID && record.isSeal {
             try await appStore.delete(id: record.id)
         }
-    }
-
-    private static func matchesSealBundleIdentifier(
-        _ bundleIdentifier: String,
-        record: AppRecord
-    ) -> Bool {
-        bundleIdentifier == record.originalBundleIdentifier
-            || bundleIdentifier == record.mappedBundleIdentifier
-            || bundleIdentifier == record.preferredBundleIdentifier
     }
 
 }

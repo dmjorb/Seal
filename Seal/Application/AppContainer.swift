@@ -91,6 +91,7 @@ struct AppContainer {
                 SelfAppRegistrar(
                     metadata: $0,
                     appStore: appStore,
+                    accountRepository: accountRepository,
                     fileStore: fileStore
                 )
             }

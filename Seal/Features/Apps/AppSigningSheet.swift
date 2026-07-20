@@ -11,6 +11,7 @@ struct AppSigningSheet: View {
     @State private var targetBundleID = ""
     @State private var isBundleIDEditorPresented = false
     @State private var isPreflightDetailPresented = false
+    @State private var currentSealSigningTeamID: String?
 
     var body: some View {
         Group {
@@ -23,8 +24,12 @@ struct AppSigningSheet: View {
         .presentationDragIndicator(.hidden)
         .interactiveDismissDisabled(isRunning)
         .task {
+            currentSealSigningTeamID = SelfAppMetadata.current()?.signingTeamIdentifier
             selectDefaultAccount()
             resetBundleIDDraftIfNeeded()
+        }
+        .onChange(of: viewModel.verifiedAccounts) { _ in
+            selectDefaultAccount()
         }
         .sheet(isPresented: $isBundleIDEditorPresented) {
             BundleIDEditorSheet(app: app, targetBundleID: $targetBundleID)
@@ -68,7 +73,10 @@ struct AppSigningSheet: View {
                 preflightEntryCard
 
                 Button(primaryActionTitle(for: presentation)) {
-                    if let selectedAccountID {
+                    if selfAccountValidationError != nil {
+                        viewModel.openSettings(route: .account)
+                        dismiss()
+                    } else if let selectedAccountID {
                         Task {
                             await viewModel.beginSigning(
                                 for: app,
@@ -172,10 +180,10 @@ struct AppSigningSheet: View {
                         title: "Apple ID",
                         value: selectedAccountCompactSummary,
                         caption: selectedAccount == nil ? "请选择账号" : operationAccountCaption,
-                        actionTitle: app.state == .installed && app.accountID != nil ? nil : "切换"
+                        actionTitle: isAccountSelectionLocked ? nil : "切换"
                     )
                 }
-                .disabled(app.state == .installed && app.accountID != nil)
+                .disabled(isAccountSelectionLocked)
             }
 
             Divider().padding(.leading, 16)
@@ -333,6 +341,21 @@ struct AppSigningSheet: View {
         return BundleIDPolicy.validationError(for: targetBundleID)
     }
 
+    private var selfAccountValidationError: String? {
+        guard app.isSeal,
+              let currentSealSigningTeamID,
+              currentSealSigningTeamID.isEmpty == false,
+              let selectedAccount,
+              selectedAccount.teamID.caseInsensitiveCompare(currentSealSigningTeamID) != .orderedSame else {
+            return nil
+        }
+        return "当前 Seal 由 Team \(currentSealSigningTeamID) 签出，必须选择该 Team 对应的 Apple ID。"
+    }
+
+    private var signingValidationError: String? {
+        bundleIDValidationError ?? selfAccountValidationError
+    }
+
     private func resetBundleIDDraftIfNeeded() {
         guard targetBundleID.isEmpty else { return }
         if SelfManagedSealMigrationPolicy.isMigrationPackage(app) {
@@ -355,10 +378,30 @@ struct AppSigningSheet: View {
     }
 
     private var operationAccountCaption: String {
+        if app.isSeal {
+            if let currentSealSigningTeamID, currentSealSigningTeamID.isEmpty == false {
+                return selectedAccount?.teamID.caseInsensitiveCompare(currentSealSigningTeamID) == .orderedSame
+                    ? "当前安装签名账号"
+                    : "当前安装 Team：\(currentSealSigningTeamID)"
+            }
+            return app.accountID == nil ? "Team 将在签名前确认" : "本地续签账号"
+        }
         if app.state == .installed && app.accountID != nil {
             return "续签账号已绑定"
         }
         return selectedAccount?.teamID ?? "Team 将在签名前确认"
+    }
+
+    private var isAccountSelectionLocked: Bool {
+        if app.isSeal {
+            guard let currentSealSigningTeamID, currentSealSigningTeamID.isEmpty == false else {
+                return false
+            }
+            return viewModel.verifiedAccounts.contains { account in
+                account.teamID.caseInsensitiveCompare(currentSealSigningTeamID) == .orderedSame
+            }
+        }
+        return app.state == .installed && app.accountID != nil
     }
 
     private func accountCompactTitle(_ account: AppleAccountRecord) -> String {
@@ -400,32 +443,33 @@ struct AppSigningSheet: View {
     }
 
     private var preflightIcon: String {
-        if selectedAccount == nil || bundleIDValidationError != nil { return "exclamationmark.triangle.fill" }
+        if selectedAccount == nil || signingValidationError != nil { return "exclamationmark.triangle.fill" }
         if viewModel.signingChannelStatus == .unavailable { return "wrench.and.screwdriver.fill" }
         return "checkmark.seal.fill"
     }
 
     private var preflightColor: Color {
-        if selectedAccount == nil || bundleIDValidationError != nil { return .sealWarning }
+        if selectedAccount == nil || signingValidationError != nil { return .sealWarning }
         if viewModel.signingChannelStatus == .unavailable { return .sealTextSecondary }
         return .sealSuccess
     }
 
     private var preflightTitle: String {
         if selectedAccount == nil { return "签名前检查需要 Apple ID" }
-        if bundleIDValidationError != nil { return "Bundle ID 需要处理" }
+        if signingValidationError != nil { return app.isSeal ? "续签账号不匹配" : "Bundle ID 需要处理" }
         if viewModel.signingChannelStatus == .unavailable { return "安装通道待检测" }
         return "签名前检查"
     }
 
     private var preflightSubtitle: String {
         if selectedAccount == nil { return "添加或重新验证账号后再签名。" }
-        if let bundleIDValidationError { return bundleIDValidationError }
+        if let signingValidationError { return signingValidationError }
         if viewModel.signingChannelStatus == .ready { return "账号、Bundle ID、签名身份和安装通道可继续查看。" }
         return "详细 Team、证书、设备和安装通道信息已收起到这里。"
     }
 
     private func primaryActionTitle(for presentation: AppOperationPresentation) -> String {
+        if selfAccountValidationError != nil { return "去添加当前签名 Apple ID" }
         selectedAccountID == nil ? "去添加 Apple ID" : presentation.primaryAction
     }
 
@@ -435,10 +479,19 @@ struct AppSigningSheet: View {
     }
 
     private func selectDefaultAccount() {
-        guard selectedAccountID == nil else { return }
         let verifiedAccounts = viewModel.verifiedAccounts.sorted {
             $0.lastVerifiedAt > $1.lastVerifiedAt
         }
+        if app.isSeal,
+           let currentSealSigningTeamID,
+           currentSealSigningTeamID.isEmpty == false,
+           let matchedAccount = verifiedAccounts.first(where: {
+               $0.teamID.caseInsensitiveCompare(currentSealSigningTeamID) == .orderedSame
+           }) {
+            selectedAccountID = matchedAccount.id
+            return
+        }
+        guard selectedAccountID == nil else { return }
         if app.state == .installed,
            let accountID = app.accountID,
            verifiedAccounts.contains(where: { $0.id == accountID }) {

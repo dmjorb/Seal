@@ -9,6 +9,8 @@ struct SelfAppMetadata: Sendable {
     let buildNumber: String
     let iconData: Data?
     let expirationDate: Date?
+    let signingTeamIdentifier: String?
+    let signingApplicationIdentifier: String?
 
     @MainActor
     static func current(bundle: Bundle = .main) -> SelfAppMetadata? {
@@ -23,9 +25,9 @@ struct SelfAppMetadata: Sendable {
             forInfoDictionaryKey: "CFBundleVersion"
         ) as? String) ?? "1"
         let profileURL = bundle.url(forResource: "embedded", withExtension: "mobileprovision")
-        let expirationDate = profileURL
+        let profileSummary = profileURL
             .flatMap { try? Data(contentsOf: $0, options: .mappedIfSafe) }
-            .flatMap { try? ProvisioningProfileReader().expirationDate(from: $0) }
+            .flatMap { try? ProvisioningProfileReader().summary(from: $0) }
 
         return SelfAppMetadata(
             bundleURL: bundle.bundleURL,
@@ -37,7 +39,9 @@ struct SelfAppMetadata: Sendable {
             version: version,
             buildNumber: buildNumber,
             iconData: iconData(bundle: bundle),
-            expirationDate: expirationDate
+            expirationDate: profileSummary?.expirationDate,
+            signingTeamIdentifier: profileSummary?.teamIdentifier,
+            signingApplicationIdentifier: profileSummary?.applicationIdentifier
         )
     }
 
