@@ -53,12 +53,19 @@ struct SigningCertificateSettingsView: View {
         }
         .navigationTitle("签名证书")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(item: $certificateDetailAccount) { account in
-            AppleAccountDetailView(
-                account: account,
-                relatedApps: relatedApps.filter { $0.accountID == account.id },
-                viewModel: viewModel
+        .navigationDestination(
+            isPresented: Binding(
+                get: { certificateDetailAccount != nil },
+                set: { if !$0 { certificateDetailAccount = nil } }
             )
+        ) {
+            if let account = certificateDetailAccount {
+                AppleAccountDetailView(
+                    account: account,
+                    relatedApps: relatedApps.filter { $0.accountID == account.id },
+                    viewModel: viewModel
+                )
+            }
         }
         .confirmationDialog(
             "清除本地证书缓存？",

@@ -70,12 +70,19 @@ struct CertificatesRootView: View {
             let count = relatedApps.filter { $0.accountID == account.id }.count
             Text(count == 0 ? "删除后将无法使用此账号签名。" : "该账号仍用于签名 \(count) 个应用，删除后这些应用无法继续续签。")
         }
-        .navigationDestination(item: $detailAccount) { account in
-            AppleAccountDetailView(
-                account: account,
-                relatedApps: relatedApps.filter { $0.accountID == account.id },
-                viewModel: viewModel
+        .navigationDestination(
+            isPresented: Binding(
+                get: { detailAccount != nil },
+                set: { if !$0 { detailAccount = nil } }
             )
+        ) {
+            if let account = detailAccount {
+                AppleAccountDetailView(
+                    account: account,
+                    relatedApps: relatedApps.filter { $0.accountID == account.id },
+                    viewModel: viewModel
+                )
+            }
         }
         .alert(item: $viewModel.alertFailure) { failure in
             Alert(
