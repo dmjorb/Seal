@@ -1,0 +1,62 @@
+name: iOS
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-package:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned XcodeGen
+        run: |
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/xcodegen.zip" \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip
+          echo "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 --check
+          ditto -x -k "$RUNNER_TEMP/xcodegen.zip" "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned IPA
+        run: bash Scripts/build-unsigned-ipa.sh
+
+      - name: Verify unsigned IPA
+        run: bash Scripts/verify-ipa.sh build/Seal.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: Seal-${{ github.run_number }}
+          if-no-files-found: error
+          path: |
+            build/Seal.ipa
+            build/Seal.ipa.sha256
+            build/Seal-Info.plist
+          retention-days: 30
+
+      - name: Upload build metadata
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Seal-Build-Metadata-${{ github.run_number }}
+          if-no-files-found: warn
+          path: |
+            build/Seal.ipa.sha256
+            build/Seal-Info.plist
+          retention-days: 14

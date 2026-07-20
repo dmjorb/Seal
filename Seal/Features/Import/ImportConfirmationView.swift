@@ -1,0 +1,180 @@
+import SwiftUI
+import UIKit
+
+struct ImportConfirmationView: View {
+    let draft: ImportDraft
+    let isCommitting: Bool
+    let failure: ImportFailure?
+    let onCancel: () -> Void
+    let onPrimaryAction: () -> Void
+
+    @State private var didTapPrimaryAction = false
+
+    private var showsProgress: Bool {
+        isCommitting || didTapPrimaryAction
+    }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            SealSheetGrabber()
+            Text(failure == nil ? "导入 IPA" : "导入失败")
+                .font(.system(size: 21, weight: .bold))
+                .foregroundStyle(.primary)
+
+            header
+
+            if let failure {
+                failureCard(failure)
+            } else {
+                summaryCard
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                guard showsProgress == false else { return }
+                didTapPrimaryAction = true
+                onPrimaryAction()
+            } label: {
+                if showsProgress {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("正在导入")
+                    }
+                    .frame(maxWidth: .infinity)
+                } else {
+                    Text(failure?.recovery ?? "导入")
+                }
+            }
+            .sealPrimaryAction(cornerRadius: 14)
+            .disabled(showsProgress)
+
+            Button("取消", action: onCancel)
+                .sealOutlineAction(cornerRadius: 14)
+                .disabled(isCommitting)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 12)
+        .padding(.bottom, 26)
+        .presentationDetents([.height(520), .large])
+        .sealSheetBackground(.tertiary)
+        .interactiveDismissDisabled(showsProgress)
+        .accessibilityIdentifier("import-confirmation")
+        .onChange(of: isCommitting) { newValue in
+            if newValue == false { didTapPrimaryAction = false }
+        }
+        .onChange(of: failure?.code) { _ in
+            didTapPrimaryAction = false
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 16) {
+            appIcon
+            VStack(alignment: .leading, spacing: 6) {
+                Text(draft.parsedIPA.name)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text("v\(draft.parsedIPA.version) · \(formattedSize)")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Color.sealTextSecondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.sealHairline.opacity(0.72), lineWidth: 0.8)
+        }
+    }
+
+    private var summaryCard: some View {
+        VStack(spacing: 0) {
+            summaryRow("Bundle ID", draft.parsedIPA.bundleIdentifier, monospaced: true)
+            Divider().padding(.leading, 16)
+            summaryRow("扩展", extensionSummary)
+            Divider().padding(.leading, 16)
+            summaryRow("状态", migrationSummary)
+        }
+        .padding(.horizontal, 16)
+        .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.sealHairline.opacity(0.72), lineWidth: 0.8)
+        }
+    }
+
+    private func summaryRow(_ title: String, _ value: String, monospaced: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(.primary)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.system(size: 14, weight: .regular, design: monospaced ? .monospaced : .default))
+                .foregroundStyle(Color.sealTextSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(minHeight: 54)
+    }
+
+    private func failureCard(_ failure: ImportFailure) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(failure.title, systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+                .foregroundStyle(Color.sealWarning)
+            Text(failure.reason)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(.primary)
+            Text(failure.code)
+                .font(.caption.monospaced())
+                .foregroundStyle(Color.sealTextSecondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.sealHairline.opacity(0.72), lineWidth: 0.8)
+        }
+    }
+
+    @ViewBuilder private var appIcon: some View {
+        Group {
+            if let data = draft.parsedIPA.iconData, let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                Image(systemName: "app.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(12)
+                    .foregroundStyle(Color.sealAccent)
+                    .background(.white.opacity(0.72))
+            }
+        }
+        .frame(width: 60, height: 60)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var formattedSize: String {
+        ByteCountFormatter.string(fromByteCount: draft.parsedIPA.fileSize, countStyle: .file)
+    }
+
+    private var extensionSummary: String {
+        draft.parsedIPA.extensions.isEmpty ? "无" : "\(draft.parsedIPA.extensions.count) 个"
+    }
+
+    private var migrationSummary: String {
+        if SelfManagedSealMigrationPolicy.isSealIPAPackage(
+            name: draft.parsedIPA.name,
+            bundleIdentifier: draft.parsedIPA.bundleIdentifier
+        ) {
+            return "Seal 自续签版安装包"
+        }
+        return "可导入"
+    }
+}

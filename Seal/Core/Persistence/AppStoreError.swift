@@ -1,0 +1,6 @@
+import Foundation
+
+enum AppStoreError: Error {
+    case corruptRecord
+    case invalidConfiguration
+}

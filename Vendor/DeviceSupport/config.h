@@ -1,0 +1,15 @@
+#ifndef SEAL_DEVICE_SUPPORT_CONFIG_H
+#define SEAL_DEVICE_SUPPORT_CONFIG_H
+
+#define HAVE_OPENSSL 1
+#define HAVE_STPNCPY 1
+#define HAVE_STPCPY 1
+#define HAVE_VASPRINTF 1
+#define HAVE_ASPRINTF 1
+#define HAVE_GETIFADDRS 1
+#define HAVE_STRNDUP 1
+#define PACKAGE_NAME "Seal DeviceSupport"
+#define PACKAGE_STRING "Seal DeviceSupport 1.0"
+#define PACKAGE_VERSION "1.0"
+
+#endif

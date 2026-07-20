@@ -1,0 +1,46 @@
+Seal includes the following open-source components:
+
+SideStore V3 Anisette resilience design
+Copyright SideStore contributors
+https://github.com/SideStore/SideStore
+Seal's signing-environment selection, reset, and fallback behavior is derived
+from SideStore's public Anisette V3 workflow.
+Licensed under GNU Affero General Public License v3.0.
+
+AltSign
+Copyright Riley Testut and contributors
+https://github.com/SideStore/AltSign
+Licensed under GNU Affero General Public License v3.0.
+
+Minimuxer
+Copyright SideStore contributors
+https://github.com/SideStore/minimuxer
+Vendored from revision e3614068c77fb09945eff363fbc3f9e8abf4c834.
+Licensed under GNU Affero General Public License v3.0.
+
+libimobiledevice
+Copyright libimobiledevice contributors
+https://github.com/libimobiledevice/libimobiledevice
+Licensed under GNU Lesser General Public License v2.1 or later.
+
+libimobiledevice-glue
+Copyright libimobiledevice contributors
+https://github.com/libimobiledevice/libimobiledevice-glue
+Licensed under GNU Lesser General Public License v2.1 or later.
+
+libplist
+Copyright libimobiledevice contributors
+https://github.com/libimobiledevice/libplist
+Licensed under GNU Lesser General Public License v2.1 or later.
+
+libusbmuxd
+Copyright libimobiledevice contributors
+https://github.com/libimobiledevice/libusbmuxd
+Licensed under GNU Lesser General Public License v2.1 or later.
+
+ZIPFoundation
+Copyright Thomas Zoechling and contributors
+https://github.com/weichsel/ZIPFoundation
+Licensed under the MIT License.
+
+Dependency revisions are pinned in project.yml and the vendor metadata files.
