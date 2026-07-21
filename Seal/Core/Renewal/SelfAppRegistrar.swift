@@ -29,7 +29,7 @@ actor SelfAppRegistrar {
         let resolvedAccountID = SelfAppAccountBinding.resolvedAccountID(
             teamIdentifier: metadata.signingTeamIdentifier,
             accounts: accounts,
-            fallbackAccountID: nil
+            fallbackAccountID: existing?.accountID
         )
         let id = existing?.id ?? UUID()
         let workspace = try await fileStore.signingWorkspace(appID: UUID())
@@ -76,10 +76,10 @@ actor SelfAppRegistrar {
                 size: size,
                 iconRelativePath: files.iconRelativePath,
                 state: .installed,
-                expiryDate: metadata.expirationDate ?? existing?.expiryDate,
+                expiryDate: metadata.expirationDate,
                 accountID: resolvedAccountID,
-                signingTeamID: metadata.signingTeamIdentifier,
-                certificateSerialNumber: nil,
+                signingTeamID: metadata.signingTeamIdentifier ?? existing?.signingTeamID,
+                certificateSerialNumber: existing?.certificateSerialNumber,
                 provisioningProfileExpirationDate: metadata.expirationDate,
                 ipaRelativePath: files.ipaRelativePath,
                 signedIPARelativePath: nil,

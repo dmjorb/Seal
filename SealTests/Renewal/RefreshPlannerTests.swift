@@ -4,7 +4,7 @@ import Testing
 
 struct RefreshPlannerTests {
     @Test
-    func placesSealBeforeUrgentAndRegularApps() {
+    func placesSealAfterUrgentAndRegularApps() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let accountID = UUID()
         let regular = app(
@@ -29,7 +29,7 @@ struct RefreshPlannerTests {
             now: now
         )
 
-        #expect(queue.map(\.appID) == [seal.id, urgent.id, regular.id])
+        #expect(queue.map(\.appID) == [urgent.id, regular.id, seal.id])
     }
 
     @Test

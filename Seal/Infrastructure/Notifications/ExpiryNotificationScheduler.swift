@@ -26,7 +26,7 @@ final class ExpiryNotificationScheduler {
     func reschedule(
         apps: [AppRecord],
         enabled: Bool,
-        leadHours: Int
+        leadHours: Int = NotificationPreferences.fixedLeadHours
     ) async throws {
         let existing = await center.pendingNotificationRequests()
             .map(\.identifier)
@@ -34,10 +34,13 @@ final class ExpiryNotificationScheduler {
         center.removePendingNotificationRequests(withIdentifiers: existing)
         guard enabled else { return }
 
-        for plan in planner.plans(for: apps, leadHours: leadHours) {
+        for plan in planner.plans(for: apps, now: Date()) {
             let content = UNMutableNotificationContent()
-            content.title = "到期"
-            content.body = "\(plan.appName) 到期"
+            content.title = "\(plan.appName) 即将到期"
+            let time = Self.timeFormatter.string(from: plan.expiryDate)
+            content.body = plan.isSeal
+                ? "明天 \(time) 到期，请及时续签。"
+                : "明天 \(time) 到期，打开 Seal 续签。"
             content.sound = .default
             let components = Calendar.current.dateComponents(
                 [.year, .month, .day, .hour, .minute, .second],
@@ -54,4 +57,11 @@ final class ExpiryNotificationScheduler {
             try await center.add(request)
         }
     }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 }

@@ -42,7 +42,7 @@ actor SigningCoordinator {
         }
         guard var account = try await accountRepository.fetchAll().first(where: {
             $0.id == accountID
-        }), let secret = try await keychain.load(accountID: accountID) else {
+        }), var secret = try await keychain.load(accountID: accountID) else {
             throw Self.failure(
                 reason: "签名账号不可用",
                 recovery: "添加 Apple ID",
@@ -54,10 +54,12 @@ actor SigningCoordinator {
             secret: secret,
             selectedAccountID: accountID
         )
-        account = try await normalizeCachedCertificateState(
+        let normalizedSigningMaterial = try await normalizeCachedCertificateState(
             account: account,
             secret: secret
         )
+        account = normalizedSigningMaterial.account
+        secret = normalizedSigningMaterial.secret
         try SigningCertificateSelectionPolicy.validateAccountAndTeam(
             for: app,
             account: account
@@ -286,9 +288,25 @@ actor SigningCoordinator {
         try await updateState(appID: app.id, stage: .installing)
         await progress(.installing)
         let signedData = try await fileStore.read(relativePath: signedPath)
+
+        if app.isSeal {
+            // Persist the real signed-profile expiry before iOS replaces this running app.
+            updated.state = .installed
+            updated.expiryDate = expirationDate
+            updated.lastInstalledAt = Date()
+            try await appStore.save(updated)
+            try await installChannel.install(
+                ipaData: signedData,
+                bundleID: bundleIdentifier,
+                isSelfReplacement: true
+            )
+            return updated
+        }
+
         try await installChannel.install(
             ipaData: signedData,
-            bundleID: bundleIdentifier
+            bundleID: bundleIdentifier,
+            isSelfReplacement: false
         )
 
         try await updateState(appID: app.id, stage: .verifying)
@@ -328,33 +346,50 @@ actor SigningCoordinator {
     private func normalizeCachedCertificateState(
         account: AppleAccountRecord,
         secret: AccountSecret
-    ) async throws -> AppleAccountRecord {
-        var updated = account
-        var changed = false
+    ) async throws -> (account: AppleAccountRecord, secret: AccountSecret) {
+        var updatedAccount = account
+        var updatedSecret = secret
+        var accountChanged = false
 
-        if updated.certificateSerialNumber != secret.certificateSerialNumber {
-            updated.certificateSerialNumber = secret.certificateSerialNumber
-            changed = true
-        }
-
-        if secret.certificateP12 == nil, secret.certificateSerialNumber != nil {
-            try await keychain.clearSigningMaterial(accountID: account.id)
-            if updated.selectedCertificateSerialNumber == secret.certificateSerialNumber {
-                updated.selectedCertificateSerialNumber = nil
+        let localCertificateSerial: String? = {
+            guard let p12 = secret.certificateP12,
+                  let certificate = try? ALTCertificate(p12Data: p12, password: nil) else {
+                return nil
             }
-            updated.certificateSerialNumber = nil
-            changed = true
-        } else if updated.selectedCertificateSerialNumber == nil,
-                  let serial = secret.certificateSerialNumber,
-                  secret.certificateP12 != nil {
-            updated.selectedCertificateSerialNumber = serial
-            changed = true
+            return certificate.serialNumber
+        }()
+        let storedSerial = secret.certificateSerialNumber?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasUsableLocalPrivateKey = {
+            guard let storedSerial, storedSerial.isEmpty == false,
+                  let localCertificateSerial else { return false }
+            return storedSerial.caseInsensitiveCompare(localCertificateSerial) == .orderedSame
+        }()
+
+        if hasUsableLocalPrivateKey == false,
+           secret.certificateSerialNumber != nil || secret.certificateP12 != nil {
+            try await keychain.clearSigningMaterial(accountID: account.id)
+            updatedSecret.certificateP12 = nil
+            updatedSecret.certificateSerialNumber = nil
+            updatedSecret.certificateMachineIdentifier = nil
+            updatedAccount.certificateSerialNumber = nil
+            updatedAccount.selectedCertificateSerialNumber = nil
+            accountChanged = true
+        } else {
+            if updatedAccount.certificateSerialNumber != storedSerial {
+                updatedAccount.certificateSerialNumber = storedSerial
+                accountChanged = true
+            }
+            if updatedAccount.selectedCertificateSerialNumber != storedSerial {
+                updatedAccount.selectedCertificateSerialNumber = storedSerial
+                accountChanged = true
+            }
         }
 
-        if changed {
-            try await accountRepository.save(updated)
+        if accountChanged {
+            try await accountRepository.save(updatedAccount)
         }
-        return updated
+        return (updatedAccount, updatedSecret)
     }
 
     private func updateState(appID: UUID, stage: SigningStage) async throws {
@@ -385,7 +420,7 @@ private extension SigningStage {
         case .waitingForChannel: .waitingForInstallChannel
         case .preparingAccount: .waitingForAccount
         case .preparingCertificate: .preparingCertificate
-        case .preparingProfiles: .preparingProfiles
+        case .preparingAppID, .preparingProfiles: .preparingProfiles
         case .signing: .signing
         case .installing: .installing
         case .verifying: .verifying

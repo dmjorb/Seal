@@ -31,8 +31,10 @@ struct AppSigningSheet: View {
             selectDefaultAccount()
         }
         .sheet(isPresented: $isBundleIDEditorPresented) {
-            BundleIDEditorSheet(app: app, targetBundleID: $targetBundleID)
-                .presentationDetents([.height(260)])
+            if BundleIDPolicy.isEditable(app) {
+                BundleIDEditorSheet(app: app, targetBundleID: $targetBundleID)
+                    .presentationDetents([.height(260)])
+            }
         }
         .alert(item: $viewModel.alertFailure) { failure in
             standardAlert(failure)
@@ -45,6 +47,16 @@ struct AppSigningSheet: View {
             SealSheetGrabber()
             appIdentity(presentation: presentation)
             operationSummaryCard
+            if viewModel.hasCycleRenewalCompanions(for: app) {
+                Button("一起续签本周期到期 App") {
+                    dismiss()
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        viewModel.refreshSealCycle(for: app)
+                    }
+                }
+                .sealOutlineAction(cornerRadius: 14)
+            }
             Button(primaryActionTitle(for: presentation)) {
                 if let selectedAccountID {
                     Task {
@@ -94,16 +106,24 @@ struct AppSigningSheet: View {
 
     private var operationSummaryCard: some View {
         VStack(spacing: 0) {
-            summaryRow(title: "状态", value: statusText)
-            Divider().padding(.leading, 14)
-
-            Button { isBundleIDEditorPresented = true } label: {
-                summaryRow(title: "Bundle ID", value: displayBundleIdentifier, monospaced: true, showsDisclosure: true)
+            if isRenewal == false {
+                summaryRow(title: "状态", value: statusText)
+                Divider().padding(.leading, 14)
             }
-            .buttonStyle(.plain)
+
+            if BundleIDPolicy.isEditable(app) {
+                Button { isBundleIDEditorPresented = true } label: {
+                    summaryRow(title: "Bundle ID", value: displayBundleIdentifier, monospaced: true, showsDisclosure: true)
+                }
+                .buttonStyle(.plain)
+            } else {
+                summaryRow(title: "Bundle ID", value: displayBundleIdentifier, monospaced: true)
+            }
             Divider().padding(.leading, 14)
 
-            if viewModel.verifiedAccounts.isEmpty {
+            if isRenewal {
+                summaryRow(title: "Apple ID", value: selectedAccountCompactSummary)
+            } else if viewModel.verifiedAccounts.isEmpty {
                 Button {
                     viewModel.openSettings(route: .account)
                     dismiss()
@@ -194,11 +214,13 @@ struct AppSigningSheet: View {
     }
 
     private var requestedBundleIDForSigning: String? {
+        guard isRenewal == false else { return nil }
         let trimmed = targetBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
     private var bundleIDValidationError: String? {
+        guard isRenewal == false else { return nil }
         let trimmed = targetBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.isEmpty == false else { return nil }
         return BundleIDPolicy.validationError(for: trimmed)
@@ -210,7 +232,10 @@ struct AppSigningSheet: View {
     }
 
     private var selectedAccount: AppleAccountRecord? {
-        viewModel.verifiedAccounts.first { $0.id == selectedAccountID }
+        if isRenewal, let accountID = app.accountID {
+            return viewModel.accounts.first { $0.id == accountID }
+        }
+        return viewModel.verifiedAccounts.first { $0.id == selectedAccountID }
     }
 
     private var selectedAccountCompactSummary: String {
@@ -266,6 +291,10 @@ struct AppSigningSheet: View {
         selectedAccountID == nil ? "去添加 Apple ID" : presentation.primaryAction
     }
 
+    private var isRenewal: Bool {
+        app.state == .installed || app.isSeal
+    }
+
     private var isRunning: Bool {
         if case .running = viewModel.signingSession?.status { return true }
         return false
@@ -273,6 +302,10 @@ struct AppSigningSheet: View {
 
     private func selectDefaultAccount() {
         let verifiedAccounts = viewModel.verifiedAccounts.sorted { $0.lastVerifiedAt > $1.lastVerifiedAt }
+        if isRenewal {
+            selectedAccountID = app.accountID
+            return
+        }
         guard selectedAccountID == nil else { return }
         if let activeAccountID = viewModel.activeAccountID,
            verifiedAccounts.contains(where: { $0.id == activeAccountID }) {

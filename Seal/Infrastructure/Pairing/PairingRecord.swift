@@ -2,16 +2,18 @@ import Foundation
 
 enum PairingValidationStatus: String, Codable, Equatable, Sendable {
     case unverified
+    case validating
     case verified
     case deviceMismatch
-    case connectionFailed
+    case fileUnreadable
 
     var title: String {
         switch self {
         case .unverified: return "已导入，待验证"
+        case .validating: return "验证中"
         case .verified: return "已配对"
-        case .deviceMismatch: return "不属于当前设备"
-        case .connectionFailed: return "连接验证失败"
+        case .deviceMismatch: return "配对设备不一致"
+        case .fileUnreadable: return "文件无法读取"
         }
     }
 }

@@ -10,9 +10,8 @@ struct BatchRefreshView: View {
             Text(isRunning ? "批量续签" : "续签结果")
                 .font(.system(size: 20, weight: .bold))
                 .foregroundStyle(.primary)
-
             statusCard
-            action
+            if isRunning == false { action }
         }
         .padding(.horizontal, 24)
         .padding(.top, 12)
@@ -24,23 +23,16 @@ struct BatchRefreshView: View {
     @ViewBuilder private var statusCard: some View {
         switch viewModel.batchRefreshSession?.status {
         case .running:
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(viewModel.batchRefreshSession?.currentAppName ?? "准备续签")
-                        .font(.system(size: 16, weight: .semibold))
-                    Spacer()
-                    Text(progressText)
-                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Color.sealTextSecondary)
-                }
-                ProgressView(value: progress)
-                    .tint(Color.sealAccent)
-                Text(viewModel.batchRefreshSession?.currentStage?.title ?? "读取队列")
-                    .font(.system(size: 13, weight: .regular))
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                Text("正在续签")
+                    .font(.system(size: 16, weight: .semibold))
+                Spacer()
+                Text(progressText)
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
                     .foregroundStyle(Color.sealTextSecondary)
             }
-            .padding(14)
+            .padding(16)
             .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         case .completed(let result):
             VStack(spacing: 0) {
@@ -59,7 +51,7 @@ struct BatchRefreshView: View {
                         .font(.system(size: 16, weight: .semibold))
                 }
                 Text(failure.userReason)
-                    .font(.system(size: 13, weight: .regular))
+                    .font(.system(size: 13))
                     .foregroundStyle(Color.sealTextSecondary)
                     .lineLimit(3)
             }
@@ -83,9 +75,6 @@ struct BatchRefreshView: View {
 
     @ViewBuilder private var action: some View {
         switch viewModel.batchRefreshSession?.status {
-        case .running:
-            Button("取消") { viewModel.cancelBatchRefresh(); dismiss() }
-                .sealOutlineAction(cornerRadius: 14)
         case .completed, .failed:
             Button("完成") { viewModel.dismissBatchRefresh(); dismiss() }
                 .sealPrimaryAction(cornerRadius: 14)
@@ -94,7 +83,12 @@ struct BatchRefreshView: View {
         }
     }
 
-    private var progressText: String { "\(viewModel.batchRefreshSession?.currentIndex ?? 0) / \(viewModel.batchRefreshSession?.total ?? 0)" }
-    private var progress: Double { Double(viewModel.batchRefreshSession?.currentIndex ?? 0) / Double(max(1, viewModel.batchRefreshSession?.total ?? 1)) }
-    private var isRunning: Bool { if case .running = viewModel.batchRefreshSession?.status { return true }; return false }
+    private var progressText: String {
+        "\(viewModel.batchRefreshSession?.currentIndex ?? 0) / \(viewModel.batchRefreshSession?.total ?? 0)"
+    }
+
+    private var isRunning: Bool {
+        if case .running = viewModel.batchRefreshSession?.status { return true }
+        return false
+    }
 }

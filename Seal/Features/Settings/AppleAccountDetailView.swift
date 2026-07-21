@@ -25,14 +25,11 @@ struct AppleAccountDetailView: View {
 
     private var appItems: [AppleAccountAppItem] {
         guard let inventory else { return [] }
+        let now = Date()
         return inventory.appIDs
+            .filter { ($0.appIDExpirationDate ?? .distantPast) > now }
             .map { AppleAccountAppItem(snapshot: $0) }
-            .sorted {
-                if $0.status.sortPriority != $1.status.sortPriority {
-                    return $0.status.sortPriority < $1.status.sortPriority
-                }
-                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
-            }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     var body: some View {
@@ -56,7 +53,7 @@ struct AppleAccountDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     Task {
-                        await viewModel.refreshCertificateInventory(for: currentAccount, force: true)
+                        await viewModel.refreshAppIDInventory(for: currentAccount, force: true)
                     }
                 } label: {
                     if isSyncing { ProgressView() } else { Image(systemName: "arrow.clockwise") }
@@ -69,6 +66,9 @@ struct AppleAccountDetailView: View {
         }
         .task {
             await viewModel.load()
+            if inventory == nil {
+                await viewModel.refreshAppIDInventory(for: currentAccount, force: false)
+            }
         }
         .alert(item: $viewModel.alertFailure) { failure in
             Alert(
@@ -162,9 +162,9 @@ struct AppleAccountDetailView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 12)
-                Text(item.status.title)
+                Text(item.statusTitle)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(item.status.color)
+                    .foregroundStyle(Color.sealSuccess)
                     .lineLimit(1)
             }
             HStack(spacing: 8) {
@@ -248,7 +248,7 @@ struct AppleAccountDetailView: View {
                 .foregroundStyle(Color.sealTextSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button("重新同步") {
-                Task { await viewModel.refreshCertificateInventory(for: currentAccount, force: true) }
+                Task { await viewModel.refreshAppIDInventory(for: currentAccount, force: true) }
             }
             .buttonStyle(.borderedProminent)
         }
@@ -275,71 +275,21 @@ struct AppleAccountDetailView: View {
 }
 
 private struct AppleAccountAppItem: Identifiable, Equatable {
-    enum Status: Equatable {
-        case active
-        case expiringSoon
-        case expired
-        case unavailable
-
-        var title: String {
-            switch self {
-            case .active: return "有效"
-            case .expiringSoon: return "即将过期"
-            case .expired: return "已过期"
-            case .unavailable: return "缺少描述文件"
-            }
-        }
-
-        var color: Color {
-            switch self {
-            case .active: return .sealSuccess
-            case .expiringSoon: return .sealWarning
-            case .expired: return .sealDanger
-            case .unavailable: return .sealTextSecondary
-            }
-        }
-
-        var sortPriority: Int {
-            switch self {
-            case .expiringSoon: return 0
-            case .active: return 1
-            case .expired: return 2
-            case .unavailable: return 3
-            }
-        }
-    }
-
     let id: String
     let name: String
     let bundleIdentifier: String
-    let expiryDate: Date?
-    let status: Status
+    let expiryDate: Date
 
     init(snapshot: ApplePortalAppIDSnapshot) {
         id = snapshot.id
         name = snapshot.name
         bundleIdentifier = snapshot.bundleIdentifier
-        expiryDate = snapshot.provisioningProfileExpirationDate
-        status = Self.status(
-            expiryDate: snapshot.provisioningProfileExpirationDate,
-            profileState: snapshot.provisioningProfileState
-        )
+        expiryDate = snapshot.appIDExpirationDate ?? .distantPast
     }
+
+    var statusTitle: String { "可用" }
 
     var expirationLabel: String {
-        guard let expiryDate else { return "有效期至：Apple 未返回描述文件" }
-        let prefix = status == .expired ? "到期时间" : "有效期至"
-        return "\(prefix)：\(SealSettingsDateFormatter.string(from: expiryDate))"
-    }
-
-    private static func status(
-        expiryDate: Date?,
-        profileState: ApplePortalAppIDSnapshot.ProvisioningProfileState
-    ) -> Status {
-        guard profileState == .available, let expiryDate else { return .unavailable }
-        let interval = expiryDate.timeIntervalSinceNow
-        if interval <= 0 { return .expired }
-        if interval <= 86_400 * 2 { return .expiringSoon }
-        return .active
+        "有效期至：\(SealSettingsDateFormatter.string(from: expiryDate))"
     }
 }

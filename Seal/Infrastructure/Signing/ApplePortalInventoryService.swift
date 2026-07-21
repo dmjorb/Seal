@@ -42,6 +42,25 @@ struct ApplePortalCertificateSnapshot: Codable, Equatable, Identifiable, Sendabl
 }
 
 actor ApplePortalInventoryService {
+    enum FetchScope: Sendable {
+        case appIDs
+        case certificates
+        case all
+
+        var includesAppIDs: Bool {
+            switch self {
+            case .appIDs, .all: true
+            case .certificates: false
+            }
+        }
+
+        var includesCertificates: Bool {
+            switch self {
+            case .certificates, .all: true
+            case .appIDs: false
+            }
+        }
+    }
     private let anisetteProvider: any AnisetteProvider
 
     init(anisetteProvider: any AnisetteProvider = AnisetteV3Client()) {
@@ -50,19 +69,21 @@ actor ApplePortalInventoryService {
 
     func fetchInventory(
         account: AppleAccountRecord,
-        secret: AccountSecret
+        secret: AccountSecret,
+        scope: FetchScope = .all
     ) async throws -> ApplePortalInventory {
         do {
-            return try await fetchInventoryOnce(account: account, secret: secret)
+            return try await fetchInventoryOnce(account: account, secret: secret, scope: scope)
         } catch ALTAppleAPIError.invalidAnisetteData {
             await anisetteProvider.resetProvisioning()
-            return try await fetchInventoryOnce(account: account, secret: secret)
+            return try await fetchInventoryOnce(account: account, secret: secret, scope: scope)
         }
     }
 
     private func fetchInventoryOnce(
         account: AppleAccountRecord,
-        secret: AccountSecret
+        secret: AccountSecret,
+        scope: FetchScope
     ) async throws -> ApplePortalInventory {
         try Task.checkCancellation()
         let anisette = try await anisetteProvider.fetch()
@@ -85,8 +106,13 @@ actor ApplePortalInventoryService {
             )
         }
 
-        let certificates = try await fetchCertificates(team: team, session: session)
-        let appIDs = try await fetchAppIDs(team: team, session: session)
+        let certificates = scope.includesCertificates
+            ? try await fetchCertificates(team: team, session: session)
+            : []
+        let appIDs = scope.includesAppIDs
+            ? try await fetchAppIDs(team: team, session: session)
+            : []
+        let fetchedAt = Date()
 
         let localP12SerialNumber: String? = {
             guard let p12 = secret.certificateP12,
@@ -111,39 +137,28 @@ actor ApplePortalInventoryService {
             )
         }
 
-        var appSnapshots: [ApplePortalAppIDSnapshot] = []
-        appSnapshots.reserveCapacity(appIDs.count)
-
-        // Apple 的 App ID 响应提供真实名称和 App ID 到期时间。
-        // 描述文件日期必须读取 Apple 返回的 provisioning profile，不能用本地 AppRecord 代替。
-        // 逐项读取可避免 AltSign 旧模型跨并发边界引发 Swift 6 Sendable 问题。
-        for appID in appIDs {
-            try Task.checkCancellation()
-
-            let profile = try? await fetchProvisioningProfile(
-                appID: appID,
-                team: team,
-                session: session
-            )
-            let displayName = Self.displayName(
-                from: appID.name,
-                fallbackBundleIdentifier: appID.bundleIdentifier
-            )
-
-            appSnapshots.append(
-                ApplePortalAppIDSnapshot(
-                    identifier: appID.identifier,
-                    name: displayName,
-                    bundleIdentifier: appID.bundleIdentifier,
-                    appIDExpirationDate: appID.expirationDate,
-                    provisioningProfileName: profile?.name,
-                    provisioningProfileExpirationDate: profile?.expirationDate,
-                    provisioningProfileState: profile == nil ? .unavailable : .available
-                )
+        // Apple ID 页面只读取 Apple 返回的 App ID 元数据。
+        // 刷新列表绝不能获取或生成 provisioning profile，否则会改变描述文件时间。
+        let appSnapshots: [ApplePortalAppIDSnapshot] = appIDs.compactMap { appID in
+            guard let expirationDate = appID.expirationDate, expirationDate > fetchedAt else {
+                return nil
+            }
+            return ApplePortalAppIDSnapshot(
+                identifier: appID.identifier,
+                name: Self.displayName(
+                    from: appID.name,
+                    fallbackBundleIdentifier: appID.bundleIdentifier
+                ),
+                bundleIdentifier: appID.bundleIdentifier,
+                appIDExpirationDate: expirationDate,
+                provisioningProfileName: nil,
+                provisioningProfileExpirationDate: nil,
+                provisioningProfileState: .unavailable
             )
         }
 
-        appSnapshots.sort {
+        var sortedAppSnapshots = appSnapshots
+        sortedAppSnapshots.sort {
             let result = $0.name.localizedStandardCompare($1.name)
             if result == .orderedSame {
                 return $0.bundleIdentifier.localizedStandardCompare($1.bundleIdentifier) == .orderedAscending
@@ -155,9 +170,9 @@ actor ApplePortalInventoryService {
             accountID: account.id,
             teamID: team.identifier,
             teamName: team.name,
-            appIDs: appSnapshots,
+            appIDs: sortedAppSnapshots,
             certificates: certificateSnapshots,
-            fetchedAt: Date()
+            fetchedAt: fetchedAt
         )
     }
 
@@ -227,26 +242,5 @@ actor ApplePortalInventoryService {
         return box.value
     }
 
-    private func fetchProvisioningProfile(
-        appID: ALTAppID,
-        team: ALTTeam,
-        session: ALTAppleAPISession
-    ) async throws -> ALTProvisioningProfile {
-        let box: LegacyBox<ALTProvisioningProfile> = try await withCheckedThrowingContinuation {
-            continuation in
-            ALTAppleAPI.shared.fetchProvisioningProfile(
-                for: appID,
-                deviceType: .iphone,
-                team: team,
-                session: session
-            ) { profile, error in
-                if let profile {
-                    continuation.resume(returning: LegacyBox(profile))
-                } else {
-                    continuation.resume(throwing: error ?? URLError(.badServerResponse))
-                }
-            }
-        }
-        return box.value
-    }
+
 }

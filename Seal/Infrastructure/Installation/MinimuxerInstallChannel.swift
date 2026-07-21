@@ -161,12 +161,25 @@ actor MinimuxerInstallChannel: InstallChannel {
         #endif
     }
 
-    func install(ipaData: Data, bundleID: String) async throws {
+    func install(
+        ipaData: Data,
+        bundleID: String,
+        isSelfReplacement: Bool
+    ) async throws {
         #if !targetEnvironment(simulator)
         guard await isReady() else { throw Self.channelNotReadyFailure }
         do {
             try Minimuxer.yeetAppAfc(bundleId: bundleID, ipaBytes: ipaData)
-            try Minimuxer.installIpa(bundleId: bundleID)
+            if isSelfReplacement {
+                let installation = Task.detached(priority: .userInitiated) {
+                    try Minimuxer.installIpa(bundleId: bundleID)
+                }
+                try await Task.sleep(for: .milliseconds(250))
+                await SelfReplacementController.returnToHomeScreen()
+                try await installation.value
+            } else {
+                try Minimuxer.installIpa(bundleId: bundleID)
+            }
         } catch {
             throw Self.installationFailure(error)
         }

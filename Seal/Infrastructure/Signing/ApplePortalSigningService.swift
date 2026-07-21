@@ -271,7 +271,7 @@ actor ApplePortalSigningService {
             )
             try Task.checkCancellation()
 
-            await progress(.preparingProfiles)
+            await progress(.preparingAppID)
             stage = .appID
             let profilePreparation = try await provisioningProfiles(
                 mappings: prepared.bundleIDMappings,
@@ -281,7 +281,8 @@ actor ApplePortalSigningService {
                 workspace: prepared,
                 allowDroppingExtensions: allowDroppingExtensions,
                 team: team,
-                session: session
+                session: session,
+                progress: progress
             )
             try Task.checkCancellation()
             guard let mainProfile = profilePreparation.profiles.first(where: {
@@ -470,7 +471,7 @@ actor ApplePortalSigningService {
         deviceName: String,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void
     ) async throws -> SigningIdentity {
-        var requested: ALTCertificate
+        let requested: ALTCertificate
         do {
             requested = try await addCertificate(
                 team: team,
@@ -480,35 +481,13 @@ actor ApplePortalSigningService {
             try Task.checkCancellation()
         } catch {
             guard Self.isCertificateLimitError(error) else { throw error }
-            let latestCertificates = (try? await fetchCertificates(team: team, session: session)) ?? certificates
-            guard await revokeOneUnavailableDevelopmentCertificate(
-                certificates: latestCertificates,
+            requested = try await recoverCertificateCapacityAndCreate(
+                initialCertificates: certificates,
                 protectedSerialNumber: secret.certificateSerialNumber,
                 team: team,
-                session: session
-            ) else {
-                throw Self.failure(
-                    title: "签名失败",
-                    reason: "Apple 返回：无法创建签名证书",
-                    recovery: "重试",
-                    code: "SEAL-CERT-204"
-                )
-            }
-            do {
-                requested = try await addCertificate(
-                    team: team,
-                    session: session,
-                    deviceName: deviceName
-                )
-                try Task.checkCancellation()
-            } catch {
-                throw Self.failure(
-                    title: "签名失败",
-                    reason: "Apple 返回：无法创建签名证书",
-                    recovery: "重试",
-                    code: "SEAL-CERT-204"
-                )
-            }
+                session: session,
+                deviceName: deviceName
+            )
         }
 
         var wasPersisted = false
@@ -565,28 +544,45 @@ actor ApplePortalSigningService {
         }
     }
 
-    private func revokeOneUnavailableDevelopmentCertificate(
-        certificates: [ALTCertificate],
+    private func recoverCertificateCapacityAndCreate(
+        initialCertificates: [ALTCertificate],
         protectedSerialNumber: String?,
         team: ALTTeam,
-        session: ALTAppleAPISession
-    ) async -> Bool {
+        session: ALTAppleAPISession,
+        deviceName: String
+    ) async throws -> ALTCertificate {
+        let latest = (try? await fetchCertificates(team: team, session: session))
+            ?? initialCertificates
         let protected = protectedSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
-        for certificate in certificates.sorted(by: { lhs, rhs in
-            (lhs.machineName ?? "Apple Development") < (rhs.machineName ?? "Apple Development")
-        }) {
-            if let protected, protected.isEmpty == false,
-               certificate.serialNumber.caseInsensitiveCompare(protected) == .orderedSame {
+        let candidates = latest.filter { certificate in
+            guard let protected, protected.isEmpty == false else { return true }
+            return certificate.serialNumber.caseInsensitiveCompare(protected) != .orderedSame
+        }
+
+        for certificate in candidates {
+            try Task.checkCancellation()
+            guard (try? await revokeCertificate(certificate, team: team, session: session)) != nil else {
                 continue
             }
             do {
-                try await revokeCertificate(certificate, team: team, session: session)
-                return true
+                let created = try await addCertificate(
+                    team: team,
+                    session: session,
+                    deviceName: deviceName
+                )
+                try Task.checkCancellation()
+                return created
             } catch {
-                continue
+                guard Self.isCertificateLimitError(error) else { throw error }
             }
         }
-        return false
+
+        throw Self.failure(
+            title: "签名失败",
+            reason: "Apple 返回：无法创建签名证书",
+            recovery: "重试",
+            code: "SEAL-CERT-204"
+        )
     }
 
     private func cleanUpNewCertificate(
@@ -709,7 +705,8 @@ actor ApplePortalSigningService {
         workspace: PreparedSigningWorkspace,
         allowDroppingExtensions: Bool,
         team: ALTTeam,
-        session: ALTAppleAPISession
+        session: ALTAppleAPISession,
+        progress: @Sendable (SigningStage) async -> Void
     ) async throws -> ProfilePreparation {
         guard let mainApplication = ALTApplication(fileURL: appURL) else {
             throw Self.failure(
@@ -719,23 +716,17 @@ actor ApplePortalSigningService {
                 code: "SEAL-SIGN-404"
             )
         }
-        var applications = [
-            mainApplication.bundleIdentifier: mainApplication
-        ]
+        var applications = [mainApplication.bundleIdentifier: mainApplication]
         for appExtension in mainApplication.appExtensions {
             applications[appExtension.bundleIdentifier] = appExtension
         }
-        let existingBox: LegacyBox<[ALTAppID]> = try await withCheckedThrowingContinuation {
-            continuation in
-            ALTAppleAPI.shared.fetchAppIDs(for: team, session: session) { appIDs, error in
-                Self.resume(continuation, value: appIDs, error: error)
-            }
-        }
-        var existing = existingBox.value
-        var profiles: [ALTProvisioningProfile] = []
+
+        var existing = try await fetchAppIDs(team: team, session: session)
+        var preparedAppIDs: [(original: String, mapped: String, appID: ALTAppID)] = []
         var requestedEntitlements: [String: [String: ProvisioningEntitlementValue]] = [:]
         var droppedExtensionBundleIdentifiers: [String] = []
 
+        // Phase 1: only read/create/update App IDs. No provisioning profile is fetched here.
         for (originalBundleID, mappedBundleID) in mappings.sorted(by: { $0.key < $1.key }) {
             do {
                 try Task.checkCancellation()
@@ -780,10 +771,7 @@ actor ApplePortalSigningService {
                 }
 
                 if let application = applications[mappedBundleID] {
-                    let entitlementSource = filteredAppIDEntitlements(
-                        from: application,
-                        team: team
-                    )
+                    let entitlementSource = filteredAppIDEntitlements(from: application, team: team)
                     var entitlementValues: [String: ProvisioningEntitlementValue] = [:]
                     for (entitlement, value) in entitlementSource {
                         guard let converted = ProvisioningEntitlementValue.make(from: value) else {
@@ -812,28 +800,58 @@ actor ApplePortalSigningService {
                         )
                     }
                 }
-
-                let profile: ALTProvisioningProfile
-                do {
-                    profile = try await fetchProvisioningProfile(
-                        for: appID,
-                        team: team,
-                        session: session
+                preparedAppIDs.append((originalBundleID, mappedBundleID, appID))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard mappedBundleID != mappedMainBundleID else { throw error }
+                guard allowDroppingExtensions else {
+                    throw Self.failure(
+                        title: "签名失败",
+                        reason: "Apple 返回：扩展无法创建 App ID",
+                        recovery: "移除扩展后重试",
+                        code: "SEAL-EXT-401"
                     )
-                } catch let failure as ImportFailure {
-                    throw failure
-                } catch {
+                }
+                try signingWorkspace.removeExtension(
+                    mappedBundleIdentifier: mappedBundleID,
+                    from: workspace
+                )
+                requestedEntitlements.removeValue(forKey: mappedBundleID)
+                droppedExtensionBundleIdentifiers.append(originalBundleID)
+            }
+        }
+
+        // Phase 2: App IDs are settled; now fetch/generate real provisioning profiles.
+        await progress(.preparingProfiles)
+        var profiles: [ALTProvisioningProfile] = []
+        for preparedAppID in preparedAppIDs {
+            do {
+                try Task.checkCancellation()
+                let profile = try await fetchProvisioningProfile(
+                    for: preparedAppID.appID,
+                    team: team,
+                    session: session
+                )
+                profiles.append(profile)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let failure as ImportFailure {
+                if preparedAppID.mapped == mappedMainBundleID { throw failure }
+                guard allowDroppingExtensions else { throw failure }
+                try signingWorkspace.removeExtension(
+                    mappedBundleIdentifier: preparedAppID.mapped,
+                    from: workspace
+                )
+                requestedEntitlements.removeValue(forKey: preparedAppID.mapped)
+                droppedExtensionBundleIdentifiers.append(preparedAppID.original)
+            } catch {
+                if preparedAppID.mapped == mappedMainBundleID {
                     throw ApplePortalSigningFailure.make(
                         stage: .provisioningProfile,
                         error: error
                     )
                 }
-                profiles.append(profile)
-                try Task.checkCancellation()
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                guard mappedBundleID != mappedMainBundleID else { throw error }
                 guard allowDroppingExtensions else {
                     throw Self.failure(
                         title: "签名失败",
@@ -843,16 +861,18 @@ actor ApplePortalSigningService {
                     )
                 }
                 try signingWorkspace.removeExtension(
-                    mappedBundleIdentifier: mappedBundleID,
+                    mappedBundleIdentifier: preparedAppID.mapped,
                     from: workspace
                 )
-                droppedExtensionBundleIdentifiers.append(originalBundleID)
+                requestedEntitlements.removeValue(forKey: preparedAppID.mapped)
+                droppedExtensionBundleIdentifiers.append(preparedAppID.original)
             }
         }
+
         return ProfilePreparation(
             profiles: profiles,
             requestedEntitlements: requestedEntitlements,
-            droppedExtensionBundleIdentifiers: droppedExtensionBundleIdentifiers
+            droppedExtensionBundleIdentifiers: Array(Set(droppedExtensionBundleIdentifiers))
         )
     }
 

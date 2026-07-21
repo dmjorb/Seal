@@ -263,8 +263,9 @@ struct SigningProgressView: View {
         switch stage {
         case .waitingForChannel: 0.10
         case .preparingAccount: 0.20
-        case .preparingCertificate: 0.33
-        case .preparingProfiles: 0.48
+        case .preparingCertificate: 0.30
+        case .preparingAppID: 0.42
+        case .preparingProfiles: 0.54
         case .signing: 0.62
         case .installing: 0.82
         case .verifying: 0.94
@@ -273,7 +274,7 @@ struct SigningProgressView: View {
 
     private func timelinePosition(for stage: SigningStage) -> Int {
         switch stage {
-        case .waitingForChannel, .preparingAccount, .preparingCertificate, .preparingProfiles: 0
+        case .waitingForChannel, .preparingAccount, .preparingCertificate, .preparingAppID, .preparingProfiles: 0
         case .signing: 1
         case .installing, .verifying: 2
         }
@@ -371,13 +372,13 @@ struct SigningProgressView: View {
 private extension SigningStage {
     func userVisibleTitle(isRenewal: Bool) -> String {
         switch self {
-        case .waitingForChannel: return isRenewal ? "正在准备续签" : "正在准备签名"
-        case .preparingAccount: return isRenewal ? "正在准备续签" : "正在准备签名"
-        case .preparingCertificate: return "正在处理 Bundle ID"
+        case .waitingForChannel, .preparingAccount: return "正在处理证书"
+        case .preparingCertificate: return "正在处理证书"
+        case .preparingAppID: return "正在创建 App ID"
         case .preparingProfiles: return "正在生成描述文件"
-        case .signing: return "正在写入签名"
-        case .installing: return "正在安装到设备"
-        case .verifying: return "正在确认安装"
+        case .signing: return "正在签名"
+        case .installing: return "正在安装"
+        case .verifying: return "正在安装"
         }
     }
 }

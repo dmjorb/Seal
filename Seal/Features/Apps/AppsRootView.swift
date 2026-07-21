@@ -79,6 +79,7 @@ struct AppsRootView: View {
                 NavigationStack {
                     AppDetailView(appID: app.id, viewModel: viewModel)
                 }
+                .sealSheetBackground()
                 .presentationDetents([.large])
                 .compatiblePresentationCornerRadius(28)
             }

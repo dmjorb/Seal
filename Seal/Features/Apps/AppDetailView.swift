@@ -109,7 +109,7 @@ struct AppDetailView: View {
         .sealPrimaryAction()
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
+        .background(Color.sealSurface)
     }
 
     @ViewBuilder

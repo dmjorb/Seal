@@ -77,27 +77,47 @@ struct SettingsRootView: View {
                     }
 
                     settingsSection("自动化") {
-                        NavigationLink {
-                            NotificationSettingsView(viewModel: viewModel)
-                        } label: {
-                            settingsRow(
-                                title: "到期前提醒",
-                                value: notificationSummary,
-                                icon: "bell",
-                                showsChevron: true,
-                                iconColor: Color.sealWarning
-                            )
-                        }
-                        sectionDivider
                         Toggle(isOn: $autoRenew) {
                             settingsRow(
-                                title: "打开 Seal 后自动检查",
+                                title: "打开 Seal 后自动续签",
                                 value: autoRenew ? "开" : "关",
                                 icon: "clock.arrow.circlepath",
                                 showsChevron: false
                             )
                         }
                         .tint(.sealAccent)
+                        sectionDivider
+                        Toggle(isOn: Binding(
+                            get: { viewModel.notificationsEnabled },
+                            set: { enabled in
+                                Task { await viewModel.setNotificationsEnabled(enabled) }
+                            }
+                        )) {
+                            settingsRow(
+                                title: "到期前 24 小时提醒",
+                                value: viewModel.notificationsEnabled ? "开" : "关",
+                                icon: "bell",
+                                showsChevron: false,
+                                iconColor: Color.sealWarning
+                            )
+                        }
+                        .tint(.sealAccent)
+                    }
+                    Text("开启后，每天第一次打开 Seal 会自动续签全部 App。")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(Color.sealTextSecondary)
+                        .padding(.horizontal, 8)
+                        .padding(.top, -14)
+
+                    settingsSection("使用教程") {
+                        NavigationLink { SigningAndRenewalGuideView() } label: {
+                            settingsRow(
+                                title: "签名和续签",
+                                value: nil,
+                                icon: "book.closed",
+                                showsChevron: true
+                            )
+                        }
                     }
 
                     settingsSection("存储与维护") {
@@ -330,10 +350,6 @@ struct SettingsRootView: View {
         }
     }
 
-    private var notificationSummary: String {
-        viewModel.notificationsEnabled ? "到期 \(viewModel.reminderHours.displayLeadTime)" : "未开启"
-    }
-
     private var latestLogSummary: String {
         guard let log = viewModel.logs.first else { return "暂无日志" }
         return log.level.displayTitle
@@ -365,8 +381,8 @@ struct SettingsRootView: View {
         guard let pairing = viewModel.pairingRecord else { return .sealWarning }
         switch pairing.validationStatus {
         case .verified: return .sealSuccess
-        case .deviceMismatch: return .sealDanger
-        case .unverified, .connectionFailed: return .sealWarning
+        case .deviceMismatch, .fileUnreadable: return .sealDanger
+        case .unverified, .validating: return .sealWarning
         }
     }
 
@@ -417,13 +433,6 @@ struct SettingsRootView: View {
 
     private var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
-    }
-}
-
-private extension Int {
-    var displayLeadTime: String {
-        if self < 24 { return "\(self) 小时" }
-        return "\(self / 24) 天"
     }
 }
 

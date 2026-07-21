@@ -68,10 +68,12 @@ actor PairingStore {
         let dictionary = try dictionary()
         let inspection = try Self.inspect(dictionary)
         let metadata = try? loadMetadata()
+        let storedStatus = metadata?.status ?? .unverified
+        let status: PairingValidationStatus = storedStatus == .validating ? .unverified : storedStatus
         return PairingRecord(
             deviceIdentifier: inspection.udid,
             isRemotePairing: inspection.isRemote,
-            validationStatus: metadata?.status ?? .unverified,
+            validationStatus: status,
             validatedDeviceIdentifier: metadata?.validatedDeviceIdentifier,
             validatedAt: metadata?.validatedAt
         )
@@ -107,20 +109,29 @@ actor PairingStore {
         )
     }
 
-    func markConnectionFailed() throws -> PairingRecord {
+    func markValidating() throws -> PairingRecord {
+        try updateValidationStatus(.validating)
+    }
+
+    func markPendingValidation() throws -> PairingRecord {
+        try updateValidationStatus(.unverified)
+    }
+
+    private func updateValidationStatus(
+        _ status: PairingValidationStatus
+    ) throws -> PairingRecord {
         let dictionary = try dictionary()
         let inspection = try Self.inspect(dictionary)
         let metadata = ValidationMetadata(
-            status: .connectionFailed,
+            status: status,
             validatedDeviceIdentifier: nil,
-            validatedAt: Date()
+            validatedAt: nil
         )
         try saveMetadata(metadata)
         return PairingRecord(
             deviceIdentifier: inspection.udid,
             isRemotePairing: inspection.isRemote,
-            validationStatus: .connectionFailed,
-            validatedAt: metadata.validatedAt
+            validationStatus: status
         )
     }
 

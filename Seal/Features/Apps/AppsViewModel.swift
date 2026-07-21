@@ -35,6 +35,7 @@ final class AppsViewModel: ObservableObject {
     @Published var shouldOpenSettings = false
     @Published var requestedSettingsRoute: SettingsRoute?
     @Published private(set) var signingChannelStatus: SigningChannelStatus = .idle
+    @Published private(set) var autoRenewInProgress = false
 
     private let workflow: ImportWorkflow?
     private let appStore: (any AppStore)?
@@ -50,15 +51,23 @@ final class AppsViewModel: ObservableObject {
     private let notificationScheduler: ExpiryNotificationScheduler?
     private let notificationPreferences: NotificationPreferences?
     private let signingPreferenceStore: SigningPreferenceStore?
+    private let dailyAutoRenewStateStore: DailyAutoRenewStateStore
     private var signingTask: Task<Void, Never>?
     private var batchRefreshTask: Task<Void, Never>?
     private var channelTask: Task<Bool, Never>?
     private var pendingVPNAction: PendingVPNAction?
+    private var currentAutoRenewDayKey: String?
     private var hasLoaded = false
 
     private enum PendingVPNAction {
         case signing(AppRecord, accountID: UUID?)
-        case batch(resume: Bool, dueLeadHours: Int?, enforceCooldown: Bool)
+        case batch(
+            resume: Bool,
+            dueLeadHours: Int?,
+            dueCutoff: Date?,
+            enforceCooldown: Bool,
+            dailyAutoRenewDayKey: String?
+        )
     }
 
     init(
@@ -91,6 +100,7 @@ final class AppsViewModel: ObservableObject {
         self.notificationScheduler = notificationScheduler
         self.notificationPreferences = notificationPreferences
         self.signingPreferenceStore = signingPreferenceStore
+        self.dailyAutoRenewStateStore = DailyAutoRenewStateStore()
         apps = []
         accounts = []
         iconData = [:]
@@ -113,6 +123,7 @@ final class AppsViewModel: ObservableObject {
         notificationScheduler = nil
         notificationPreferences = nil
         signingPreferenceStore = nil
+        dailyAutoRenewStateStore = DailyAutoRenewStateStore()
         apps = []
         accounts = []
         iconData = [:]
@@ -136,6 +147,7 @@ final class AppsViewModel: ObservableObject {
         notificationScheduler = nil
         notificationPreferences = nil
         signingPreferenceStore = nil
+        dailyAutoRenewStateStore = DailyAutoRenewStateStore()
         self.apps = apps
         accounts = []
         iconData = [:]
@@ -289,6 +301,31 @@ final class AppsViewModel: ObservableObject {
         }
     }
 
+    func performLightweightLaunchCheck() async {
+        await load(force: true)
+        dailyAutoRenewStateStore.reconcilePendingSelfRenewal(
+            currentExpiry: SelfAppMetadata.current()?.expirationDate
+        )
+    }
+
+    func startDailyAutoRenewIfNeeded(now: Date = Date()) async {
+        await performLightweightLaunchCheck()
+        guard autoRenewInProgress == false,
+              signingTask == nil,
+              batchRefreshTask == nil,
+              dailyAutoRenewStateStore.shouldRun(on: now) else { return }
+
+        let dayKey = dailyAutoRenewStateStore.dayKey(for: now)
+        autoRenewInProgress = true
+        startBatchRefresh(
+            resume: false,
+            dailyAutoRenewDayKey: dayKey
+        )
+        if batchRefreshTask == nil {
+            autoRenewInProgress = false
+        }
+    }
+
     private func seedSigningHistoryIfNeeded(
         apps: [AppRecord],
         accounts: [AppleAccountRecord]
@@ -425,8 +462,19 @@ final class AppsViewModel: ObservableObject {
             return
         }
 
+        let boundAccountID = (app.state == .installed || app.isSeal) ? app.accountID : nil
+        if (app.state == .installed || app.isSeal), boundAccountID == nil {
+            alertFailure = ImportFailure(
+                title: "续签记录不完整",
+                reason: "未记录上次签名此 App 的 Apple ID。",
+                recovery: "重新导入 IPA 签名并安装",
+                code: "SEAL-AUTH-110"
+            )
+            return
+        }
+
         guard await refreshSigningChannel() else {
-            presentVPNRecovery(for: .signing(app, accountID: nil))
+            presentVPNRecovery(for: .signing(app, accountID: boundAccountID))
             return
         }
 
@@ -440,24 +488,29 @@ final class AppsViewModel: ObservableObject {
     ) async {
         guard signingTask == nil, batchRefreshTask == nil else { return }
         await load(force: true)
-        guard let account = verifiedAccounts.first(where: { $0.id == accountID }) else {
+        let isRenewal = app.state == .installed || app.isSeal
+        let resolvedAccountID = isRenewal ? app.accountID : accountID
+        guard let resolvedAccountID,
+              let account = verifiedAccounts.first(where: { $0.id == resolvedAccountID }) else {
             alertFailure = ImportFailure(
                 title: "Apple ID 不可用",
-                reason: "请选择一个已验证的 Apple ID",
+                reason: isRenewal ? "上次签名此 App 的 Apple ID 不可用。" : "请选择一个已验证的 Apple ID",
                 recovery: "前往设置",
                 code: "SEAL-AUTH-104"
             )
             return
         }
         guard await refreshSigningChannel() else {
-            presentVPNRecovery(for: .signing(app, accountID: accountID))
+            presentVPNRecovery(for: .signing(app, accountID: resolvedAccountID))
             return
         }
-        await selectActiveAccount(id: account.id)
+        if isRenewal == false {
+            await selectActiveAccount(id: account.id)
+        }
         startSigning(
             app: app,
             account: account,
-            requestedBundleIdentifier: requestedBundleIdentifier
+            requestedBundleIdentifier: isRenewal ? nil : requestedBundleIdentifier
         )
     }
 
@@ -465,8 +518,20 @@ final class AppsViewModel: ObservableObject {
         for app: AppRecord,
         availableAccounts: [AppleAccountRecord]
     ) {
-        if let activeAccountID,
-           let account = availableAccounts.first(where: { $0.id == activeAccountID }) {
+        if app.state == .installed || app.isSeal {
+            guard let accountID = app.accountID,
+                  let account = availableAccounts.first(where: { $0.id == accountID }) else {
+                alertFailure = ImportFailure(
+                    title: "Apple ID 不可用",
+                    reason: "上次签名此 App 的 Apple ID 不可用。",
+                    recovery: "前往设置",
+                    code: "SEAL-AUTH-104"
+                )
+                return
+            }
+            startSigning(app: app, account: account)
+        } else if let activeAccountID,
+                  let account = availableAccounts.first(where: { $0.id == activeAccountID }) {
             startSigning(app: app, account: account)
         } else if availableAccounts.count == 1, let account = availableAccounts.first {
             startSigning(app: app, account: account)
@@ -493,11 +558,19 @@ final class AppsViewModel: ObservableObject {
             } else {
                 await requestSigning(for: app)
             }
-        case .batch(let resume, let dueLeadHours, let enforceCooldown):
+        case .batch(
+            let resume,
+            let dueLeadHours,
+            let dueCutoff,
+            let enforceCooldown,
+            let dailyAutoRenewDayKey
+        ):
             startBatchRefresh(
                 resume: resume,
                 dueLeadHours: dueLeadHours,
-                enforceCooldown: enforceCooldown
+                dueCutoff: dueCutoff,
+                enforceCooldown: enforceCooldown,
+                dailyAutoRenewDayKey: dailyAutoRenewDayKey
             )
         }
     }
@@ -597,6 +670,25 @@ final class AppsViewModel: ObservableObject {
         )
     }
 
+    func hasCycleRenewalCompanions(for seal: AppRecord) -> Bool {
+        guard seal.isSeal, let cutoff = seal.expiryDate else { return false }
+        return apps.contains { app in
+            guard app.isSeal == false,
+                  app.state == .installed,
+                  app.accountID != nil,
+                  let expiryDate = app.expiryDate else { return false }
+            return expiryDate <= cutoff
+        }
+    }
+
+    func refreshSealCycle(for seal: AppRecord) {
+        guard seal.isSeal, let cutoff = seal.expiryDate else { return }
+        startBatchRefresh(
+            resume: false,
+            dueCutoff: cutoff
+        )
+    }
+
     func resumeRefresh() {
         startBatchRefresh(resume: true)
     }
@@ -604,6 +696,8 @@ final class AppsViewModel: ObservableObject {
     func cancelBatchRefresh() {
         batchRefreshTask?.cancel()
         batchRefreshSession = nil
+        autoRenewInProgress = false
+        currentAutoRenewDayKey = nil
         Task { await load(force: true) }
     }
 
@@ -616,7 +710,9 @@ final class AppsViewModel: ObservableObject {
     private func startBatchRefresh(
         resume: Bool,
         dueLeadHours: Int? = nil,
-        enforceCooldown: Bool = false
+        dueCutoff: Date? = nil,
+        enforceCooldown: Bool = false,
+        dailyAutoRenewDayKey: String? = nil
     ) {
         guard batchRefreshTask == nil,
               signingTask == nil,
@@ -625,20 +721,28 @@ final class AppsViewModel: ObservableObject {
             guard let self else { return }
             guard await self.refreshSigningChannel() else {
                 self.batchRefreshTask = nil
+                self.autoRenewInProgress = false
+                self.currentAutoRenewDayKey = nil
                 self.presentVPNRecovery(
                     for: .batch(
                         resume: resume,
                         dueLeadHours: dueLeadHours,
-                        enforceCooldown: enforceCooldown
+                        dueCutoff: dueCutoff,
+                        enforceCooldown: enforceCooldown,
+                        dailyAutoRenewDayKey: dailyAutoRenewDayKey
                     )
                 )
                 return
             }
+            self.currentAutoRenewDayKey = dailyAutoRenewDayKey
+            self.autoRenewInProgress = dailyAutoRenewDayKey != nil
             self.batchRefreshSession = BatchRefreshSession()
             await self.runBatchRefresh(
                 resume: resume,
                 dueLeadHours: dueLeadHours,
-                enforceCooldown: enforceCooldown
+                dueCutoff: dueCutoff,
+                enforceCooldown: enforceCooldown,
+                dailyAutoRenewDayKey: dailyAutoRenewDayKey
             )
         }
     }
@@ -656,14 +760,22 @@ final class AppsViewModel: ObservableObject {
     private func runBatchRefresh(
         resume: Bool,
         dueLeadHours: Int? = nil,
-        enforceCooldown: Bool = false
+        dueCutoff: Date? = nil,
+        enforceCooldown: Bool = false,
+        dailyAutoRenewDayKey: String? = nil
     ) async {
         guard let renewalCoordinator else { return }
         do {
             let progress: @Sendable (BatchRefreshEvent) async -> Void = { [weak self] event in
                 await self?.consumeBatchEvent(event)
             }
-            let result = if let dueLeadHours {
+            let result = if let dueCutoff {
+                try await renewalCoordinator.refreshDue(
+                    until: dueCutoff,
+                    enforceCooldown: enforceCooldown,
+                    progress: progress
+                )
+            } else if let dueLeadHours {
                 try await renewalCoordinator.refreshDue(
                     leadHours: dueLeadHours,
                     enforceCooldown: enforceCooldown,
@@ -675,8 +787,11 @@ final class AppsViewModel: ObservableObject {
                 try await renewalCoordinator.refreshAll(progress: progress)
             }
             if result.total == 0 {
+                if let dailyAutoRenewDayKey {
+                    dailyAutoRenewStateStore.markCompleted(dayKey: dailyAutoRenewDayKey)
+                }
                 batchRefreshSession = nil
-                if dueLeadHours == nil {
+                if dueLeadHours == nil, dueCutoff == nil, dailyAutoRenewDayKey == nil {
                     alertFailure = ImportFailure(
                         title: "没有可刷新的应用",
                         reason: "已安装应用尚未绑定账号",
@@ -693,10 +808,15 @@ final class AppsViewModel: ObservableObject {
                 }
             } else {
                 batchRefreshSession?.status = .completed(result)
+                if let dailyAutoRenewDayKey, result.failed == 0 {
+                    dailyAutoRenewStateStore.markCompleted(dayKey: dailyAutoRenewDayKey)
+                }
                 try? await logStore?.append(
                     category: .renewal,
                     level: result.failed == 0 ? .info : .warning,
-                    message: dueLeadHours == nil ? "批量刷新完成" : "打开 Seal 后自动检查完成"
+                    message: dailyAutoRenewDayKey != nil
+                        ? "每日首次打开自动续签完成"
+                        : (dueLeadHours == nil ? "批量续签完成" : "临期应用续签完成")
                 )
                 await cleanTemporaryFilesIfNeeded()
             }
@@ -717,6 +837,8 @@ final class AppsViewModel: ObservableObject {
             )
         }
         batchRefreshTask = nil
+        autoRenewInProgress = false
+        currentAutoRenewDayKey = nil
     }
 
     private func consumeBatchEvent(_ event: BatchRefreshEvent) {
@@ -729,6 +851,15 @@ final class AppsViewModel: ObservableObject {
             batchRefreshSession?.total = total
             batchRefreshSession?.currentAppName = app.name
             batchRefreshSession?.currentStage = stage
+            if app.isSeal,
+               stage == .installing,
+               batchRefreshSession?.failed == 0,
+               let currentAutoRenewDayKey {
+                dailyAutoRenewStateStore.markPendingSelfRenewal(
+                    dayKey: currentAutoRenewDayKey,
+                    previousExpiry: SelfAppMetadata.current()?.expirationDate
+                )
+            }
         case .appSucceeded(let index, let total, let app):
             batchRefreshSession?.currentIndex = index
             batchRefreshSession?.total = total

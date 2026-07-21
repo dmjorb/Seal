@@ -159,11 +159,17 @@ final class SettingsViewModel: ObservableObject {
         guard force || hasLoaded == false else { return }
         guard let accountRepository, let pairingStore else { return }
         do {
-            async let storedAccounts = accountRepository.fetchAll()
-            async let storedPairing = pairingStore.current()
-            let fetchedAccounts = try await storedAccounts
+            let fetchedAccounts = try await accountRepository.fetchAll()
             accounts = await refreshedAccountDisplayNames(fetchedAccounts)
-            pairingRecord = try await storedPairing
+            do {
+                pairingRecord = try await pairingStore.current()
+            } catch {
+                pairingRecord = PairingRecord(
+                    deviceIdentifier: nil,
+                    isRemotePairing: false,
+                    validationStatus: .fileUnreadable
+                )
+            }
             fullAccountEmails = await loadFullAccountEmails(for: accounts)
             loadCertificateInventoryCache(for: accounts)
 
@@ -209,6 +215,12 @@ final class SettingsViewModel: ObservableObject {
                 code: "SEAL-SET-001"
             )
         }
+    }
+
+    func performLightweightLaunchCheck() async {
+        await load(force: true)
+        guard pairingRecord != nil, diagnosticState != .running else { return }
+        await runInstallChannelCheck(successMessage: "安装通道可用")
     }
 
     var activeAccount: AppleAccountRecord? {
@@ -642,6 +654,67 @@ final class SettingsViewModel: ObservableObject {
         certificateInventoryLoadingIDs.contains(accountID)
     }
 
+    func refreshAppIDInventories() async {
+        for account in accounts where account.status == .verified {
+            await refreshAppIDInventory(for: account, force: true)
+        }
+    }
+
+    func refreshAppIDInventory(
+        for account: AppleAccountRecord,
+        force: Bool = true
+    ) async {
+        guard let keychain, let applePortalInventoryService else { return }
+        if force == false, certificateInventories[account.id]?.appIDs.isEmpty == false { return }
+        if certificateInventoryLoadingIDs.contains(account.id) { return }
+
+        certificateInventoryLoadingIDs.insert(account.id)
+        defer { certificateInventoryLoadingIDs.remove(account.id) }
+
+        do {
+            guard let secret = try await keychain.load(accountID: account.id) else {
+                throw Self.failure(
+                    title: "Apple ID 同步失败",
+                    reason: "本机没有此 Apple ID 的登录凭据。",
+                    recovery: "重新验证 Apple ID",
+                    code: "SEAL-INVENTORY-100"
+                )
+            }
+            let fetched = try await applePortalInventoryService.fetchInventory(
+                account: account,
+                secret: secret,
+                scope: .appIDs
+            )
+            let merged = ApplePortalInventory(
+                accountID: fetched.accountID,
+                teamID: fetched.teamID,
+                teamName: fetched.teamName,
+                appIDs: fetched.appIDs,
+                certificates: certificateInventories[account.id]?.certificates ?? [],
+                fetchedAt: fetched.fetchedAt
+            )
+            certificateInventories[account.id] = merged
+            certificateInventoryFailures[account.id] = nil
+            saveCertificateInventoryCache(merged)
+            try? await logStore?.append(
+                category: .account,
+                message: "Apple App ID 已同步：\(merged.usedBundleIDCount) 个可用 App ID"
+            )
+        } catch let failure as ImportFailure {
+            certificateInventoryFailures[account.id] = failure
+        } catch {
+            let nsError = error as NSError
+            certificateInventoryFailures[account.id] = Self.failure(
+                title: "Apple ID 同步失败",
+                reason: "来源：\(nsError.domain) \(nsError.code)；\(nsError.localizedDescription)",
+                recovery: "重新同步",
+                code: "SEAL-INVENTORY-900"
+            )
+        }
+        logs = (try? await logStore?.entries()) ?? logs
+        refreshLogExportText()
+    }
+
     func refreshCertificateInventories() async {
         for account in accounts where account.status == .verified {
             await refreshCertificateInventory(for: account, force: true)
@@ -668,16 +741,25 @@ final class SettingsViewModel: ObservableObject {
                     code: "SEAL-INVENTORY-100"
                 )
             }
-            let inventory = try await applePortalInventoryService.fetchInventory(
+            let fetched = try await applePortalInventoryService.fetchInventory(
                 account: account,
-                secret: secret
+                secret: secret,
+                scope: .certificates
+            )
+            let inventory = ApplePortalInventory(
+                accountID: fetched.accountID,
+                teamID: fetched.teamID,
+                teamName: fetched.teamName,
+                appIDs: certificateInventories[account.id]?.appIDs ?? [],
+                certificates: fetched.certificates,
+                fetchedAt: fetched.fetchedAt
             )
             certificateInventories[account.id] = inventory
             certificateInventoryFailures[account.id] = nil
             saveCertificateInventoryCache(inventory)
             try? await logStore?.append(
                 category: .account,
-                message: "Apple 侧证书与 App ID 已同步：\(inventory.usedBundleIDCount) 个 Bundle ID"
+                message: "Apple 侧证书状态已同步"
             )
         } catch let failure as ImportFailure {
             certificateInventoryFailures[account.id] = failure
@@ -770,25 +852,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func requestInitialPermissionsIfNeeded() async {
-        guard let notificationScheduler,
-              let notificationPreferences,
-              let appStore,
-              await notificationScheduler.authorizationStatus() == .notDetermined else {
-            return
-        }
-        do {
-            let granted = try await notificationScheduler.requestAuthorization()
-            guard granted else { return }
-            notificationPreferences.isEnabled = true
-            notificationsEnabled = true
-            try await notificationScheduler.reschedule(
-                apps: try await appStore.fetchAll(),
-                enabled: true,
-                leadHours: reminderHours
-            )
-        } catch {
-            return
-        }
+        // 通知权限只在用户主动开启“到期前 24 小时提醒”时请求。
     }
 
     func selectAnisetteServer(id: String) async {
@@ -977,43 +1041,27 @@ final class SettingsViewModel: ObservableObject {
         }
         do {
             pairingRecord = try await pairingStore.importFile(at: url)
-            diagnosticState = .running
+            diagnosticState = .idle
             installDiagnostics = .empty
-
-            if let installChannel {
-                let diagnostics = await installChannel.diagnose()
-                installDiagnostics = diagnostics
-                if let deviceIdentifier = diagnostics.deviceIdentifier {
-                    pairingRecord = try await pairingStore.markValidated(
-                        deviceIdentifier: deviceIdentifier
-                    )
-                } else {
-                    pairingRecord = try await pairingStore.markConnectionFailed()
-                }
-
-                if diagnostics.isReady, let deviceIdentifier = diagnostics.deviceIdentifier {
-                    diagnosticState = .ready(deviceIdentifier: deviceIdentifier)
-                } else if let failure = diagnostics.failure {
-                    diagnosticState = .failed(failure)
-                    alertFailure = failure
-                } else {
-                    diagnosticState = .idle
-                }
-            } else {
-                diagnosticState = .idle
-            }
-
             try? await logStore?.append(
                 category: .pairing,
-                message: pairingRecord?.isVerifiedForCurrentDevice == true
-                    ? "配对文件已导入并通过当前设备验证。完整 UDID：\(pairingRecord?.effectiveDeviceIdentifier ?? "")"
-                    : "配对文件已导入，等待真实设备连接验证"
+                message: "配对文件已导入，等待真实设备连接验证"
             )
             logs = (try? await logStore?.entries()) ?? logs
             refreshLogExportText()
         } catch let failure as ImportFailure {
+            pairingRecord = PairingRecord(
+                deviceIdentifier: nil,
+                isRemotePairing: false,
+                validationStatus: .fileUnreadable
+            )
             alertFailure = failure
         } catch {
+            pairingRecord = PairingRecord(
+                deviceIdentifier: nil,
+                isRemotePairing: false,
+                validationStatus: .fileUnreadable
+            )
             alertFailure = Self.failure(
                 title: "配对文件无效",
                 reason: "无法读取设备配对信息",
@@ -1154,6 +1202,9 @@ final class SettingsViewModel: ObservableObject {
     private func runInstallChannelCheck(successMessage: String) async {
         guard let installChannel else { return }
         diagnosticState = .running
+        if let pairingStore, pairingRecord != nil {
+            pairingRecord = try? await pairingStore.markValidating()
+        }
         let diagnostics = await installChannel.diagnose()
         installDiagnostics = diagnostics
         if diagnostics.isReady, let deviceIdentifier = diagnostics.deviceIdentifier {
@@ -1212,7 +1263,7 @@ final class SettingsViewModel: ObservableObject {
                     deviceIdentifier: deviceIdentifier
                 )
             } else {
-                pairingRecord = try? await pairingStore.markConnectionFailed()
+                pairingRecord = try? await pairingStore.markPendingValidation()
             }
         }
         await load(force: true)
@@ -1254,10 +1305,12 @@ final class SettingsViewModel: ObservableObject {
         } catch let failure as ImportFailure {
             notificationsEnabled = false
             notificationPreferences.isEnabled = false
+            try? await notificationScheduler.reschedule(apps: [], enabled: false)
             alertFailure = failure
         } catch {
             notificationsEnabled = false
             notificationPreferences.isEnabled = false
+            try? await notificationScheduler.reschedule(apps: [], enabled: false)
             alertFailure = Self.failure(
                 title: "无法设置提醒",
                 reason: "通知配置失败",
@@ -1271,13 +1324,13 @@ final class SettingsViewModel: ObservableObject {
         guard let notificationPreferences,
               let notificationScheduler,
               let appStore else { return }
-        reminderHours = hours
-        notificationPreferences.leadHours = hours
+        reminderHours = NotificationPreferences.fixedLeadHours
+        notificationPreferences.leadHours = NotificationPreferences.fixedLeadHours
         do {
             try await notificationScheduler.reschedule(
                 apps: try await appStore.fetchAll(),
                 enabled: notificationsEnabled,
-                leadHours: hours
+                leadHours: NotificationPreferences.fixedLeadHours
             )
         } catch {
             alertFailure = Self.failure(

@@ -5,9 +5,8 @@ struct RootTabView: View {
     @ObservedObject var settingsViewModel: SettingsViewModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var selection: AppSection = .apps
+    @State private var launchCheckInProgress = false
     @AppStorage("behavior.autoRenew") private var autoRenew = false
-    @AppStorage("behavior.autoRenew.lastCheckAt") private var lastAutoRenewCheckAt = 0.0
-    @AppStorage("onboarding.notificationPromptRequested") private var notificationPromptRequested = false
 
     var body: some View {
         TabView(selection: $selection) {
@@ -30,13 +29,11 @@ struct RootTabView: View {
             .tag(AppSection.settings)
         }
         .tint(.sealAccent)
+        .preferredColorScheme(.dark)
         .sealScreenBackground()
         .task {
             await LocalNetworkPermissionPrimer.requestIfNeeded()
-            await requestNotificationPermissionIfNeeded()
-            if settingsViewModel.environment.isConfigured {
-                _ = await appsViewModel.refreshSigningChannel()
-            }
+            await performLaunchCheck()
         }
         .onChange(of: appsViewModel.shouldOpenSettings) { shouldOpen in
             guard shouldOpen else { return }
@@ -48,15 +45,8 @@ struct RootTabView: View {
             appsViewModel.shouldOpenSettings = false
         }
         .onChange(of: scenePhase) { phase in
-            guard phase == .active,
-                  settingsViewModel.environment.isConfigured else { return }
-            Task {
-                _ = await appsViewModel.refreshSigningChannel()
-                if autoRenew, shouldRunAutoRenewCheck {
-                    lastAutoRenewCheckAt = Date().timeIntervalSince1970
-                    appsViewModel.refreshDueApps(leadHours: settingsViewModel.reminderHours, enforceCooldown: true)
-                }
-            }
+            guard phase == .active else { return }
+            Task { await performLaunchCheck() }
         }
         .onOpenURL { url in
             if LocalDevVPNLink.isCallback(url) {
@@ -74,15 +64,16 @@ struct RootTabView: View {
         }
     }
 
-    private var shouldRunAutoRenewCheck: Bool {
-        Date().timeIntervalSince1970 - lastAutoRenewCheckAt >= 21_600
-    }
-
     @MainActor
-    private func requestNotificationPermissionIfNeeded() async {
-        guard notificationPromptRequested == false else { return }
-        notificationPromptRequested = true
-        await settingsViewModel.requestInitialPermissionsIfNeeded()
+    private func performLaunchCheck() async {
+        guard launchCheckInProgress == false else { return }
+        launchCheckInProgress = true
+        defer { launchCheckInProgress = false }
+
+        await settingsViewModel.performLightweightLaunchCheck()
+        await appsViewModel.performLightweightLaunchCheck()
+        guard autoRenew else { return }
+        await appsViewModel.startDailyAutoRenewIfNeeded()
     }
 }
 

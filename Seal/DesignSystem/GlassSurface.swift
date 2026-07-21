@@ -9,7 +9,7 @@ struct GlassSurfaceModifier: ViewModifier {
     func body(content: Content) -> some View {
         if reduceTransparency {
             content
-                .background(.background, in: RoundedRectangle(cornerRadius: cornerRadius))
+                .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: cornerRadius))
                 .overlay {
                     RoundedRectangle(cornerRadius: cornerRadius)
                         .stroke(.secondary.opacity(0.18), lineWidth: 0.5)
@@ -24,7 +24,7 @@ struct GlassSurfaceModifier: ViewModifier {
         } else {
             content
                 .background(
-                    .regularMaterial,
+                    Color.sealSurface,
                     in: RoundedRectangle(cornerRadius: cornerRadius)
                 )
                 .overlay {
@@ -41,8 +41,9 @@ struct SealSheetBackground: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(SealBackdrop(level: level))
+            .background(SealBackdrop(level: level).ignoresSafeArea())
             .presentationDragIndicator(.hidden)
+            .compatibleClearPresentationBackground()
             .compatiblePresentationCornerRadius(28)
     }
 }
@@ -50,6 +51,15 @@ struct SealSheetBackground: ViewModifier {
 extension View {
     func glassSurface(cornerRadius: CGFloat = 8) -> some View {
         modifier(GlassSurfaceModifier(cornerRadius: cornerRadius))
+    }
+
+    @ViewBuilder
+    func compatibleClearPresentationBackground() -> some View {
+        if #available(iOS 16.4, *) {
+            presentationBackground(.clear)
+        } else {
+            self
+        }
     }
 
     @ViewBuilder

@@ -13,8 +13,11 @@ struct PairingSettingsView: View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 20) {
                 hero
-                if let pairing = viewModel.pairingRecord, pairing.isVerifiedForCurrentDevice {
+                if let pairing = viewModel.pairingRecord {
                     details(pairing)
+                    if pairing.validationStatus == .fileUnreadable || pairing.validationStatus == .deviceMismatch {
+                        acquisitionGuide
+                    }
                 } else {
                     acquisitionGuide
                 }
@@ -81,7 +84,7 @@ struct PairingSettingsView: View {
             Divider()
             detailRow("设备标识", deviceIdentifierText(pairing))
             Divider()
-            detailRow("文件状态", "有效")
+            detailRow("文件状态", pairing.validationStatus.title)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -138,27 +141,48 @@ struct PairingSettingsView: View {
     }
 
     private var heroIcon: String {
-        guard let pairing = viewModel.pairingRecord else { return "iphone.badge.exclamationmark" }
-        return pairing.isVerifiedForCurrentDevice ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+        guard let status = viewModel.pairingRecord?.validationStatus else {
+            return "iphone.badge.exclamationmark"
+        }
+        switch status {
+        case .verified: return "checkmark.circle.fill"
+        case .validating: return "arrow.triangle.2.circlepath"
+        case .unverified: return "clock.badge.checkmark"
+        case .deviceMismatch, .fileUnreadable: return "exclamationmark.triangle.fill"
+        }
     }
 
     private var heroColor: Color {
-        guard let pairing = viewModel.pairingRecord else { return .sealWarning }
-        return pairing.isVerifiedForCurrentDevice ? .sealSuccess : .sealDanger
+        guard let status = viewModel.pairingRecord?.validationStatus else { return .sealWarning }
+        switch status {
+        case .verified: return .sealSuccess
+        case .validating: return .sealAccent
+        case .unverified: return .sealWarning
+        case .deviceMismatch, .fileUnreadable: return .sealDanger
+        }
     }
 
     private var heroTitle: String {
-        guard let pairing = viewModel.pairingRecord else { return "需要导入配对文件" }
-        return pairing.isVerifiedForCurrentDevice ? "设备已配对" : "配对文件不可用"
+        guard let pairing = viewModel.pairingRecord else { return "未导入" }
+        return pairing.validationStatus.title
     }
 
     private var heroSubtitle: String {
-        guard let pairing = viewModel.pairingRecord else {
+        guard let status = viewModel.pairingRecord?.validationStatus else {
             return "请先在电脑上生成当前 iPhone 的 RPPairing 文件，然后导入 Seal。"
         }
-        return pairing.isVerifiedForCurrentDevice
-            ? "可以安装和续签应用"
-            : "请重新生成当前 iPhone 的 RPPairing 文件后再导入。"
+        switch status {
+        case .unverified:
+            return "文件已保存。打开 LocalDevVPN 并执行环境检测后会验证当前设备。"
+        case .validating:
+            return "正在通过 LocalDevVPN 验证配对文件与当前设备。"
+        case .verified:
+            return "可以安装和续签应用。"
+        case .deviceMismatch:
+            return "此文件不属于当前连接的 iPhone，请重新导入。"
+        case .fileUnreadable:
+            return "Seal 无法读取此配对文件，请重新生成并导入。"
+        }
     }
 
     private var importButtonTitle: String {
@@ -166,8 +190,8 @@ struct PairingSettingsView: View {
     }
 
     private var shouldShowDownloadLink: Bool {
-        guard let pairing = viewModel.pairingRecord else { return true }
-        return pairing.isVerifiedForCurrentDevice == false
+        guard let status = viewModel.pairingRecord?.validationStatus else { return true }
+        return status == .deviceMismatch || status == .fileUnreadable
     }
 
     private func deviceIdentifierText(_ pairing: PairingRecord) -> String {

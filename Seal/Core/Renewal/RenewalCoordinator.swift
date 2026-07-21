@@ -56,9 +56,36 @@ actor RenewalCoordinator {
         enforceCooldown: Bool = false,
         progress: @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
-        let apps = try await appStore.fetchAll()
         let now = Date()
         let cutoff = now.addingTimeInterval(TimeInterval(max(1, leadHours)) * 3_600)
+        return try await refreshDue(
+            until: cutoff,
+            now: now,
+            enforceCooldown: enforceCooldown,
+            progress: progress
+        )
+    }
+
+    func refreshDue(
+        until cutoff: Date,
+        enforceCooldown: Bool = false,
+        progress: @Sendable (BatchRefreshEvent) async -> Void
+    ) async throws -> BatchRefreshResult {
+        try await refreshDue(
+            until: cutoff,
+            now: Date(),
+            enforceCooldown: enforceCooldown,
+            progress: progress
+        )
+    }
+
+    private func refreshDue(
+        until cutoff: Date,
+        now: Date,
+        enforceCooldown: Bool,
+        progress: @Sendable (BatchRefreshEvent) async -> Void
+    ) async throws -> BatchRefreshResult {
+        let apps = try await appStore.fetchAll()
         let queue = apps
             .filter { app in
                 guard app.state == .installed,
@@ -72,7 +99,7 @@ actor RenewalCoordinator {
             .sorted { lhs, rhs in
                 let lhsExpiry = lhs.expiryDate ?? .distantPast
                 let rhsExpiry = rhs.expiryDate ?? .distantPast
-                if lhs.isSeal != rhs.isSeal { return lhs.isSeal }
+                if lhs.isSeal != rhs.isSeal { return rhs.isSeal }
                 if lhsExpiry != rhsExpiry { return lhsExpiry < rhsExpiry }
                 return lhs.importedAt < rhs.importedAt
             }

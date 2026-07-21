@@ -39,7 +39,7 @@ struct BundleIDMapperTests {
     }
 
     @Test
-    func policyAllowsRequestedBundleIdentifierForRenewal() throws {
+    func policyIgnoresRequestedBundleIdentifierForRenewal() throws {
         let installed = AppRecord(
             originalBundleIdentifier: "com.example.demo",
             mappedBundleIdentifier: "com.example.demo.seal",
@@ -56,7 +56,7 @@ struct BundleIDMapperTests {
             try BundleIDPolicy.targetBundleIdentifier(
                 for: installed,
                 requestedBundleIdentifier: "com.example.demo.other"
-            ) == "com.example.demo.other"
+            ) == "com.example.demo.seal"
         )
     }
 
@@ -83,7 +83,6 @@ struct BundleIDMapperTests {
         let installed = AppRecord(
             originalBundleIdentifier: "com.example.demo",
             mappedBundleIdentifier: nil,
-            preferredBundleIdentifier: nil,
             name: "Demo",
             version: "1.0",
             buildNumber: "1",
@@ -99,10 +98,10 @@ struct BundleIDMapperTests {
     }
 
     @Test
-    func policyAllowsRequestedBundleIdentifierForSealPackage() throws {
+    func policyIgnoresRequestedBundleIdentifierForSealPackage() throws {
         let seal = AppRecord(
             originalBundleIdentifier: "com.mjorb.seal",
-            mappedBundleIdentifier: nil,
+            mappedBundleIdentifier: "com.mjorb.seal.current",
             name: "Seal",
             version: "1.0",
             buildNumber: "1",
@@ -118,7 +117,7 @@ struct BundleIDMapperTests {
                 for: seal,
                 requestedBundleIdentifier: "com.mjorb.seal.seal",
                 currentSealBundleIdentifier: "com.mjorb.seal"
-            ) == "com.mjorb.seal.seal"
+            ) == "com.mjorb.seal.current"
         )
     }
 }

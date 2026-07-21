@@ -76,6 +76,7 @@ struct CertificatesRootView: View {
         }
         .task {
             await viewModel.load()
+            await viewModel.refreshAppIDInventories()
         }
         .onChange(of: viewModel.requestedRoute) { route in
             guard route == .addAccount else { return }

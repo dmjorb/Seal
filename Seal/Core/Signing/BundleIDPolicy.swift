@@ -22,10 +22,7 @@ enum BundleIDPolicy {
         requestedBundleIdentifier: String? = nil,
         currentSealBundleIdentifier: String? = Bundle.main.bundleIdentifier
     ) throws -> String {
-        if let requested = normalized(requestedBundleIdentifier), requested.isEmpty == false {
-            return try validated(requested)
-        }
-        if app.state == .installed {
+        if app.state == .installed || app.isSeal {
             if let mapped = normalized(app.mappedBundleIdentifier), mapped.isEmpty == false {
                 return try validated(mapped)
             }
@@ -38,6 +35,9 @@ enum BundleIDPolicy {
                 recovery: "重新选择 IPA 签名并安装",
                 code: "SEAL-BUNDLE-002"
             )
+        }
+        if let requested = normalized(requestedBundleIdentifier), requested.isEmpty == false {
+            return try validated(requested)
         }
         if let preferred = normalized(app.preferredBundleIdentifier), preferred.isEmpty == false {
             return try validated(preferred)
@@ -52,7 +52,7 @@ enum BundleIDPolicy {
         normalized(original) ?? original
     }
 
-    static func isEditable(_ app: AppRecord) -> Bool { true }
+    static func isEditable(_ app: AppRecord) -> Bool { app.state != .installed && app.isSeal == false }
 
     static func displayMode(for app: AppRecord) -> String {
         "按 Apple / iOS 实际返回处理"

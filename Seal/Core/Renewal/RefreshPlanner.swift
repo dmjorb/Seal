@@ -20,7 +20,7 @@ struct RefreshPlanner: Sendable {
         let expiry = app.expiryDate ?? .distantPast
         let isUrgent = expiry.timeIntervalSince(now) < 86_400
         return Priority(
-            group: app.isSeal ? 0 : (isUrgent ? 1 : 2),
+            group: app.isSeal ? 2 : (isUrgent ? 0 : 1),
             expiry: expiry,
             importedAt: app.importedAt
         )

@@ -7,10 +7,12 @@ final class NotificationPreferences {
         static let leadHours = "notifications.expiry.leadHours"
     }
 
+    static let fixedLeadHours = 24
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        defaults.set(Self.fixedLeadHours, forKey: Key.leadHours)
     }
 
     var isEnabled: Bool {
@@ -19,10 +21,7 @@ final class NotificationPreferences {
     }
 
     var leadHours: Int {
-        get {
-            let value = defaults.integer(forKey: Key.leadHours)
-            return value > 0 ? value : 24
-        }
-        set { defaults.set(max(1, newValue), forKey: Key.leadHours) }
+        get { Self.fixedLeadHours }
+        set { defaults.set(Self.fixedLeadHours, forKey: Key.leadHours) }
     }
 }
