@@ -652,7 +652,7 @@ final class SettingsViewModel: ObservableObject {
         force: Bool = true
     ) async {
         guard let keychain, let applePortalInventoryService else { return }
-        // App ID、描述文件和证书有效期必须以 Apple 当前返回为准，不使用本地刷新时间推算。
+        if force == false, certificateInventories[account.id] != nil { return }
         if certificateInventoryLoadingIDs.contains(account.id) { return }
 
         certificateInventoryLoadingIDs.insert(account.id)
@@ -690,7 +690,7 @@ final class SettingsViewModel: ObservableObject {
             let nsError = error as NSError
             let failure = Self.failure(
                 title: "Apple 侧同步失败",
-                reason: "Apple 侧同步失败，但 Seal 没有收到明确的失败原因。",
+                reason: "来源：\(nsError.domain) \(nsError.code)；\(nsError.localizedDescription)",
                 recovery: "重新同步",
                 code: "SEAL-INVENTORY-900"
             )
@@ -1465,7 +1465,7 @@ final class SettingsViewModel: ObservableObject {
 
     private static let localDevVPNUnavailableFailure = ImportFailure(
         title: "安装通道未就绪",
-        reason: "未检测到可用的本机安装通道。请确认 iOS 设置中的 LocalDevVPN 状态为已连接，然后返回 Seal 设置页运行一键检测。",
+        reason: "未检测到可用的本机安装通道。",
         recovery: "一键检测",
         code: "SEAL-INSTALL-706"
     )

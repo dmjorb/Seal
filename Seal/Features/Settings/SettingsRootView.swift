@@ -331,7 +331,7 @@ struct SettingsRootView: View {
     }
 
     private var notificationSummary: String {
-        viewModel.notificationsEnabled ? "提前 \(viewModel.reminderHours.displayLeadTime)" : "未开启"
+        viewModel.notificationsEnabled ? "到期 \(viewModel.reminderHours.displayLeadTime)" : "未开启"
     }
 
     private var latestLogSummary: String {

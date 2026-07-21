@@ -30,6 +30,7 @@ final class AppsViewModel: ObservableObject {
     @Published var selectedOperationApp: AppRecord?
     @Published var signingSession: SigningSession?
     @Published var batchRefreshSession: BatchRefreshSession?
+    @Published private(set) var importCompletionCount = 0
     @Published private(set) var pendingRefreshCount = 0
     @Published var shouldOpenSettings = false
     @Published var requestedSettingsRoute: SettingsRoute?
@@ -338,6 +339,7 @@ final class AppsViewModel: ObservableObject {
 
         alertFailure = nil
         sheetFailure = nil
+        isImportSheetPresented = false
         phase = .preparing
         await workflow.prepare(sourceURL: url)
         await consumeWorkflowState()
@@ -395,6 +397,8 @@ final class AppsViewModel: ObservableObject {
 
     func performAlertRecovery(for failure: ImportFailure) {
         alertFailure = nil
+        let recovery = failure.recovery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard recovery != "知道了" else { return }
         if failure.code.hasPrefix("SEAL-IPA-") {
             presentImporter()
         } else if let route = settingsRoute(for: failure) {
@@ -643,8 +647,8 @@ final class AppsViewModel: ObservableObject {
         pendingVPNAction = action
         alertFailure = ImportFailure(
             title: "安装通道未就绪",
-            reason: "Seal 还没有读取到可用的 LocalDevVPN 安装通道。请保持 VPN 已连接后返回设置运行一键检测。",
-            recovery: "打开 LocalDevVPN",
+            reason: "安装通道不可用。",
+            recovery: "知道了",
             code: "SEAL-INSTALL-706"
         )
     }
@@ -1016,8 +1020,8 @@ final class AppsViewModel: ObservableObject {
     private static func unexpectedSigningFailure(_ error: Error) -> ImportFailure {
         let nsError = error as NSError
         return ImportFailure(
-            title: "无法完成签名",
-            reason: "失败原因暂时无法确定。Seal 没有收到明确的签名失败原因。",
+            title: "签名失败",
+            reason: "来源：\(nsError.domain) \(nsError.code)；\(nsError.localizedDescription)",
             recovery: "重试",
             code: "SEAL-SIGN-500"
         )
@@ -1032,10 +1036,12 @@ final class AppsViewModel: ObservableObject {
         case .preparing:
             phase = .preparing
         case .awaitingConfirmation(let draft):
-            phase = .idle
             sheetDraft = draft
             sheetFailure = nil
-            isImportSheetPresented = true
+            isImportSheetPresented = false
+            phase = .committing
+            await workflow.confirm(preferredDraft: draft)
+            await consumeWorkflowState()
         case .committing(let draft):
             phase = .committing
             sheetDraft = draft
@@ -1046,6 +1052,7 @@ final class AppsViewModel: ObservableObject {
             sheetFailure = nil
             isImportSheetPresented = false
             await load(force: true)
+            importCompletionCount += 1
         case .failed(let failure):
             phase = .idle
             if sheetDraft == nil {

@@ -194,18 +194,30 @@ struct IPAParserService: Sendable {
         archive: Archive
     ) throws -> Data? {
         let iconNames = iconFileNames(from: info)
-        guard iconNames.isEmpty == false else { return nil }
-
-        let iconEntries = entries.filter { entry in
-            guard entry.type == .file,
-                  entry.path.hasPrefix("\(appRoot)/"),
-                  entry.path.lowercased().hasSuffix(".png") else {
-                return false
-            }
-            let fileName = URL(filePath: entry.path).deletingPathExtension().lastPathComponent
-            return iconNames.contains { fileName.hasPrefix($0) }
+        let pngEntries = entries.filter { entry in
+            entry.type == .file
+                && entry.path.hasPrefix("\(appRoot)/")
+                && entry.path.lowercased().hasSuffix(".png")
         }
-        guard let selected = iconEntries.max(by: {
+
+        let declared = pngEntries.filter { entry in
+            let fileName = URL(filePath: entry.path).deletingPathExtension().lastPathComponent
+            return iconNames.contains { declaredName in
+                fileName.caseInsensitiveCompare(declaredName) == .orderedSame
+                    || fileName.localizedCaseInsensitiveContains(declaredName)
+                    || fileName.hasPrefix(declaredName)
+            }
+        }
+
+        let fallbacks = pngEntries.filter { entry in
+            let lower = URL(filePath: entry.path).lastPathComponent.lowercased()
+            return lower.hasPrefix("icon")
+                || lower.hasPrefix("appicon")
+                || lower.contains("appicon")
+                || lower.contains("itunesartwork")
+        }
+
+        guard let selected = (declared + fallbacks).max(by: {
             $0.uncompressedSize < $1.uncompressedSize
         }) else {
             return nil
@@ -219,12 +231,16 @@ struct IPAParserService: Sendable {
     }
 
     private func iconFileNames(from info: [String: Any]) -> [String] {
+        var names: [String] = []
         if let icons = info["CFBundleIcons"] as? [String: Any],
            let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
            let files = primary["CFBundleIconFiles"] as? [String] {
-            return files
+            names.append(contentsOf: files)
         }
-        return info["CFBundleIconFiles"] as? [String] ?? []
+        if let files = info["CFBundleIconFiles"] as? [String] {
+            names.append(contentsOf: files)
+        }
+        return Array(NSOrderedSet(array: names)) as? [String] ?? names
     }
 
     private func readExtensions(

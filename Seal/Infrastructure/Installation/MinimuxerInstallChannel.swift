@@ -189,8 +189,8 @@ actor MinimuxerInstallChannel: InstallChannel {
         }
         throw ImportFailure(
             title: "安装后验证失败",
-            reason: "已发送安装请求，但设备端没有确认安装后的 Bundle ID。",
-            recovery: "保持 LocalDevVPN 连接后重试；如应用已经出现在桌面，请返回设置运行一键检测。",
+            reason: "iOS 安装服务未返回已安装的 Bundle ID。",
+            recovery: "重试",
             code: "SEAL-INSTALL-707"
         )
         #endif
@@ -264,7 +264,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         return ImportFailure(
             title: "安装通道不可用",
             reason: message,
-            recovery: "保持 LocalDevVPN 已连接，返回设置运行一键检测；如持续失败，请导出日志",
+            recovery: "重试",
             code: "SEAL-INSTALL-705"
         )
     }
@@ -273,7 +273,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         ImportFailure(
             title: "无法安装已签名应用",
             reason: diagnostic(error),
-            recovery: "保持 Wi-Fi 和 LocalDevVPN 连接后重试；如持续失败，请导出日志",
+            recovery: "重试",
             code: "SEAL-INSTALL-702"
         )
     }
@@ -306,29 +306,29 @@ actor MinimuxerInstallChannel: InstallChannel {
 
     private static let missingPairingFailure = ImportFailure(
         title: "缺少配对文件",
-        reason: "检测 LocalDevVPN 前需要先导入当前设备的配对文件。",
+        reason: "当前设备没有可用配对文件。",
         recovery: "导入配对文件",
         code: "SEAL-PAIR-203"
     )
 
     private static let vpnTunnelUnavailableFailure = ImportFailure(
-        title: "VPN 通道不可达",
-        reason: "系统 VPN 可能已显示连接，但 Seal 尚未连通 LocalDevVPN 的本机通道。请保持 VPN 开启，等待几秒后返回设置运行一键检测。",
-        recovery: "一键检测",
+        title: "安装通道不可用",
+        reason: "系统 VPN 已连接，但本机安装通道不可达。",
+        recovery: "重试",
         code: "SEAL-INSTALL-701"
     )
 
     private static let deviceNotRespondingFailure = ImportFailure(
         title: "设备未响应",
-        reason: "LocalDevVPN 通道已打开，但 Seal 没有读取到设备 UDID。",
-        recovery: "保持 VPN 已连接后返回设置运行一键检测",
+        reason: "安装通道已打开，但未读取到设备 UDID。",
+        recovery: "重试",
         code: "SEAL-INSTALL-708"
     )
 
     private static let channelNotReadyFailure = ImportFailure(
         title: "安装通道未就绪",
-        reason: "Seal 已尝试连接 LocalDevVPN，但未能读取到设备安装通道。请确认 iOS 设置里的 VPN 状态为已连接，并保持 LocalDevVPN 在后台可用。",
-        recovery: "一键检测",
+        reason: "未读取到可用的设备安装通道。",
+        recovery: "重试",
         code: "SEAL-INSTALL-706"
     )
 }

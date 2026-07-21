@@ -5,8 +5,7 @@ struct NotificationSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
     @Environment(\.openURL) private var openURL
 
-    private let leadOptions: [Int] = stride(from: 6, through: 1, by: -1).map { $0 * 24 }
-        + stride(from: 23, through: 1, by: -1).map { $0 }
+    private let leadOptions: [Int] = [144, 120, 96, 72, 48, 24]
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -63,7 +62,6 @@ struct NotificationSettingsView: View {
     }
 
     private static func displayLeadTime(_ hours: Int) -> String {
-        if hours >= 24 { return "提前 \(hours / 24) 天" }
-        return "提前 \(hours) 小时"
+        return "到期 \(hours / 24) 天"
     }
 }

@@ -36,8 +36,8 @@ final class ExpiryNotificationScheduler {
 
         for plan in planner.plans(for: apps, leadHours: leadHours) {
             let content = UNMutableNotificationContent()
-            content.title = "需要续签"
-            content.body = "\(plan.appName) 即将到期"
+            content.title = "到期"
+            content.body = "\(plan.appName) 到期"
             content.sound = .default
             let components = Calendar.current.dateComponents(
                 [.year, .month, .day, .hour, .minute, .second],

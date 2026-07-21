@@ -11,7 +11,6 @@ struct AppsRootView: View {
 
     @ObservedObject var viewModel: AppsViewModel
     @ObservedObject var settingsViewModel: SettingsViewModel
-    @Environment(\.openURL) private var openURL
     @ScaledMetric(relativeTo: .largeTitle) private var sealTitleSize = 38
     @State private var mode: ListMode = .unsigned
     @State private var detailApp: AppRecord?
@@ -61,7 +60,7 @@ struct AppsRootView: View {
                     viewModel: viewModel,
                     onFinish: { mode = .installed }
                 )
-                    .presentationDetents(viewModel.signingSession?.app.id == app.id ? [.large] : [.height(560)])
+                    .presentationDetents([.height(500)])
                     .compatiblePresentationCornerRadius(28)
             }
             .sheet(item: $viewModel.accountSelectionApp) { app in
@@ -73,7 +72,7 @@ struct AppsRootView: View {
             }
             .sheet(item: $viewModel.batchRefreshSession) { _ in
                 BatchRefreshView(viewModel: viewModel)
-                    .presentationDetents([.height(560)])
+                    .presentationDetents([.height(430)])
                     .compatiblePresentationCornerRadius(28)
             }
             .sheet(item: $detailApp) { app in
@@ -98,7 +97,7 @@ struct AppsRootView: View {
             }
 
             .alert(item: rootAlertFailure) { failure in
-                vpnAwareAlert(failure)
+                standardAlert(failure)
             }
             .task {
                 await settingsViewModel.load()
@@ -106,6 +105,9 @@ struct AppsRootView: View {
                 if settingsViewModel.environment.isConfigured {
                     _ = await viewModel.refreshSigningChannel()
                 }
+            }
+            .onChange(of: viewModel.importCompletionCount) { _ in
+                withAnimation(.easeOut(duration: 0.18)) { mode = .unsigned }
             }
         }
         .sealScreenBackground()
@@ -220,10 +222,10 @@ struct AppsRootView: View {
                 Image(systemName: "arrow.triangle.2.circlepath")
                 Text("批量续签")
             }
-            .font(.system(size: 15, weight: .semibold))
+            .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(Color.sealAccent)
-            .padding(.horizontal, 12)
-            .frame(height: 36)
+            .padding(.horizontal, 10)
+            .frame(height: 30)
             .background(Color.sealAccent.opacity(0.10), in: Capsule())
         }
         .accessibilityLabel("批量续签")
@@ -250,8 +252,8 @@ struct AppsRootView: View {
                         viewModel.presentOperation(for: app)
                     } label: {
                         ImportedAppRow(app: app, iconData: viewModel.iconData[app.id])
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 18)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -271,7 +273,7 @@ struct AppsRootView: View {
 
                     if index < apps.count - 1 {
                         Divider()
-                            .padding(.leading, 88)
+                            .padding(.leading, 84)
                             .padding(.trailing, 18)
                     }
                 }
@@ -302,16 +304,8 @@ struct AppsRootView: View {
         return expiryDate <= now
     }
 
-    private func vpnAwareAlert(_ failure: ImportFailure) -> Alert {
-        if (failure.code == "SEAL-INSTALL-701" || failure.code == "SEAL-INSTALL-706"), viewModel.hasPendingVPNRecovery {
-            return Alert(
-                title: Text(failure.title),
-                message: Text(failure.userMessage),
-                primaryButton: .default(Text("打开 LocalDevVPN")) { openLocalDevVPN() },
-                secondaryButton: .cancel(Text("取消")) { viewModel.cancelPendingVPNRecovery() }
-            )
-        }
-        return Alert(
+    private func standardAlert(_ failure: ImportFailure) -> Alert {
+        Alert(
             title: Text(failure.title),
             message: Text(failure.userMessage),
             dismissButton: .default(Text(failure.recovery)) {
@@ -335,12 +329,6 @@ struct AppsRootView: View {
         }
     }
 
-    private func openLocalDevVPN() {
-        openURL(LocalDevVPNLink.enableAndReturn) { accepted in
-            guard accepted == false else { return }
-            openURL(LocalDevVPNLink.appStore)
-        }
-    }
 }
 
 private extension UTType {

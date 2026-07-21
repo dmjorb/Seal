@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 struct SelfAppMetadata: Sendable {
     let bundleURL: URL
@@ -47,16 +48,49 @@ struct SelfAppMetadata: Sendable {
 
     @MainActor
     private static func iconData(bundle: Bundle) -> Data? {
-        let icons = bundle.infoDictionary?["CFBundleIcons"] as? [String: Any]
-        let primaryIcon = icons?["CFBundlePrimaryIcon"] as? [String: Any]
-        let iconNames = primaryIcon?["CFBundleIconFiles"] as? [String]
-        for name in (iconNames ?? []).reversed() {
-            let resourceName = URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent
-            let resourceExtension = URL(fileURLWithPath: name).pathExtension
-            if let url = bundle.url(
-                forResource: resourceName,
-                withExtension: resourceExtension.isEmpty ? "png" : resourceExtension
-            ), let data = try? Data(contentsOf: url, options: .mappedIfSafe) {
+        let names = iconFileNames(bundle: bundle)
+        for name in names.reversed() {
+            if let data = resourceIconData(name: name, bundle: bundle) { return data }
+            if let image = UIImage(named: name, in: bundle, compatibleWith: nil),
+               let data = image.pngData() {
+                return data
+            }
+        }
+
+        for candidate in ["AppIcon", "SealIcon", "Icon", "iTunesArtwork", "iTunesArtwork@2x"] {
+            if let data = resourceIconData(name: candidate, bundle: bundle) { return data }
+            if let image = UIImage(named: candidate, in: bundle, compatibleWith: nil),
+               let data = image.pngData() {
+                return data
+            }
+        }
+        return nil
+    }
+
+    private static func iconFileNames(bundle: Bundle) -> [String] {
+        let info = bundle.infoDictionary ?? [:]
+        var names: [String] = []
+        if let icons = info["CFBundleIcons"] as? [String: Any],
+           let primaryIcon = icons["CFBundlePrimaryIcon"] as? [String: Any],
+           let files = primaryIcon["CFBundleIconFiles"] as? [String] {
+            names.append(contentsOf: files)
+        }
+        if let files = info["CFBundleIconFiles"] as? [String] {
+            names.append(contentsOf: files)
+        }
+        return Array(NSOrderedSet(array: names)) as? [String] ?? names
+    }
+
+    private static func resourceIconData(name: String, bundle: Bundle) -> Data? {
+        let url = URL(fileURLWithPath: name)
+        let resourceName = url.deletingPathExtension().lastPathComponent
+        let resourceExtension = url.pathExtension
+        let extensions = resourceExtension.isEmpty ? ["png", ""] : [resourceExtension]
+        for ext in extensions {
+            let found = ext.isEmpty
+                ? bundle.url(forResource: resourceName, withExtension: nil)
+                : bundle.url(forResource: resourceName, withExtension: ext)
+            if let found, let data = try? Data(contentsOf: found, options: .mappedIfSafe) {
                 return data
             }
         }

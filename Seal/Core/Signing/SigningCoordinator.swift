@@ -84,7 +84,7 @@ actor SigningCoordinator {
             await progress(.waitingForChannel)
             let deviceIdentifier = try await installChannel.start()
 
-            if let cached = try await installCachedSignedIPAIfPossible(
+            if app.isSeal == false, let cached = try await installCachedSignedIPAIfPossible(
                 app: app,
                 account: account,
                 targetBundleIdentifier: targetBundleIdentifier,
@@ -296,12 +296,6 @@ actor SigningCoordinator {
         try await updateState(appID: app.id, stage: .installing)
         await progress(.installing)
         let signedData = try await fileStore.read(relativePath: signedPath)
-        if app.isSeal {
-            SelfRenewalTracker.markPending(
-                bundleIdentifier: bundleIdentifier,
-                version: app.version
-            )
-        }
         try await installChannel.install(
             ipaData: signedData,
             bundleID: bundleIdentifier

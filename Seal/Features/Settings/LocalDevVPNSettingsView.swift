@@ -3,7 +3,6 @@ import UIKit
 
 struct LocalDevVPNSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
-    @Environment(\.openURL) private var openURL
     @State private var isChecking = false
 
     var body: some View {
@@ -50,14 +49,6 @@ struct LocalDevVPNSettingsView: View {
 
     private var actions: some View {
         VStack(spacing: 12) {
-            Button("打开 LocalDevVPN") {
-                openURL(LocalDevVPNLink.enableAndReturn) { accepted in
-                    guard accepted == false else { return }
-                    openURL(LocalDevVPNLink.appStore)
-                }
-            }
-            .sealPrimaryAction(cornerRadius: 12)
-
             Button(isChecking ? "正在检测…" : "重新检测") {
                 guard isChecking == false else { return }
                 isChecking = true
@@ -66,7 +57,7 @@ struct LocalDevVPNSettingsView: View {
                     isChecking = false
                 }
             }
-            .sealOutlineAction(cornerRadius: 12)
+            .sealPrimaryAction(cornerRadius: 12)
             .disabled(isChecking)
         }
     }
@@ -101,7 +92,7 @@ struct LocalDevVPNSettingsView: View {
         if case .ready = viewModel.diagnosticState { return "安装通道可用，可以签名和续签应用" }
         if case .running = viewModel.diagnosticState { return "正在检测设备响应和安装服务" }
         if let installFailure { return installFailure.userReason }
-        return "打开 LocalDevVPN 后，点击重新检测确认安装通道。"
+        return "检测当前 VPN 和安装通道状态。"
     }
 
     private var statusColor: Color {

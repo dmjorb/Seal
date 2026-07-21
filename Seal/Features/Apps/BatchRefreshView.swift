@@ -5,66 +5,90 @@ struct BatchRefreshView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 22) {
-                Spacer()
-                graphic
-                details
-                Spacer()
-                action
-            }
-            .padding(24)
-            .navigationTitle(isRunning ? "批量续签中" : "续签结果")
-            .navigationBarTitleDisplayMode(.inline)
-            .interactiveDismissDisabled(isRunning)
-            .toolbar {
-                if isRunning { ToolbarItem(placement: .cancellationAction) { Button("取消") { viewModel.cancelBatchRefresh(); dismiss() } } }
-            }
+        VStack(spacing: 14) {
+            SealSheetGrabber()
+            Text(isRunning ? "批量续签" : "续签结果")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(.primary)
+
+            statusCard
+            action
         }
+        .padding(.horizontal, 24)
+        .padding(.top, 12)
+        .padding(.bottom, 22)
+        .interactiveDismissDisabled(isRunning)
         .sealSheetBackground()
     }
 
-    @ViewBuilder private var graphic: some View {
+    @ViewBuilder private var statusCard: some View {
         switch viewModel.batchRefreshSession?.status {
         case .running:
-            ZStack {
-                Circle().stroke(Color.sealAccent.opacity(0.16), lineWidth: 9)
-                Circle().trim(from: 0, to: progress).stroke(Color.sealAccent, style: StrokeStyle(lineWidth: 9, lineCap: .round)).rotationEffect(.degrees(-90))
-                Text(progressText).font(.title3.monospacedDigit().weight(.semibold))
-            }.frame(width: 112, height: 112)
-        case .completed(let result): Image(systemName: result.failed == 0 ? "checkmark.circle.fill" : "exclamationmark.circle.fill").font(.system(size: 68)).foregroundStyle(result.failed == 0 ? .green : .orange)
-        case .failed: Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 60)).foregroundStyle(.orange)
-        case nil: EmptyView()
-        }
-    }
-
-    @ViewBuilder private var details: some View {
-        switch viewModel.batchRefreshSession?.status {
-        case .running:
-            VStack(spacing: 12) {
-                Text(viewModel.batchRefreshSession?.currentAppName ?? "准备续签").font(.title3.weight(.semibold))
-                Text(viewModel.batchRefreshSession?.currentStage?.title ?? "读取队列").font(.subheadline).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(viewModel.batchRefreshSession?.currentAppName ?? "准备续签")
+                        .font(.system(size: 16, weight: .semibold))
+                    Spacer()
+                    Text(progressText)
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.sealTextSecondary)
+                }
+                ProgressView(value: progress)
+                    .tint(Color.sealAccent)
+                Text(viewModel.batchRefreshSession?.currentStage?.title ?? "读取队列")
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(Color.sealTextSecondary)
             }
+            .padding(14)
+            .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         case .completed(let result):
             VStack(spacing: 0) {
-                resultRow("checkmark.circle.fill", "成功", "\(result.succeeded)", .green)
-                Divider()
-                resultRow("xmark.circle.fill", "失败", "\(result.failed)", .red)
-            }.padding(.horizontal, 16).glassSurface(cornerRadius: 16)
+                resultRow("checkmark.circle.fill", "成功", "\(result.succeeded)", .sealSuccess)
+                Divider().padding(.leading, 14)
+                resultRow("xmark.circle.fill", "失败", "\(result.failed)", .sealDanger)
+            }
+            .padding(.horizontal, 14)
+            .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         case .failed(let failure):
-            VStack(spacing: 8) { Text(failure.title).font(.title3.weight(.semibold)); Text(failure.userMessage).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center) }
-        case nil: EmptyView()
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Color.sealDanger)
+                    Text(failure.title)
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                Text(failure.userReason)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(Color.sealTextSecondary)
+                    .lineLimit(3)
+            }
+            .padding(14)
+            .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        case nil:
+            EmptyView()
         }
     }
 
     private func resultRow(_ symbol: String, _ label: String, _ value: String, _ color: Color) -> some View {
-        HStack { Image(systemName: symbol).foregroundStyle(color); Text(label); Spacer(); Text(value).foregroundStyle(color) }.padding(.vertical, 14)
+        HStack {
+            Image(systemName: symbol).foregroundStyle(color)
+            Text(label)
+            Spacer()
+            Text(value).foregroundStyle(color)
+        }
+        .font(.system(size: 15, weight: .semibold))
+        .frame(minHeight: 46)
     }
 
     @ViewBuilder private var action: some View {
         switch viewModel.batchRefreshSession?.status {
+        case .running:
+            Button("取消") { viewModel.cancelBatchRefresh(); dismiss() }
+                .sealOutlineAction(cornerRadius: 14)
         case .completed, .failed:
-            Button("完成") { viewModel.dismissBatchRefresh(); dismiss() }.sealPrimaryAction(cornerRadius: 14)
+            Button("完成") { viewModel.dismissBatchRefresh(); dismiss() }
+                .sealPrimaryAction(cornerRadius: 14)
         default:
             EmptyView()
         }

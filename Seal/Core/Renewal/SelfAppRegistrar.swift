@@ -29,7 +29,7 @@ actor SelfAppRegistrar {
         let resolvedAccountID = SelfAppAccountBinding.resolvedAccountID(
             teamIdentifier: metadata.signingTeamIdentifier,
             accounts: accounts,
-            fallbackAccountID: existing?.accountID
+            fallbackAccountID: nil
         )
         let id = existing?.id ?? UUID()
         let workspace = try await fileStore.signingWorkspace(appID: UUID())
@@ -78,9 +78,11 @@ actor SelfAppRegistrar {
                 state: .installed,
                 expiryDate: metadata.expirationDate ?? existing?.expiryDate,
                 accountID: resolvedAccountID,
-                certificateSerialNumber: existing?.certificateSerialNumber,
+                signingTeamID: metadata.signingTeamIdentifier,
+                certificateSerialNumber: nil,
+                provisioningProfileExpirationDate: metadata.expirationDate,
                 ipaRelativePath: files.ipaRelativePath,
-                signedIPARelativePath: existing?.signedIPARelativePath,
+                signedIPARelativePath: nil,
                 preferredBundleIdentifier: metadata.bundleIdentifier,
                 isSeal: true,
                 isPinned: true,
@@ -92,10 +94,6 @@ actor SelfAppRegistrar {
                 records,
                 keeping: id,
                 appStore: appStore
-            )
-            SelfRenewalTracker.markCompletedIfMatches(
-                bundleIdentifier: metadata.bundleIdentifier,
-                version: metadata.version
             )
         } catch {
             try? await fileStore.cancel(staged)

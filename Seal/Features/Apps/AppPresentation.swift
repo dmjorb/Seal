@@ -1,6 +1,7 @@
 import Foundation
 
 enum AppValidityTone: Equatable, Sendable {
+    case success
     case neutral
     case warning
     case danger
@@ -8,6 +9,7 @@ enum AppValidityTone: Equatable, Sendable {
 
 struct AppValidityPresentation: Equatable, Sendable {
     let text: String
+    let detailText: String
     let tone: AppValidityTone
 }
 
@@ -32,17 +34,29 @@ struct AppOperationPresentation: Equatable, Sendable {
         let interval = expiryDate.timeIntervalSince(now)
         guard interval > 0 else {
             kind = .expiredRenewal
-            validity = AppValidityPresentation(text: "已过期", tone: .danger)
+            validity = AppValidityPresentation(
+                text: "已到期",
+                detailText: "已到期",
+                tone: .danger
+            )
             return
         }
 
-        let days = max(1, Int(interval / 86_400))
+        let days = max(1, Int(ceil(interval / 86_400)))
         if days == 1 {
             kind = .urgentRenewal
-            validity = AppValidityPresentation(text: "剩余 1 天", tone: .warning)
+            validity = AppValidityPresentation(
+                text: "1天",
+                detailText: "剩余 1 天",
+                tone: .warning
+            )
         } else {
             kind = .renewal
-            validity = AppValidityPresentation(text: "剩余 \(days) 天", tone: .neutral)
+            validity = AppValidityPresentation(
+                text: "\(days)天",
+                detailText: "剩余 \(days) 天",
+                tone: .success
+            )
         }
     }
 

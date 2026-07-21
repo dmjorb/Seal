@@ -191,9 +191,10 @@ actor ImportWorkflow {
             iconRelativePath: files.iconRelativePath,
             state: isSealPackage ? .installed : .preflightPassed,
             expiryDate: isSealPackage ? existing?.expiryDate : nil,
-            accountID: existing?.accountID,
+            accountID: isSealPackage ? nil : existing?.accountID,
+            certificateSerialNumber: nil,
             ipaRelativePath: files.ipaRelativePath,
-            signedIPARelativePath: isSealPackage ? existing?.signedIPARelativePath : nil,
+            signedIPARelativePath: nil,
             preferredBundleIdentifier: isSealPackage
                 ? (currentSealBundleIdentifier ?? existing?.preferredBundleIdentifier ?? parsed.bundleIdentifier)
                 : existing?.preferredBundleIdentifier,

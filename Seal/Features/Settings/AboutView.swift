@@ -11,7 +11,6 @@ struct AboutView: View {
             VStack(spacing: 20) {
                 headerCard
                 versionCard
-                noteCard
             }
             .padding(20)
         }
@@ -56,16 +55,6 @@ struct AboutView: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.sealHairline.opacity(0.58), lineWidth: 0.8)
         }
-    }
-
-    private var noteCard: some View {
-        Text("这里仅显示当前安装的 Seal 版本信息。开源组件、协议与上游仓库请在“开源许可”页面查看。")
-            .font(.footnote)
-            .foregroundStyle(Color.sealTextSecondary)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(18)
-            .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private func infoRow(_ title: String, _ value: String) -> some View {
