@@ -7,7 +7,6 @@ struct CertificatesRootView: View {
     @State private var isAddingAccount = false
     @State private var detailAccount: AppleAccountRecord?
     @State private var accountPendingDeletion: AppleAccountRecord?
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -76,15 +75,8 @@ struct CertificatesRootView: View {
             )
         }
         .task {
-            await viewModel.load(force: true)
-            await viewModel.refreshCertificateInventories()
-        }
-        .onChange(of: scenePhase) { phase in
-            guard phase == .active else { return }
-            Task {
-                await viewModel.load(force: true)
-                await viewModel.refreshCertificateInventories()
-            }
+            await viewModel.load()
+            await viewModel.refreshExpiredFreeAccountInventoriesIfNeeded()
         }
         .onChange(of: viewModel.requestedRoute) { route in
             guard route == .addAccount else { return }
@@ -167,40 +159,30 @@ struct CertificatesRootView: View {
                 Task { await viewModel.selectActiveAccount(account) }
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: isActive(account) ? "checkmark.circle.fill" : "circle")
-                        .font(.title3.weight(.semibold))
+                    Image(systemName: isActive(account) ? "circle.fill" : "circle")
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(
                             isActive(account)
                                 ? Color.sealAccent
                                 : Color.sealTextSecondary.opacity(0.55)
                         )
-                        .frame(width: 36)
+                        .frame(width: 24)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(viewModel.fullEmail(for: account))
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text("\(account.teamName) · \(account.teamID)")
-                            .font(.caption.monospaced())
-                            .foregroundStyle(Color.sealTextSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                    }
-                    Spacer(minLength: 8)
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Text(isActive(account) ? "当前使用" : accountStatusTitle(account))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(
-                                isActive(account)
-                                    ? Color.sealAccent
-                                    : accountStatusColor(account)
-                            )
-                        Text(appIDCountTitle(account))
-                            .font(.caption2)
-                            .foregroundStyle(Color.sealTextSecondary)
-                    }
+                    Text(viewModel.fullEmail(for: account))
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text(appIDQuotaTitle(account))
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(appIDQuotaColor(account))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.9)
                 }
+                .frame(minHeight: 52)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -211,7 +193,7 @@ struct CertificatesRootView: View {
                 Image(systemName: "chevron.right")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(.tertiary)
-                    .frame(width: 28, height: 44)
+                    .frame(width: 24, height: 44)
             }
             .buttonStyle(.plain)
             .contextMenu {
@@ -220,31 +202,27 @@ struct CertificatesRootView: View {
                 }
             }
         }
-        .padding(.vertical, 12)
+        .padding(.vertical, 6)
     }
 
     private func isActive(_ account: AppleAccountRecord) -> Bool {
         viewModel.activeAccountID == account.id
     }
 
-    private func accountStatusTitle(_ account: AppleAccountRecord) -> String {
-        account.status == .verified ? "可用" : "需验证"
-    }
-
-    private func accountStatusColor(_ account: AppleAccountRecord) -> Color {
-        account.status == .verified ? .sealSuccess : .sealWarning
-    }
-
-    private func appIDCountTitle(_ account: AppleAccountRecord) -> String {
-        if viewModel.isCertificateInventoryLoading(accountID: account.id) {
-            return "同步中"
-        }
+    private func appIDQuotaTitle(_ account: AppleAccountRecord) -> String {
         if let inventory = viewModel.certificateInventory(for: account.id) {
-            return "App ID \(inventory.usedBundleIDCount)"
+            if account.isFreeTeam {
+                return "\(inventory.usedBundleIDCount) / 10"
+            }
+            return "Developer"
         }
-        if viewModel.certificateInventoryFailure(for: account.id) != nil {
-            return "同步失败"
+        return account.isFreeTeam ? "— / 10" : "Developer"
+    }
+
+    private func appIDQuotaColor(_ account: AppleAccountRecord) -> Color {
+        guard let inventory = viewModel.certificateInventory(for: account.id), account.isFreeTeam else {
+            return Color.sealTextSecondary
         }
-        return "未同步"
+        return inventory.usedBundleIDCount >= 10 ? Color.sealDanger : Color.sealSuccess
     }
 }

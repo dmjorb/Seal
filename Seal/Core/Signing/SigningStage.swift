@@ -10,19 +10,19 @@ enum SigningStage: String, CaseIterable, Equatable, Sendable {
     var title: String {
         switch self {
         case .preparingAccount:
-            return "验证账号"
+            return "正在准备签名"
         case .preparingCertificate:
-            return "准备证书"
+            return "正在处理 Bundle ID"
         case .preparingProfiles:
-            return "准备描述文件"
+            return "正在生成描述文件"
         case .signing:
-            return "签名"
+            return "正在写入签名"
         case .waitingForChannel:
-            return "连接设备"
+            return "正在准备签名"
         case .installing:
-            return "安装"
+            return "正在安装到设备"
         case .verifying:
-            return "完成验证"
+            return "正在确认安装"
         }
     }
 }

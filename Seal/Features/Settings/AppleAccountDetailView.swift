@@ -6,7 +6,6 @@ struct AppleAccountDetailView: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     @State private var isReverifying = false
-    @Environment(\.scenePhase) private var scenePhase
 
     private var currentAccount: AppleAccountRecord {
         viewModel.accounts.first(where: { $0.id == account.id }) ?? account
@@ -69,15 +68,7 @@ struct AppleAccountDetailView: View {
             AddAccountView(viewModel: viewModel, replacingAccount: currentAccount)
         }
         .task {
-            await viewModel.load(force: true)
-            await viewModel.refreshCertificateInventory(for: currentAccount, force: false)
-        }
-        .onChange(of: scenePhase) { phase in
-            guard phase == .active else { return }
-            Task {
-                await viewModel.load(force: true)
-                await viewModel.refreshCertificateInventory(for: currentAccount, force: false)
-            }
+            await viewModel.load()
         }
         .alert(item: $viewModel.alertFailure) { failure in
             Alert(
@@ -96,10 +87,17 @@ struct AppleAccountDetailView: View {
             detailRow("Team", currentAccount.teamName)
             Divider()
             detailRow("Team ID", currentAccount.teamID)
+            Divider()
+            detailRow("App ID", appIDQuotaTitle)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .glassSurface(cornerRadius: 24)
+    }
+
+    private var appIDQuotaTitle: String {
+        guard let inventory else { return currentAccount.isFreeTeam ? "— / 10" : "Developer" }
+        return currentAccount.isFreeTeam ? "\(inventory.usedBundleIDCount) / 10" : "Developer"
     }
 
     @ViewBuilder
@@ -108,13 +106,17 @@ struct AppleAccountDetailView: View {
             VStack(alignment: .leading, spacing: 7) {
                 Text("Seal-\(serial.suffix(8))")
                     .font(.title3.weight(.semibold))
+                    .lineLimit(1)
                 Text(currentAccount.teamName)
                     .font(.subheadline)
                     .foregroundStyle(Color.sealTextSecondary)
+                    .lineLimit(1)
                 Text("Serial：\(serial)")
                     .font(.system(size: 13, weight: .regular, design: .monospaced))
                     .foregroundStyle(Color.sealTextSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
                 Text("本机可用")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.sealSuccess)
@@ -157,23 +159,31 @@ struct AppleAccountDetailView: View {
                 Text(item.name)
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.primary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 Spacer(minLength: 12)
                 Text(item.status.title)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(item.status.color)
+                    .lineLimit(1)
             }
-            Text("Bundle ID：")
-                .font(.caption)
-                .foregroundStyle(Color.sealTextSecondary)
-            Text(item.bundleIdentifier)
-                .font(.system(size: 13, weight: .regular, design: .monospaced))
-                .foregroundStyle(Color.sealTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Text("Bundle ID")
+                    .font(.caption)
+                    .foregroundStyle(Color.sealTextSecondary)
+                Spacer(minLength: 12)
+                Text(item.bundleIdentifier)
+                    .font(.system(size: 13, weight: .regular, design: .monospaced))
+                    .foregroundStyle(Color.sealTextSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
             Text(item.expirationLabel)
                 .font(.caption)
                 .foregroundStyle(Color.sealTextSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
         .padding(.vertical, 14)
     }
@@ -211,7 +221,9 @@ struct AppleAccountDetailView: View {
             Text(value)
                 .foregroundStyle(Color.sealTextSecondary)
                 .multilineTextAlignment(.trailing)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
         }
         .padding(.vertical, 15)
     }

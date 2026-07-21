@@ -105,11 +105,11 @@ actor ImportWorkflow {
 
         do {
             let records = try await appStore.fetchAll()
-            let existing = Self.existingRecord(
+            let existing = Self.existingPendingImportRecord(
                 for: draft.parsedIPA,
                 in: records
             )
-            let commitAppID = existing?.isSeal == true ? existing?.id ?? draft.appID : draft.appID
+            let commitAppID = existing?.id ?? draft.appID
             let files = try await fileStore.commit(
                 staged: draft.stagedIPA,
                 appID: commitAppID,
@@ -122,13 +122,7 @@ actor ImportWorkflow {
                 importedAt: now(),
                 replacing: existing
             )
-            let replaced: [AppRecord]
-            if record.isSeal {
-                try await appStore.save(record)
-                replaced = []
-            } else {
-                replaced = try await appStore.replaceImportedApp(record)
-            }
+            let replaced = try await appStore.replaceImportedApp(record)
 
             try? await fileStore.cancel(draft.stagedIPA)
             for oldRecord in replaced where oldRecord.id != record.id {
@@ -174,67 +168,38 @@ actor ImportWorkflow {
         replacing existing: AppRecord?
     ) -> AppRecord {
         let parsed = draft.parsedIPA
-        let isSealPackage = existing?.isSeal == true && isCurrentSealBundle(parsed.bundleIdentifier)
-        let currentSealBundleIdentifier = Bundle.main.bundleIdentifier
         return AppRecord(
             id: existing?.id ?? draft.appID,
-            originalBundleIdentifier: isSealPackage
-                ? (existing?.originalBundleIdentifier ?? parsed.bundleIdentifier)
-                : parsed.bundleIdentifier,
-            mappedBundleIdentifier: isSealPackage
-                ? (currentSealBundleIdentifier ?? existing?.mappedBundleIdentifier ?? parsed.bundleIdentifier)
-                : existing?.mappedBundleIdentifier,
+            originalBundleIdentifier: parsed.bundleIdentifier,
+            mappedBundleIdentifier: existing?.mappedBundleIdentifier,
             name: parsed.name,
             version: parsed.version,
             buildNumber: parsed.buildNumber,
             size: parsed.fileSize,
             iconRelativePath: files.iconRelativePath,
-            state: isSealPackage ? .installed : .preflightPassed,
-            expiryDate: isSealPackage ? existing?.expiryDate : nil,
-            accountID: isSealPackage ? nil : existing?.accountID,
+            state: .preflightPassed,
+            expiryDate: nil,
+            accountID: existing?.accountID,
             certificateSerialNumber: nil,
             ipaRelativePath: files.ipaRelativePath,
             signedIPARelativePath: nil,
-            preferredBundleIdentifier: isSealPackage
-                ? (currentSealBundleIdentifier ?? existing?.preferredBundleIdentifier ?? parsed.bundleIdentifier)
-                : existing?.preferredBundleIdentifier,
-            isSeal: isSealPackage,
-            isPinned: isSealPackage ? true : (existing?.isPinned ?? false),
-            importedAt: isSealPackage ? (existing?.importedAt ?? importedAt) : importedAt,
+            preferredBundleIdentifier: existing?.preferredBundleIdentifier,
+            isSeal: false,
+            isPinned: existing?.isPinned ?? false,
+            importedAt: importedAt,
             extensions: parsed.extensions
         )
     }
 
-
-    private static func existingRecord(
+    private static func existingPendingImportRecord(
         for parsed: ParsedIPA,
         in records: [AppRecord]
     ) -> AppRecord? {
-        let isCurrentRunningSealPackage = isCurrentSealBundle(parsed.bundleIdentifier)
-
-        if isCurrentRunningSealPackage,
-           let currentSeal = records.first(where: { record in
-               record.isSeal && matchesSealRecord(record, bundleIdentifier: parsed.bundleIdentifier)
-           }) {
-            return currentSeal
-        }
-
-        return records.first(where: { record in
-            guard record.originalBundleIdentifier == parsed.bundleIdentifier else { return false }
-            return record.isSeal == false || isCurrentRunningSealPackage
+        records.first(where: { record in
+            record.isSeal == false
+                && record.state != .installed
+                && record.originalBundleIdentifier == parsed.bundleIdentifier
         })
-    }
-
-
-    private static func matchesSealRecord(_ record: AppRecord, bundleIdentifier: String) -> Bool {
-        record.originalBundleIdentifier == bundleIdentifier
-            || record.mappedBundleIdentifier == bundleIdentifier
-            || record.preferredBundleIdentifier == bundleIdentifier
-    }
-
-    private static func isCurrentSealBundle(_ bundleIdentifier: String) -> Bool {
-        guard let current = Bundle.main.bundleIdentifier else { return false }
-        return bundleIdentifier == current
     }
 
     private static func importFailure(from error: Error) -> ImportFailure {
