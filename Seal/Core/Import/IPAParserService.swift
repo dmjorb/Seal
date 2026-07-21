@@ -194,13 +194,15 @@ struct IPAParserService: Sendable {
         archive: Archive
     ) throws -> Data? {
         let iconNames = iconFileNames(from: info)
-        let pngEntries = entries.filter { entry in
-            entry.type == .file
-                && entry.path.hasPrefix("\(appRoot)/")
-                && entry.path.lowercased().hasSuffix(".png")
+        let iconCandidateEntries = entries.filter { entry in
+            guard entry.type == .file, entry.path.hasPrefix("\(appRoot)/") else { return false }
+            let lowerName = URL(filePath: entry.path).lastPathComponent.lowercased()
+            return lowerName.hasSuffix(".png")
+                || lowerName == "itunesartwork"
+                || lowerName.hasPrefix("itunesartwork@")
         }
 
-        let declared = pngEntries.filter { entry in
+        let declared = iconCandidateEntries.filter { entry in
             let fileName = URL(filePath: entry.path).deletingPathExtension().lastPathComponent
             return iconNames.contains { declaredName in
                 fileName.caseInsensitiveCompare(declaredName) == .orderedSame
@@ -209,7 +211,7 @@ struct IPAParserService: Sendable {
             }
         }
 
-        let fallbacks = pngEntries.filter { entry in
+        let fallbacks = iconCandidateEntries.filter { entry in
             let lower = URL(filePath: entry.path).lastPathComponent.lowercased()
             return lower.hasPrefix("icon")
                 || lower.hasPrefix("appicon")

@@ -1,13 +1,7 @@
 import Foundation
 
-/// Central Bundle ID helpers.
-///
-/// Seal does not impose a private renewal lock here. The selected/requested
-/// Bundle ID is used when provided; Apple portal and the iOS install channel
-/// decide whether that identifier can be signed and installed.
+/// Bundle ID helpers. Seal validates only local string format; Apple/iOS decide availability.
 enum BundleIDPolicy {
-    static let sealSuffix = "seal"
-
     static func canonicalSealBundleIdentifier(bundle: Bundle = .main) -> String {
         bundle.object(forInfoDictionaryKey: "SealOriginalBundleIdentifier") as? String
             ?? "com.mjorb.seal"
@@ -31,34 +25,23 @@ enum BundleIDPolicy {
         if let requested = normalized(requestedBundleIdentifier), requested.isEmpty == false {
             return try validated(requested)
         }
-
-        if app.isSeal, let current = normalized(currentSealBundleIdentifier), current.isEmpty == false {
-            return try validated(current)
-        }
-
-        if let mapped = normalized(app.mappedBundleIdentifier), mapped.isEmpty == false {
-            return try validated(mapped)
-        }
-
         if let preferred = normalized(app.preferredBundleIdentifier), preferred.isEmpty == false {
             return try validated(preferred)
         }
-
-        return try validated(recommendedBundleIdentifier(for: app.originalBundleIdentifier))
+        if let mapped = normalized(app.mappedBundleIdentifier), mapped.isEmpty == false {
+            return try validated(mapped)
+        }
+        return try validated(app.originalBundleIdentifier)
     }
 
     static func recommendedBundleIdentifier(for original: String) -> String {
-        let clean = normalized(original) ?? original
-        if clean.lowercased().hasSuffix(".\(sealSuffix)") { return clean }
-        return "\(clean).\(sealSuffix)"
+        normalized(original) ?? original
     }
 
-    static func isEditable(_ app: AppRecord) -> Bool {
-        true
-    }
+    static func isEditable(_ app: AppRecord) -> Bool { true }
 
     static func displayMode(for app: AppRecord) -> String {
-        "按 Apple 签名与安装结果判断"
+        "按 Apple / iOS 实际返回处理"
     }
 
     static func validationError(for value: String) -> String? {
@@ -79,31 +62,29 @@ enum BundleIDPolicy {
     private static func validated(_ value: String) throws -> String {
         let identifier = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard identifier.isEmpty == false else {
-            throw failure(reason: "Bundle ID 不能为空")
+            throw failure(reason: "不能为空")
         }
         guard identifier.count <= 255 else {
-            throw failure(reason: "Bundle ID 不能超过 255 个字符")
+            throw failure(reason: "不能超过 255 个字符")
         }
         guard identifier.hasPrefix(".") == false,
               identifier.hasSuffix(".") == false,
               identifier.contains("..") == false else {
-            throw failure(reason: "Bundle ID 不能以句点开头或结尾，也不能包含连续句点")
+            throw failure(reason: "不能以 . 开头或结尾，不能包含连续 ..")
         }
-
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-.")
         guard identifier.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
-            throw failure(reason: "Bundle ID 只能包含字母、数字、连字符和句点")
+            throw failure(reason: "只能包含 A-Z、a-z、0-9、- 和 .")
         }
-
         let segments = identifier.split(separator: ".", omittingEmptySubsequences: false)
         guard segments.count >= 2 else {
-            throw failure(reason: "Bundle ID 建议使用反向域名格式，例如 com.example.app")
+            throw failure(reason: "至少包含两段")
         }
         guard segments.allSatisfy({ segment in
             guard let first = segment.first, let last = segment.last else { return false }
             return first != "-" && last != "-"
         }) else {
-            throw failure(reason: "Bundle ID 的每一段不能以连字符开头或结尾")
+            throw failure(reason: "每段不能以 - 开头或结尾")
         }
         return identifier
     }

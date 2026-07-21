@@ -41,9 +41,8 @@ struct ImportedAppRow: View {
     }
 
     private var displayBundleIdentifier: String {
-        if app.isSeal { return Bundle.main.bundleIdentifier ?? app.mappedBundleIdentifier ?? app.originalBundleIdentifier }
-        if app.state == .installed { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
-        return app.preferredBundleIdentifier ?? BundleIDPolicy.recommendedBundleIdentifier(for: app.originalBundleIdentifier)
+        if app.state == .installed || app.isSeal { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
+        return app.preferredBundleIdentifier ?? app.originalBundleIdentifier
     }
 
     @ViewBuilder private var icon: some View {

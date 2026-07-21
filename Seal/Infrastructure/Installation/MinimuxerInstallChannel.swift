@@ -86,12 +86,7 @@ actor MinimuxerInstallChannel: InstallChannel {
 
             run(.vpnTunnel)
             await waitForNetworkRefresh(rounds: 4, delay: .milliseconds(250))
-            var tunnelReachable = await onDemandActivator.probeTunnel()
-            if tunnelReachable == false {
-                await onDemandActivator.activate()
-                await waitForNetworkRefresh(rounds: 8, delay: .milliseconds(350))
-                tunnelReachable = await onDemandActivator.probeTunnel()
-            }
+            let tunnelReachable = await onDemandActivator.probeTunnel()
             if tunnelReachable { pass(.vpnTunnel) }
 
             if let udid = try await readyDeviceIdentifier() {

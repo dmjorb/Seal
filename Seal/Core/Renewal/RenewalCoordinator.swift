@@ -117,7 +117,8 @@ actor RenewalCoordinator {
                 let updated = try await signingCoordinator.signAndInstall(
                     appID: item.appID,
                     accountID: item.accountID,
-                    selectedCertificateSerialNumber: app.certificateSerialNumber,
+                    requestedBundleIdentifier: app.preferredBundleIdentifier ?? app.mappedBundleIdentifier,
+                    selectedCertificateSerialNumber: nil,
                     progress: { stage in
                         await progress(
                             .appProgress(

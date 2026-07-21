@@ -66,19 +66,13 @@ actor ApplePortalCertificateService {
             )
         } catch {
             guard Self.isCertificateLimitError(error) else { throw error }
-            let descriptions = existing.map { certificate in
-                let name = certificate.machineName ?? "Apple Development"
-                return "\(name) [Serial: \(certificate.serialNumber)]"
-            }.joined(separator: "、")
-            let suffix = descriptions.isEmpty ? "" : " Apple 当前证书：\(descriptions)。"
             throw Self.failure(
-                title: "证书名额已满",
-                reason: "Apple 拒绝创建新的开发证书。Seal 没有撤销任何证书，也没有自动选择替换对象。\(suffix)",
-                recovery: "选择完整 Serial，确认后再撤销",
+                title: "签名失败",
+                reason: "Apple 返回：无法创建签名证书",
+                recovery: "重试",
                 code: "SEAL-CERT-204"
             )
         }
-
         do {
             let refreshed = try await fetchCertificates(
                 team: context.team,
@@ -127,9 +121,9 @@ actor ApplePortalCertificateService {
             )
             guard cleanedUp else {
                 throw Self.failure(
-                    title: "新证书回滚失败",
-                    reason: "Apple 已创建证书 Serial：\(requested.serialNumber)，但生成 P12 前失败，且 Seal 无法确认该证书已回滚。Seal 没有创建第二张证书，也没有撤销其他证书。",
-                    recovery: "重新同步证书并处理此完整 Serial",
+                    title: "签名失败",
+                    reason: "Apple 返回：无法创建签名证书",
+                    recovery: "重试",
                     code: "SEAL-CERT-215"
                 )
             }
@@ -181,7 +175,7 @@ actor ApplePortalCertificateService {
         }) else {
             throw Self.failure(
                 title: "证书不存在",
-                reason: "Apple 当前 Team 中找不到完整 Serial：\(serialNumber)。Seal 没有撤销其他证书。",
+                reason: "Apple 返回：证书撤销失败",
                 recovery: "重新同步证书",
                 code: "SEAL-CERT-210"
             )
@@ -281,7 +275,7 @@ actor ApplePortalCertificateService {
         let devicePart = sanitizedDevice.isEmpty ? "Device" : String(sanitizedDevice.prefix(18))
         let teamPart = String(team.identifier.prefix(8))
         let timestamp = Int(Date().timeIntervalSince1970)
-        return "Seal-\(teamPart)-\(devicePart)-\(timestamp)"
+        return "Apple Development-\(teamPart)-\(devicePart)-\(timestamp)"
     }
 
     private static func isCertificateLimitError(_ error: Error) -> Bool {

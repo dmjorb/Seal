@@ -188,7 +188,7 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     var requiresLockedSigningIdentity: Bool {
-        state == .installed || hasPersistedSigningIdentity
+        false
     }
 
 }

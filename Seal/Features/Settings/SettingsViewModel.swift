@@ -165,6 +165,7 @@ final class SettingsViewModel: ObservableObject {
             accounts = await refreshedAccountDisplayNames(fetchedAccounts)
             pairingRecord = try await storedPairing
             fullAccountEmails = await loadFullAccountEmails(for: accounts)
+            loadCertificateInventoryCache(for: accounts)
 
             let storedApps = (try? await appStore?.fetchAll()) ?? []
             appIconData = await loadAppIcons(for: storedApps)
@@ -324,9 +325,9 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             let nsError = error as NSError
             alertFailure = Self.failure(
-                title: "无法创建本机证书",
-                reason: "失败原因暂时无法确定。Seal 没有收到明确的证书创建失败原因。",
-                recovery: "重新同步证书",
+                title: "签名失败",
+                reason: "Apple 返回：无法创建签名证书",
+                recovery: "重试",
                 code: "SEAL-CERT-211"
             )
         }
@@ -391,9 +392,9 @@ final class SettingsViewModel: ObservableObject {
             await refreshCertificateInventory(for: account, force: true)
             let nsError = error as NSError
             alertFailure = Self.failure(
-                title: "无法撤销证书",
-                reason: "Apple 证书撤销失败。Seal 没有处理其他证书。",
-                recovery: "重新同步证书后重试",
+                title: "签名失败",
+                reason: "Apple 返回：证书撤销失败",
+                recovery: "重试",
                 code: "SEAL-CERT-216"
             )
         }
@@ -523,17 +524,17 @@ final class SettingsViewModel: ObservableObject {
             try? await accountRepository.save(originalAccount)
             guard rollbackSucceeded else {
                 throw Self.failure(
-                    title: "新证书回滚失败",
-                    reason: "P12 本地事务保存失败，且 Seal 无法确认 Apple 新证书 Serial：\(material.serialNumber) 已撤销。Seal 没有创建第二张证书，也没有处理其他证书。",
-                    recovery: "重新同步证书并处理此完整 Serial",
+                    title: "签名失败",
+                    reason: "Apple 返回：无法创建签名证书",
+                    recovery: "重试",
                     code: "SEAL-CERT-215"
                 )
             }
             if let failure = error as? ImportFailure { throw failure }
             throw Self.failure(
-                title: "本机证书保存失败",
-                reason: "Seal 未能完成 P12 的事务保存，已只撤销本次新建证书并恢复原本地数据。",
-                recovery: "重新同步证书",
+                title: "签名失败",
+                reason: "Apple 返回：无法创建签名证书",
+                recovery: "重试",
                 code: "SEAL-CERT-208"
             )
         }
@@ -673,12 +674,12 @@ final class SettingsViewModel: ObservableObject {
             )
             certificateInventories[account.id] = inventory
             certificateInventoryFailures[account.id] = nil
+            saveCertificateInventoryCache(inventory)
             try? await logStore?.append(
                 category: .account,
                 message: "Apple 侧证书与 App ID 已同步：\(inventory.usedBundleIDCount) 个 Bundle ID"
             )
         } catch let failure as ImportFailure {
-            certificateInventories[account.id] = nil
             certificateInventoryFailures[account.id] = failure
             try? await logStore?.append(
                 category: .account,
@@ -694,7 +695,6 @@ final class SettingsViewModel: ObservableObject {
                 recovery: "重新同步",
                 code: "SEAL-INVENTORY-900"
             )
-            certificateInventories[account.id] = nil
             certificateInventoryFailures[account.id] = failure
             try? await logStore?.append(
                 category: .account,
@@ -705,6 +705,31 @@ final class SettingsViewModel: ObservableObject {
         }
         logs = (try? await logStore?.entries()) ?? logs
         refreshLogExportText()
+    }
+
+    private func loadCertificateInventoryCache(for accounts: [AppleAccountRecord]) {
+        let validIDs = Set(accounts.map(\.id))
+        var cached: [UUID: ApplePortalInventory] = [:]
+        for account in accounts {
+            guard let data = UserDefaults.standard.data(forKey: certificateInventoryCacheKey(account.id)),
+                  let inventory = try? JSONDecoder().decode(ApplePortalInventory.self, from: data) else {
+                continue
+            }
+            cached[account.id] = inventory
+        }
+        certificateInventories = certificateInventories.filter { validIDs.contains($0.key) }
+        for (id, inventory) in cached where certificateInventories[id] == nil {
+            certificateInventories[id] = inventory
+        }
+    }
+
+    private func saveCertificateInventoryCache(_ inventory: ApplePortalInventory) {
+        guard let data = try? JSONEncoder().encode(inventory) else { return }
+        UserDefaults.standard.set(data, forKey: certificateInventoryCacheKey(inventory.accountID))
+    }
+
+    private func certificateInventoryCacheKey(_ accountID: UUID) -> String {
+        "settings.applePortalInventory.\(accountID.uuidString)"
     }
 
     func clearSigningHistory(for accountID: UUID) async {
@@ -863,8 +888,9 @@ final class SettingsViewModel: ObservableObject {
                 throw error
             }
             await load(force: true)
-            if activeAccountID == nil || existingAccount == nil && duplicateAccount == nil {
-                if let saved = accounts.first(where: { $0.id == record.id }) {
+            if let saved = accounts.first(where: { $0.id == record.id }) {
+                await refreshCertificateInventory(for: saved, force: true)
+                if activeAccountID == nil || existingAccount == nil && duplicateAccount == nil {
                     await selectActiveAccount(saved)
                 }
             }
@@ -1094,20 +1120,6 @@ final class SettingsViewModel: ObservableObject {
             if let failure = certificateInventoryFailures[account.id] {
                 throw failure
             }
-            if let selectedSerial = account.selectedCertificateSerialNumber {
-                guard let inventory = certificateInventories[account.id],
-                      inventory.certificates.contains(where: {
-                          $0.serialNumber == selectedSerial && $0.hasLocalPrivateKey
-                      }) else {
-                    throw Self.failure(
-                        title: "当前签名证书不可用",
-                        reason: "设置中选择的证书已不在 Apple 账号中，或 Seal 本地私钥已丢失。",
-                        recovery: "重新选择签名证书",
-                        code: "SEAL-CERT-206"
-                    )
-                }
-            }
-
             await runInstallChannelCheck(successMessage: "签名环境检测正常")
         } catch let failure as ImportFailure {
             await finishInstallChannelCheckWithFailure(

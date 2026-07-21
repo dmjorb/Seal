@@ -5,8 +5,8 @@ enum SigningCertificateSelectionPolicy {
         for app: AppRecord,
         account: AppleAccountRecord
     ) throws {
-        // Do not block signing by Seal-owned account/team history.
-        // Apple portal and iOS installation perform the authoritative validation.
+        // No Seal-side Apple ID / Team / certificate lock.
+        // Apple portal and iOS installation are the authoritative validators.
     }
 
     static func resolvedSerialNumber(
@@ -14,23 +14,18 @@ enum SigningCertificateSelectionPolicy {
         account: AppleAccountRecord,
         requestedSerialNumber: String? = nil
     ) throws -> String? {
-        requestedSerialNumber
-            ?? account.selectedCertificateSerialNumber
-            ?? account.certificateSerialNumber
+        let requested = requestedSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let requested, requested.isEmpty == false { return requested }
+        let selected = account.selectedCertificateSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let selected, selected.isEmpty == false { return selected }
+        let cached = account.certificateSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cached?.isEmpty == false ? cached : nil
     }
 
     static func localAvailabilityMessage(
         for app: AppRecord,
         account: AppleAccountRecord
     ) -> String? {
-        guard let serialNumber = try? resolvedSerialNumber(for: app, account: account),
-              serialNumber.isEmpty == false else {
-            return nil
-        }
-
-        guard account.certificateSerialNumber?.caseInsensitiveCompare(serialNumber) == .orderedSame else {
-            return "当前签名证书没有可用的本机私钥。"
-        }
-        return nil
+        nil
     }
 }

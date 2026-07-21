@@ -151,8 +151,8 @@ actor AppFileStore {
         } catch {
             throw ImportFailure(
                 title: "无法导入构建产物",
-                reason: "文件无法读取。可能是下载不完整，或文件 App 尚未完成同步。",
-                recovery: "重新下载后再选择",
+                reason: "来源：文件系统\n原始返回：文件无法读取",
+                recovery: "重新选择",
                 code: "SEAL-IPA-208"
             )
         }

@@ -64,6 +64,9 @@ struct AboutView: View {
             Spacer(minLength: 12)
             Text(value)
                 .multilineTextAlignment(.trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .textSelection(.enabled)
                 .foregroundStyle(.primary)
         }
         .font(.system(size: 16, weight: .regular))

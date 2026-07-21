@@ -52,9 +52,12 @@ actor CoreDataAppStore: AppStore {
                 let request = NSFetchRequest<NSManagedObject>(
                     entityName: CoreDataModel.appEntityName
                 )
+                // Importing an IPA must never replace a real installed record.
+                // Keep installed / self records separate even when the original Bundle ID matches.
                 request.predicate = NSPredicate(
-                    format: "originalBundleIdentifier == %@",
-                    record.originalBundleIdentifier
+                    format: "originalBundleIdentifier == %@ AND stateRaw != %@ AND isSeal == NO",
+                    record.originalBundleIdentifier,
+                    AppState.installed.rawValue
                 )
                 let existing = try context.fetch(request)
                 let replaced = try existing.map(Self.decode)

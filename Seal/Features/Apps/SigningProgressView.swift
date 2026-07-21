@@ -219,9 +219,9 @@ struct SigningProgressView: View {
     }
 
     private func displayBundleIdentifier(_ app: AppRecord) -> String {
-        if app.isSeal { return Bundle.main.bundleIdentifier ?? app.mappedBundleIdentifier ?? app.originalBundleIdentifier }
+        if app.isSeal { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
         if app.state == .installed { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
-        return app.preferredBundleIdentifier ?? BundleIDPolicy.recommendedBundleIdentifier(for: app.originalBundleIdentifier)
+        return app.preferredBundleIdentifier ?? app.originalBundleIdentifier
     }
 
     @ViewBuilder
@@ -292,7 +292,7 @@ struct SigningProgressView: View {
 
     private func primaryRecoveryTitle(_ failure: ImportFailure) -> String {
         if isAuthFailure(failure) { return "重新验证 Apple ID" }
-        if isCertificateFailure(failure) { return "签名证书" }
+        if isCertificateFailure(failure) { return "重试" }
         if isAppIDFailure(failure) { return "更换 Bundle ID" }
         if isPairingFailure(failure) { return "配对文件" }
         if isInstallChannelFailure(failure) { return "知道了" }
@@ -304,7 +304,7 @@ struct SigningProgressView: View {
         if isAuthFailure(failure) {
             openSettings(.account)
         } else if isCertificateFailure(failure) {
-            openSettings(.certificates)
+            viewModel.retrySigning()
         } else if isAppIDFailure(failure) {
             viewModel.dismissSigningResult()
             dismiss()
@@ -321,7 +321,6 @@ struct SigningProgressView: View {
     }
 
     private func shouldOfferRetry(_ failure: ImportFailure) -> Bool {
-        if isCertificateFailure(failure) { return false }
         if isAuthFailure(failure) || isAppIDFailure(failure) || isPairingFailure(failure) { return false }
         return true
     }
@@ -372,13 +371,13 @@ struct SigningProgressView: View {
 private extension SigningStage {
     func userVisibleTitle(isRenewal: Bool) -> String {
         switch self {
-        case .waitingForChannel: return "检查安装通道"
-        case .preparingAccount: return "检查 Apple ID"
-        case .preparingCertificate: return "检查本机证书"
-        case .preparingProfiles: return "生成描述文件"
-        case .signing: return isRenewal ? "重新签名应用" : "签名应用"
-        case .installing: return "安装到设备"
-        case .verifying: return "确认安装结果"
+        case .waitingForChannel: return isRenewal ? "正在准备续签" : "正在准备签名"
+        case .preparingAccount: return isRenewal ? "正在准备续签" : "正在准备签名"
+        case .preparingCertificate: return "正在处理 Bundle ID"
+        case .preparingProfiles: return "正在生成描述文件"
+        case .signing: return "正在写入签名"
+        case .installing: return "正在安装到设备"
+        case .verifying: return "正在确认安装"
         }
     }
 }

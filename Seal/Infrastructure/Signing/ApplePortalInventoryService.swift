@@ -1,7 +1,7 @@
 import Foundation
 @preconcurrency import AltSign
 
-struct ApplePortalInventory: Equatable, Sendable {
+struct ApplePortalInventory: Codable, Equatable, Sendable {
     let accountID: UUID
     let teamID: String
     let teamName: String
@@ -14,8 +14,8 @@ struct ApplePortalInventory: Equatable, Sendable {
     }
 }
 
-struct ApplePortalAppIDSnapshot: Equatable, Identifiable, Sendable {
-    enum ProvisioningProfileState: Equatable, Sendable {
+struct ApplePortalAppIDSnapshot: Codable, Equatable, Identifiable, Sendable {
+    enum ProvisioningProfileState: String, Codable, Equatable, Sendable {
         case available
         case unavailable
     }
@@ -31,7 +31,7 @@ struct ApplePortalAppIDSnapshot: Equatable, Identifiable, Sendable {
     let provisioningProfileState: ProvisioningProfileState
 }
 
-struct ApplePortalCertificateSnapshot: Equatable, Identifiable, Sendable {
+struct ApplePortalCertificateSnapshot: Codable, Equatable, Identifiable, Sendable {
     var id: String { serialNumber }
     let serialNumber: String
     let machineName: String

@@ -85,9 +85,9 @@ enum ApplePortalSigningFailure {
             || normalized.contains("too many")
             || normalized.contains("invalidcertificaterequest") {
             return ImportFailure(
-                title: "证书名额已满",
-                reason: "Apple 返回：\(diagnostic)",
-                recovery: "处理证书名额",
+                title: "签名失败",
+                reason: "Apple 返回：无法创建签名证书",
+                recovery: "重试",
                 code: "SEAL-CERT-204"
             )
         }
@@ -480,17 +480,35 @@ actor ApplePortalSigningService {
             try Task.checkCancellation()
         } catch {
             guard Self.isCertificateLimitError(error) else { throw error }
-            let descriptions = certificates.map { certificate in
-                let name = certificate.machineName ?? "Apple Development"
-                return "\(name) [Serial: \(certificate.serialNumber)]"
-            }.joined(separator: "、")
-            let suffix = descriptions.isEmpty ? "" : " Apple 当前证书：\(descriptions)。"
-            throw Self.failure(
-                title: "证书名额已满",
-                reason: "Apple 拒绝创建新的开发证书。\(suffix)",
-                recovery: "前往签名证书页面处理证书名额",
-                code: "SEAL-CERT-204"
-            )
+            let latestCertificates = (try? await fetchCertificates(team: team, session: session)) ?? certificates
+            guard await revokeOneUnavailableDevelopmentCertificate(
+                certificates: latestCertificates,
+                protectedSerialNumber: secret.certificateSerialNumber,
+                team: team,
+                session: session
+            ) else {
+                throw Self.failure(
+                    title: "签名失败",
+                    reason: "Apple 返回：无法创建签名证书",
+                    recovery: "重试",
+                    code: "SEAL-CERT-204"
+                )
+            }
+            do {
+                requested = try await addCertificate(
+                    team: team,
+                    session: session,
+                    deviceName: deviceName
+                )
+                try Task.checkCancellation()
+            } catch {
+                throw Self.failure(
+                    title: "签名失败",
+                    reason: "Apple 返回：无法创建签名证书",
+                    recovery: "重试",
+                    code: "SEAL-CERT-204"
+                )
+            }
         }
 
         var wasPersisted = false
@@ -536,15 +554,39 @@ actor ApplePortalSigningService {
             )
             guard cleanedUp else {
                 throw Self.failure(
-                    title: "证书保存失败",
-                    reason: "Apple 已创建证书，但本机 P12 保存失败。Serial：\(requested.serialNumber)",
-                    recovery: "处理证书名额",
+                    title: "签名失败",
+                    reason: "Apple 返回：无法创建签名证书",
+                    recovery: "重试",
                     code: "SEAL-CERT-215"
                 )
             }
             if let failure = error as? ImportFailure { throw failure }
             throw error
         }
+    }
+
+    private func revokeOneUnavailableDevelopmentCertificate(
+        certificates: [ALTCertificate],
+        protectedSerialNumber: String?,
+        team: ALTTeam,
+        session: ALTAppleAPISession
+    ) async -> Bool {
+        let protected = protectedSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
+        for certificate in certificates.sorted(by: { lhs, rhs in
+            (lhs.machineName ?? "Apple Development") < (rhs.machineName ?? "Apple Development")
+        }) {
+            if let protected, protected.isEmpty == false,
+               certificate.serialNumber.caseInsensitiveCompare(protected) == .orderedSame {
+                continue
+            }
+            do {
+                try await revokeCertificate(certificate, team: team, session: session)
+                return true
+            } catch {
+                continue
+            }
+        }
+        return false
     }
 
     private func cleanUpNewCertificate(
@@ -636,7 +678,7 @@ actor ApplePortalSigningService {
         let devicePart = sanitizedDevice.isEmpty ? "Device" : String(sanitizedDevice.prefix(18))
         let teamPart = String(team.identifier.prefix(8))
         let timestamp = Int(Date().timeIntervalSince1970)
-        return "Seal-\(teamPart)-\(devicePart)-\(timestamp)"
+        return "Apple Development-\(teamPart)-\(devicePart)-\(timestamp)"
     }
 
     private func revokeCertificate(
@@ -790,8 +832,8 @@ actor ApplePortalSigningService {
                 guard mappedBundleID != mappedMainBundleID else { throw error }
                 guard allowDroppingExtensions else {
                     throw Self.failure(
-                        title: "扩展无法签名",
-                        reason: "此 IPA 包含无法用当前账号签名的扩展：\(originalBundleID)。继续重试可移除扩展，主 App 仍可安装，但 Widget、分享扩展或通知扩展等功能可能不可用。",
+                        title: "签名失败",
+                        reason: "Apple 返回：扩展无法生成描述文件",
                         recovery: "移除扩展后重试",
                         code: "SEAL-EXT-401"
                     )

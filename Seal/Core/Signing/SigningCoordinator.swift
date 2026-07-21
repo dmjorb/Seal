@@ -84,16 +84,6 @@ actor SigningCoordinator {
             await progress(.waitingForChannel)
             let deviceIdentifier = try await installChannel.start()
 
-            if app.isSeal == false, let cached = try await installCachedSignedIPAIfPossible(
-                app: app,
-                account: account,
-                targetBundleIdentifier: targetBundleIdentifier,
-                certificateSerialNumber: effectiveCertificateSerialNumber,
-                deviceIdentifier: deviceIdentifier,
-                progress: progress
-            ) {
-                return cached
-            }
 
             let originalURL = try await fileStore.fileURL(
                 relativePath: app.ipaRelativePath
@@ -184,8 +174,8 @@ actor SigningCoordinator {
                   let certificate = try? ALTCertificate(p12Data: p12, password: nil),
                   certificate.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame else {
                 throw Self.failure(
-                    reason: "新证书 P12 写入 Keychain 后无法完整读取，或 Serial 不一致：\(serialNumber)。",
-                    recovery: "解锁设备后重新创建证书",
+                    reason: "Apple 返回：无法创建签名证书",
+                    recovery: "重试",
                     code: "SEAL-CERT-210"
                 )
             }

@@ -49,8 +49,8 @@ struct CertificatesRootView: View {
             let count = relatedApps.filter { $0.accountID == account.id }.count
             Text(
                 count == 0
-                    ? "删除后将无法继续使用此账号签名。"
-                    : "该账号仍绑定于 \(count) 个应用。删除后，这些应用无法继续续签。"
+                    ? "删除后将移除此账号。"
+                    : "该账号关联过 \(count) 个应用。删除不会卸载应用。"
             )
         }
         .navigationDestination(
@@ -76,7 +76,6 @@ struct CertificatesRootView: View {
         }
         .task {
             await viewModel.load()
-            await viewModel.refreshCertificateInventories()
         }
         .onChange(of: viewModel.requestedRoute) { route in
             guard route == .addAccount else { return }

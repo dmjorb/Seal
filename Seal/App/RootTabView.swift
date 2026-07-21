@@ -32,6 +32,7 @@ struct RootTabView: View {
         .tint(.sealAccent)
         .sealScreenBackground()
         .task {
+            await LocalNetworkPermissionPrimer.requestIfNeeded()
             await requestNotificationPermissionIfNeeded()
             if settingsViewModel.environment.isConfigured {
                 _ = await appsViewModel.refreshSigningChannel()

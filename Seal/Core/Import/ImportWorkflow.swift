@@ -171,15 +171,15 @@ actor ImportWorkflow {
         return AppRecord(
             id: existing?.id ?? draft.appID,
             originalBundleIdentifier: parsed.bundleIdentifier,
-            mappedBundleIdentifier: existing?.mappedBundleIdentifier,
+            mappedBundleIdentifier: nil,
             name: parsed.name,
             version: parsed.version,
             buildNumber: parsed.buildNumber,
             size: parsed.fileSize,
             iconRelativePath: files.iconRelativePath,
-            state: .preflightPassed,
+            state: .imported,
             expiryDate: nil,
-            accountID: existing?.accountID,
+            accountID: nil,
             certificateSerialNumber: nil,
             ipaRelativePath: files.ipaRelativePath,
             signedIPARelativePath: nil,
@@ -208,7 +208,7 @@ actor ImportWorkflow {
         }
         return ImportFailure(
             title: "无法导入 IPA",
-            reason: "处理失败",
+            reason: "来源：IPA 解析\n原始返回：处理失败",
             recovery: "重试",
             code: "SEAL-IPA-200"
         )
