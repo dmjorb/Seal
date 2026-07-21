@@ -473,12 +473,13 @@ actor ApplePortalSigningService {
     ) async throws -> SigningIdentity {
         let requested: ALTCertificate
         do {
-            requested = try await addCertificate(
+            let created = try await addCertificate(
                 team: team,
                 session: session,
                 deviceName: deviceName
             )
             try Task.checkCancellation()
+            requested = created
         } catch {
             guard Self.isCertificateLimitError(error) else { throw error }
             requested = try await recoverCertificateCapacityAndCreate(
