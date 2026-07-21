@@ -470,7 +470,7 @@ actor ApplePortalSigningService {
         deviceName: String,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void
     ) async throws -> SigningIdentity {
-        let requested: ALTCertificate
+        var requested: ALTCertificate
         do {
             requested = try await addCertificate(
                 team: team,
