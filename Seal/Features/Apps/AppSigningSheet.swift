@@ -193,10 +193,15 @@ struct AppSigningSheet: View {
             : targetBundleID
     }
 
-    private var requestedBundleIDForSigning: String? { targetBundleID }
+    private var requestedBundleIDForSigning: String? {
+        let trimmed = targetBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 
     private var bundleIDValidationError: String? {
-        BundleIDPolicy.validationError(for: targetBundleID)
+        let trimmed = targetBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return nil }
+        return BundleIDPolicy.validationError(for: trimmed)
     }
 
     private func resetBundleIDDraftIfNeeded() {

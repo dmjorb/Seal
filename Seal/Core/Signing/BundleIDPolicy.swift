@@ -25,6 +25,20 @@ enum BundleIDPolicy {
         if let requested = normalized(requestedBundleIdentifier), requested.isEmpty == false {
             return try validated(requested)
         }
+        if app.state == .installed {
+            if let mapped = normalized(app.mappedBundleIdentifier), mapped.isEmpty == false {
+                return try validated(mapped)
+            }
+            if let preferred = normalized(app.preferredBundleIdentifier), preferred.isEmpty == false {
+                return try validated(preferred)
+            }
+            throw ImportFailure(
+                title: "续签记录不完整",
+                reason: "未记录当前已签名 Bundle ID。",
+                recovery: "重新选择 IPA 签名并安装",
+                code: "SEAL-BUNDLE-002"
+            )
+        }
         if let preferred = normalized(app.preferredBundleIdentifier), preferred.isEmpty == false {
             return try validated(preferred)
         }

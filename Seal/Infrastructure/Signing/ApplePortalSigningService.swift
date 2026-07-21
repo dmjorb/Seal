@@ -780,8 +780,12 @@ actor ApplePortalSigningService {
                 }
 
                 if let application = applications[mappedBundleID] {
+                    let entitlementSource = filteredAppIDEntitlements(
+                        from: application,
+                        team: team
+                    )
                     var entitlementValues: [String: ProvisioningEntitlementValue] = [:]
-                    for (entitlement, value) in application.entitlements {
+                    for (entitlement, value) in entitlementSource {
                         guard let converted = ProvisioningEntitlementValue.make(from: value) else {
                             throw Self.failure(
                                 title: "应用权限无法解析",
@@ -892,19 +896,28 @@ actor ApplePortalSigningService {
         team: ALTTeam,
         session: ALTAppleAPISession
     ) async throws -> ALTAppID {
+        let filteredEntitlements = filteredAppIDEntitlements(
+            from: application,
+            team: team
+        )
         var features: [ALTFeature: Any] = [:]
-        for (entitlement, value) in application.entitlements {
-            if team.type == .free,
-               ALTFreeDeveloperCanUseEntitlement(entitlement) == false {
-                continue
-            }
+        for (entitlement, value) in filteredEntitlements {
             if let feature = ALTFeature(entitlement: entitlement) {
                 features[feature] = value
             }
         }
-        let hasAppGroups = team.type != .free
-            && ((application.entitlements[.appGroups] as? [String])?.isEmpty == false)
-        features[.appGroups] = hasAppGroups
+        if team.type != .free,
+           let groups = filteredEntitlements[.appGroups] as? [String],
+           groups.isEmpty == false {
+            features[.appGroups] = true
+        }
+
+        // If there is nothing Apple needs to toggle, keep the existing App ID as-is.
+        // This avoids sending empty or signer-managed entitlement payloads that Apple
+        // rejects as "provided parameters are invalid" for free accounts.
+        guard features.isEmpty == false || filteredEntitlements.isEmpty == false else {
+            return appID
+        }
 
         guard let updated = appID.copy() as? ALTAppID else {
             throw Self.failure(
@@ -915,7 +928,53 @@ actor ApplePortalSigningService {
             )
         }
         updated.features = features
-        updated.entitlements = application.entitlements
+        updated.entitlements = filteredEntitlements
+        do {
+            return try await submitUpdatedAppID(updated, team: team, session: session)
+        } catch {
+            guard Self.isInvalidAppIDParameterError(error),
+                  team.type == .free,
+                  let fallback = appID.copy() as? ALTAppID else {
+                throw error
+            }
+            fallback.features = [:]
+            fallback.entitlements = [:]
+            return try await submitUpdatedAppID(fallback, team: team, session: session)
+        }
+    }
+
+    private func filteredAppIDEntitlements(
+        from application: ALTApplication,
+        team: ALTTeam
+    ) -> [ALTEntitlement: Any] {
+        let signerManagedEntitlements: Set<String> = [
+            "application-identifier",
+            "com.apple.developer.team-identifier",
+            "keychain-access-groups",
+            "get-task-allow"
+        ]
+        var filtered: [ALTEntitlement: Any] = [:]
+        for (entitlement, value) in application.entitlements {
+            if signerManagedEntitlements.contains(entitlement.rawValue) {
+                continue
+            }
+            if team.type == .free,
+               ALTFreeDeveloperCanUseEntitlement(entitlement) == false {
+                continue
+            }
+            if team.type == .free, entitlement == .appGroups {
+                continue
+            }
+            filtered[entitlement] = value
+        }
+        return filtered
+    }
+
+    private func submitUpdatedAppID(
+        _ updated: ALTAppID,
+        team: ALTTeam,
+        session: ALTAppleAPISession
+    ) async throws -> ALTAppID {
         let box: LegacyBox<ALTAppID> = try await withCheckedThrowingContinuation {
             continuation in
             ALTAppleAPI.shared.update(
@@ -927,6 +986,14 @@ actor ApplePortalSigningService {
             }
         }
         return box.value
+    }
+
+    private static func isInvalidAppIDParameterError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        let normalized = "\(nsError.domain) \(nsError.code) \(nsError.localizedDescription) \(String(describing: error))".lowercased()
+        return nsError.code == 3001
+            || normalized.contains("3001")
+            || normalized.contains("provided parameters are invalid")
     }
 
     private func assignAppGroups(

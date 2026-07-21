@@ -75,7 +75,11 @@ struct AppDetailView: View {
             Divider()
             detailRow("签名证书", certificateName(app))
             Divider()
+            detailRow("签名 Bundle ID", signedBundleIdentifier(app))
+            Divider()
             detailRow("原始 Bundle ID", app.originalBundleIdentifier)
+            Divider()
+            detailRow("描述文件", profileSummary(app))
             Divider()
             detailRow("扩展", app.extensions.isEmpty ? "无" : "\(app.extensions.count) 个")
         }
@@ -131,15 +135,37 @@ struct AppDetailView: View {
     }
 
     private func certificateName(_ app: AppRecord) -> String {
-        guard let serial = app.certificateSerialNumber, serial.isEmpty == false else {
-            return app.state == .installed ? "未记录" : "签名时创建"
+        if let serial = app.certificateSerialNumber, serial.isEmpty == false {
+            return "Seal-\(serial.suffix(8))"
         }
-        return "Seal-\(serial.suffix(8))"
+        if let serial = app.signingTargets
+            .flatMap(\.certificateSerialNumbers)
+            .first(where: { $0.isEmpty == false }) {
+            return "Seal-\(serial.suffix(8))"
+        }
+        return app.state == .installed ? "续签时重新确认" : "签名时创建"
+    }
+
+    private func signedBundleIdentifier(_ app: AppRecord) -> String {
+        app.mappedBundleIdentifier
+            ?? app.preferredBundleIdentifier
+            ?? (app.state == .installed ? "未记录" : app.originalBundleIdentifier)
+    }
+
+    private func profileSummary(_ app: AppRecord) -> String {
+        if let uuid = app.provisioningProfileUUID, uuid.isEmpty == false {
+            return uuid
+        }
+        if let date = app.provisioningProfileExpirationDate ?? app.expiryDate {
+            return "到期 \(SealSettingsDateFormatter.string(from: date))"
+        }
+        return app.state == .installed ? "未记录" : "签名后生成"
     }
 
     private func displayBundleIdentifier(_ app: AppRecord) -> String {
-        if app.isSeal { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
-        if app.state == .installed { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
+        if app.state == .installed {
+            return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier
+        }
         return app.preferredBundleIdentifier ?? app.originalBundleIdentifier
     }
 
@@ -147,8 +173,8 @@ struct AppDetailView: View {
         guard let date = app.expiryDate else { return "尚未签名" }
         let interval = date.timeIntervalSinceNow
         if interval <= 0 { return "已过期" }
-        if interval < 86_400 { return "剩余 \(max(1, Int(interval / 3_600))) 小时" }
-        return "剩余 \(max(1, Int(interval / 86_400))) 天"
+        if interval < 86_400 { return "剩余 \(max(1, Int(ceil(interval / 3_600)))) 小时" }
+        return "剩余 \(max(1, Int(ceil(interval / 86_400)))) 天"
     }
 
     private func expiryIcon(_ app: AppRecord) -> String {

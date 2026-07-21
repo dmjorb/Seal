@@ -61,6 +61,44 @@ struct BundleIDMapperTests {
     }
 
     @Test
+    func policyUsesMappedBundleIdentifierForInstalledRenewal() throws {
+        var installed = AppRecord(
+            originalBundleIdentifier: "com.example.demo",
+            mappedBundleIdentifier: "com.example.demo.seal",
+            name: "Demo",
+            version: "1.0",
+            buildNumber: "1",
+            size: 1,
+            state: .installed,
+            ipaRelativePath: "Apps/demo.ipa",
+            importedAt: Date()
+        )
+        installed.preferredBundleIdentifier = "com.example.demo.old"
+
+        #expect(try BundleIDPolicy.targetBundleIdentifier(for: installed) == "com.example.demo.seal")
+    }
+
+    @Test
+    func policyRejectsInstalledRenewalWithoutSignedBundleIdentifier() throws {
+        let installed = AppRecord(
+            originalBundleIdentifier: "com.example.demo",
+            mappedBundleIdentifier: nil,
+            preferredBundleIdentifier: nil,
+            name: "Demo",
+            version: "1.0",
+            buildNumber: "1",
+            size: 1,
+            state: .installed,
+            ipaRelativePath: "Apps/demo.ipa",
+            importedAt: Date()
+        )
+
+        #expect(throws: ImportFailure.self) {
+            try BundleIDPolicy.targetBundleIdentifier(for: installed)
+        }
+    }
+
+    @Test
     func policyAllowsRequestedBundleIdentifierForSealPackage() throws {
         let seal = AppRecord(
             originalBundleIdentifier: "com.mjorb.seal",
