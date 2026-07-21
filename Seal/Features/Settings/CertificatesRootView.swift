@@ -76,7 +76,7 @@ struct CertificatesRootView: View {
         }
         .task {
             await viewModel.load()
-            await viewModel.refreshExpiredFreeAccountInventoriesIfNeeded()
+            await viewModel.refreshCertificateInventories()
         }
         .onChange(of: viewModel.requestedRoute) { route in
             guard route == .addAccount else { return }
@@ -211,16 +211,16 @@ struct CertificatesRootView: View {
 
     private func appIDQuotaTitle(_ account: AppleAccountRecord) -> String {
         if let inventory = viewModel.certificateInventory(for: account.id) {
-            if account.isFreeTeam {
+            if account.isFreeTeam == true {
                 return "\(inventory.usedBundleIDCount) / 10"
             }
             return "Developer"
         }
-        return account.isFreeTeam ? "— / 10" : "Developer"
+        return account.isFreeTeam == true ? "— / 10" : "Developer"
     }
 
     private func appIDQuotaColor(_ account: AppleAccountRecord) -> Color {
-        guard let inventory = viewModel.certificateInventory(for: account.id), account.isFreeTeam else {
+        guard let inventory = viewModel.certificateInventory(for: account.id), account.isFreeTeam == true else {
             return Color.sealTextSecondary
         }
         return inventory.usedBundleIDCount >= 10 ? Color.sealDanger : Color.sealSuccess

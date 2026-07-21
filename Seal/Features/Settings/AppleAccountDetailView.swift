@@ -96,8 +96,8 @@ struct AppleAccountDetailView: View {
     }
 
     private var appIDQuotaTitle: String {
-        guard let inventory else { return currentAccount.isFreeTeam ? "— / 10" : "Developer" }
-        return currentAccount.isFreeTeam ? "\(inventory.usedBundleIDCount) / 10" : "Developer"
+        guard let inventory else { return currentAccount.isFreeTeam == true ? "— / 10" : "Developer" }
+        return currentAccount.isFreeTeam == true ? "\(inventory.usedBundleIDCount) / 10" : "Developer"
     }
 
     @ViewBuilder
