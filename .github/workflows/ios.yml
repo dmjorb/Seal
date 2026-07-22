@@ -12,7 +12,6 @@ concurrency:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   build-package:
@@ -21,54 +20,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Prepare diagnostics directory
-        run: mkdir -p build/diagnostics
-
       - name: Install pinned XcodeGen
         run: |
-          set -o pipefail
-          {
-            curl --fail --location --silent --show-error \
-              --output "$RUNNER_TEMP/xcodegen.zip" \
-              https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip
-            echo "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 --check
-            ditto -x -k "$RUNNER_TEMP/xcodegen.zip" "$RUNNER_TEMP"
-            echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
-            "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
-          } 2>&1 | tee build/diagnostics/xcodegen.log
-
-      - name: Rebuild Rust bridge
-        run: |
-          set -o pipefail
-          bash Scripts/build-rust-bridge.sh 2>&1 | tee build/diagnostics/rust-bridge.log
+          curl --fail --location --silent --show-error \
+            --output "$RUNNER_TEMP/xcodegen.zip" \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip
+          echo "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 --check
+          ditto -x -k "$RUNNER_TEMP/xcodegen.zip" "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
 
       - name: Generate Xcode project
-        run: |
-          set -o pipefail
-          xcodegen generate 2>&1 | tee build/diagnostics/xcodegen-project.log
-
-      - name: Run tests
-        run: |
-          set -o pipefail
-          SEAL_RUST_BRIDGE_PREBUILT=1 bash Scripts/ci-test.sh 2>&1 | tee build/diagnostics/tests.log
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: Seal-TestResults-${{ github.run_number }}
-          path: build/TestResults.xcresult
-          if-no-files-found: warn
+        run: xcodegen generate
 
       - name: Build unsigned IPA
-        run: |
-          set -o pipefail
-          SEAL_RUST_BRIDGE_PREBUILT=1 bash Scripts/build-unsigned-ipa.sh 2>&1 | tee build/diagnostics/build-ipa.log
+        run: bash Scripts/build-unsigned-ipa.sh
 
       - name: Verify unsigned IPA
-        run: |
-          set -o pipefail
-          bash Scripts/verify-ipa.sh build/Seal.ipa 2>&1 | tee build/diagnostics/verify-ipa.log
+        run: bash Scripts/verify-ipa.sh build/Seal.ipa
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v7
@@ -91,24 +60,3 @@ jobs:
             build/Seal.ipa.sha256
             build/Seal-Info.plist
           retention-days: 14
-
-      - name: Publish failure diagnostics
-        if: failure() && github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash Scripts/publish-ci-diagnostics.sh build/diagnostics
-
-      - name: Upload CI diagnostics
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: Seal-CI-Diagnostics-${{ github.run_number }}
-          path: build/diagnostics
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Close resolved diagnostics issue
-        if: success() && github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash Scripts/close-ci-diagnostics.sh

@@ -52,19 +52,9 @@ actor PairingStore {
             at: directory,
             withIntermediateDirectories: true
         )
-
-        // Reset validation metadata before replacing the pairing file. This
-        // prevents a previously verified file from making a newly imported
-        // file appear verified when stale metadata cannot be removed.
-        try saveMetadata(
-            ValidationMetadata(
-                status: .unverified,
-                validatedDeviceIdentifier: nil,
-                validatedAt: nil
-            )
-        )
         try normalized.write(to: fileURL, options: .atomic)
         try fileProtector.protect(fileURL)
+        try? FileManager.default.removeItem(at: metadataURL)
 
         return PairingRecord(
             deviceIdentifier: inspection.udid,

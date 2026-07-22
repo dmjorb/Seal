@@ -30,10 +30,13 @@ enum SelfAppAccountBinding {
         accounts: [AppleAccountRecord],
         fallbackAccountID: UUID?
     ) -> UUID? {
-        matchedAccountID(
+        guard normalizedTeamIdentifier(teamIdentifier) != nil else {
+            return fallbackAccountID
+        }
+        return matchedAccountID(
             teamIdentifier: teamIdentifier,
             accounts: accounts
-        ) ?? fallbackAccountID
+        )
     }
 
     private static func normalizedTeamIdentifier(_ value: String?) -> String? {

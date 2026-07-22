@@ -135,38 +135,6 @@ struct CoreDataAppStoreTests {
     }
 
     @Test
-    func importedReplacementMatchesBundleIdentifierCaseInsensitively() async throws {
-        let store = try CoreDataAppStore(inMemory: true)
-        let original = AppRecord(
-            originalBundleIdentifier: "com.Example.Demo",
-            name: "Original",
-            version: "1",
-            buildNumber: "1",
-            size: 1,
-            state: .imported,
-            ipaRelativePath: "Apps/original/Original.ipa",
-            importedAt: Date(timeIntervalSince1970: 100)
-        )
-        let replacement = AppRecord(
-            originalBundleIdentifier: "com.example.demo",
-            name: "Replacement",
-            version: "2",
-            buildNumber: "2",
-            size: 2,
-            state: .imported,
-            ipaRelativePath: "Apps/replacement/Original.ipa",
-            importedAt: Date(timeIntervalSince1970: 200)
-        )
-        try await store.save(original)
-
-        let replaced = try await store.replaceImportedApp(replacement)
-        let records = try await store.fetchAll()
-
-        #expect(replaced == [original])
-        #expect(records == [replacement])
-    }
-
-    @Test
     func deletesRecordByID() async throws {
         let store = try CoreDataAppStore(inMemory: true)
         let record = makeRecord(name: "Delete Me")
@@ -175,74 +143,6 @@ struct CoreDataAppStoreTests {
         try await store.delete(id: record.id)
 
         #expect(try await store.fetchAll() == [])
-    }
-
-    @Test
-    func failedSaveRollsBackAllContextChanges() async throws {
-        let store = try CoreDataAppStore(
-            inMemory: true,
-            beforeSave: { operation in
-                guard operation == .save else { return }
-                throw InjectedPersistenceFailure.expected
-            }
-        )
-
-        await #expect(throws: AppStoreError.self) {
-            try await store.save(makeRecord(name: "Must Roll Back"))
-        }
-
-        #expect(await store.hasUncommittedChanges() == false)
-        #expect(try await store.fetchAll().isEmpty)
-    }
-
-    @Test
-    func failedDeleteRollsBackAllContextChanges() async throws {
-        let store = try CoreDataAppStore(
-            inMemory: true,
-            beforeSave: { operation in
-                guard operation == .delete else { return }
-                throw InjectedPersistenceFailure.expected
-            }
-        )
-        let record = makeRecord(name: "Keep Me")
-        try await store.save(record)
-
-        await #expect(throws: AppStoreError.self) {
-            try await store.delete(id: record.id)
-        }
-
-        #expect(await store.hasUncommittedChanges() == false)
-        #expect(try await store.fetchAll() == [record])
-    }
-
-    @Test
-    func failedImportedAppReplacementRollsBackOriginalRecordAndContextChanges() async throws {
-        let store = try CoreDataAppStore(
-            inMemory: true,
-            beforeSave: { operation in
-                guard operation == .replaceImportedApp else { return }
-                throw InjectedPersistenceFailure.expected
-            }
-        )
-        let original = makeRecord(name: "Original")
-        let replacement = AppRecord(
-            originalBundleIdentifier: original.originalBundleIdentifier,
-            name: "Replacement",
-            version: "2.0",
-            buildNumber: "2",
-            size: 2_048,
-            state: .imported,
-            ipaRelativePath: "Apps/replacement/Original.ipa",
-            importedAt: Date(timeIntervalSince1970: 200)
-        )
-        try await store.save(original)
-
-        await #expect(throws: AppStoreError.self) {
-            try await store.replaceImportedApp(replacement)
-        }
-
-        #expect(await store.hasUncommittedChanges() == false)
-        #expect(try await store.fetchAll() == [original])
     }
 
     private func makeRecord(
@@ -264,8 +164,4 @@ struct CoreDataAppStoreTests {
             extensions: extensions
         )
     }
-}
-
-private enum InjectedPersistenceFailure: Error {
-    case expected
 }

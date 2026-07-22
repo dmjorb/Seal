@@ -7,9 +7,11 @@ use std::time::Duration;
 pub fn test_device_connection() -> bool {
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 
-    let port: u16 = 49152;
+    let port: u16;
 
-    // Probe the LocalDevVPN remote-pairing endpoint.
+    port = 62078;
+
+    // Connect to lockdownd's socket
     TcpStream::connect_timeout(
         &SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(10, 7, 0, 1), port)),
         Duration::from_millis(100),

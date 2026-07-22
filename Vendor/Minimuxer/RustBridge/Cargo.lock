@@ -1604,6 +1604,19 @@ dependencies = [
  "plist",
 ]
 
+[[package]]
+name = "plist_plus"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "167429a361cacecf5cab907c235e620b3faf5f36b97d7f72c32907ccdca700cf"
+dependencies = [
+ "autotools",
+ "bindgen",
+ "cc",
+ "libc",
+ "log",
+ "rand 0.8.5",
+]
 
 [[package]]
 name = "poly1305"
@@ -1877,6 +1890,9 @@ dependencies = [
  "log",
  "once_cell",
  "plist",
+ "plist_plus",
+ "rusty_libimobiledevice",
+ "serde_json",
  "tokio",
 ]
 
@@ -1949,6 +1965,21 @@ version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
+[[package]]
+name = "rusty_libimobiledevice"
+version = "0.1.7"
+source = "git+https://github.com/SideStore/rusty_libimobiledevice#6a556c63b6d7f905e17b62d302086c93b0fddef8"
+dependencies = [
+ "autotools",
+ "bindgen",
+ "cc",
+ "cmake",
+ "libc",
+ "log",
+ "plist",
+ "plist_plus",
+ "serde",
+]
 
 [[package]]
 name = "scopeguard"

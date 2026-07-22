@@ -25,41 +25,18 @@ struct StoredOriginalIPA: Sendable {
     let url: URL
 }
 
-struct AppFileCleanupResult: Equatable, Sendable {
-    var skippedAppIDs: Set<UUID> = []
-}
-
-enum AppStorageCleanupPolicy {
-    static func canRemoveImportedRecord(
-        _ app: AppRecord,
-        leasedAppIDs: Set<UUID>
-    ) -> Bool {
-        guard leasedAppIDs.contains(app.id) == false,
-              app.isSeal == false,
-              app.state != .installed,
-              app.lastInstalledAt == nil,
-              app.expiryDate == nil else {
-            return false
-        }
-        return true
-    }
-}
-
 actor AppFileStore {
     private let documentsDirectory: URL
     private let temporaryDirectory: URL
     private let fileProtector: any FileProtecting
-    private let beforeFileOperation: @Sendable (AppFileStoreOperation) throws -> Void
 
     init(
         documentsDirectory: URL,
         cacheDirectory: URL,
-        fileProtector: any FileProtecting = CompleteFileProtector(),
-        beforeFileOperation: @escaping @Sendable (AppFileStoreOperation) throws -> Void = { _ in }
+        fileProtector: any FileProtecting = CompleteFileProtector()
     ) {
         self.documentsDirectory = documentsDirectory.standardizedFileURL
         self.fileProtector = fileProtector
-        self.beforeFileOperation = beforeFileOperation
         temporaryDirectory = cacheDirectory
             .appending(path: "Seal/Temp", directoryHint: .isDirectory)
             .standardizedFileURL
@@ -214,11 +191,11 @@ actor AppFileStore {
         }
     }
 
-    func prepareCommit(
+    func commit(
         staged: StagedIPA,
         appID: UUID,
         iconData: Data?
-    ) throws -> AppFileTransaction {
+    ) throws -> StoredAppFiles {
         try Task.checkCancellation()
         guard isDescendant(staged.url, of: temporaryDirectory) else {
             throw invalidStagedFileFailure()
@@ -242,29 +219,6 @@ actor AppFileStore {
             path: ".\(appDirectoryName).backup-\(UUID().uuidString)",
             directoryHint: .isDirectory
         )
-        let transactionID = UUID()
-        let rollbackNewDirectory = appsRoot.appending(
-            path: ".\(appDirectoryName).rollback-new-\(transactionID.uuidString)",
-            directoryHint: .isDirectory
-        )
-        let hadOriginalFiles = fileManager.fileExists(atPath: finalDirectory.path)
-        let transaction = AppFileTransaction(
-            id: transactionID,
-            files: StoredAppFiles(
-                ipaRelativePath: "Apps/\(appDirectoryName)/Original.ipa",
-                iconRelativePath: iconData == nil
-                    ? nil
-                    : "Apps/\(appDirectoryName)/Icon.png"
-            ),
-            finalURLs: [finalDirectory],
-            backupPairs: hadOriginalFiles
-                ? [.init(original: finalDirectory, backup: backupDirectory)]
-                : [],
-            pendingURL: pendingDirectory,
-            rollbackNewURLs: [rollbackNewDirectory],
-            hadOriginalFiles: hadOriginalFiles
-        )
-        var journalWasWritten = false
 
         do {
             try fileManager.createDirectory(
@@ -281,43 +235,25 @@ actor AppFileStore {
                 try protect(iconURL)
             }
             try protect(pendingDirectory)
-            try writeJournal(
-                TransactionJournal(transaction: transaction, phase: .preparing)
-            )
-            journalWasWritten = true
 
-            if hadOriginalFiles {
+            if fileManager.fileExists(atPath: finalDirectory.path) {
                 try fileManager.moveItem(at: finalDirectory, to: backupDirectory)
             }
-            try fileManager.moveItem(at: pendingDirectory, to: finalDirectory)
-            try updateJournal(transactionID: transaction.id) { journal in
-                journal.phase = .prepared
-            }
-        } catch is CancellationError {
-            if journalWasWritten {
-                do {
-                    try rollback(transaction)
-                } catch {
-                    throw transactionFailure(
-                        reason: "取消后无法恢复文件；恢复操作已记录并将在下次启动重试"
-                    )
+            do {
+                try fileManager.moveItem(at: pendingDirectory, to: finalDirectory)
+            } catch {
+                if fileManager.fileExists(atPath: backupDirectory.path) {
+                    try? fileManager.moveItem(at: backupDirectory, to: finalDirectory)
                 }
-            } else if fileManager.fileExists(atPath: pendingDirectory.path) {
-                try fileManager.removeItem(at: pendingDirectory)
+                throw error
             }
+
+            try? fileManager.removeItem(at: backupDirectory)
+        } catch is CancellationError {
+            try? fileManager.removeItem(at: pendingDirectory)
             throw CancellationError()
         } catch {
-            if journalWasWritten {
-                do {
-                    try rollback(transaction)
-                } catch {
-                    throw transactionFailure(
-                        reason: "保存失败且无法恢复旧文件；恢复操作已记录并将在下次启动重试"
-                    )
-                }
-            } else if fileManager.fileExists(atPath: pendingDirectory.path) {
-                try fileManager.removeItem(at: pendingDirectory)
-            }
+            try? fileManager.removeItem(at: pendingDirectory)
             throw ImportFailure(
                 title: "无法保存 IPA",
                 reason: "本地存储失败",
@@ -326,75 +262,12 @@ actor AppFileStore {
             )
         }
 
-        return transaction
-    }
-
-    func finalize(_ transaction: AppFileTransaction) throws {
-        do {
-            try validate(transaction)
-            try updateJournal(transactionID: transaction.id) { journal in
-                journal.phase = .committed
-            }
-            for pair in transaction.backupPairs
-            where FileManager.default.fileExists(atPath: pair.backup.path) {
-                try beforeFileOperation(.removeBackup)
-                try FileManager.default.removeItem(at: pair.backup)
-            }
-            try removeJournal(transactionID: transaction.id)
-        } catch let failure as ImportFailure {
-            throw failure
-        } catch {
-            throw transactionFailure(
-                reason: "数据库已提交，但旧备份清理失败；清理操作已记录并可重试"
-            )
-        }
-    }
-
-    func setExpectedRecord(
-        _ record: AppRecord,
-        for transaction: AppFileTransaction
-    ) throws {
-        try validate(transaction)
-        try updateJournal(transactionID: transaction.id) { journal in
-            journal.expectedRecord = AppRecordFingerprint(record)
-        }
-    }
-
-    func recoverTransactions(appRecords: [AppRecord]) throws {
-        for journal in try loadJournals() {
-            let transaction = journal.transaction
-            try validate(transaction)
-            let databaseContainsExpectedRecord = journal.expectedRecord.map { expected in
-                appRecords.contains(where: expected.matches)
-            } ?? false
-
-            if journal.phase == .committed || databaseContainsExpectedRecord {
-                try finalize(transaction)
-                continue
-            }
-
-            if journal.phase == .preparing {
-                let backupExists = transaction.backupPairs.contains {
-                    FileManager.default.fileExists(atPath: $0.backup.path)
-                }
-                let pendingExists = FileManager.default.fileExists(
-                    atPath: transaction.pendingURL.path
-                )
-                if transaction.hadOriginalFiles, backupExists == false {
-                    if pendingExists {
-                        try FileManager.default.removeItem(at: transaction.pendingURL)
-                    }
-                    try removeJournal(transactionID: transaction.id)
-                    continue
-                }
-                if transaction.hadOriginalFiles == false, pendingExists {
-                    try FileManager.default.removeItem(at: transaction.pendingURL)
-                    try removeJournal(transactionID: transaction.id)
-                    continue
-                }
-            }
-            try rollback(transaction)
-        }
+        return StoredAppFiles(
+            ipaRelativePath: "Apps/\(appDirectoryName)/Original.ipa",
+            iconRelativePath: iconData == nil
+                ? nil
+                : "Apps/\(appDirectoryName)/Icon.png"
+        )
     }
 
     func cancel(_ staged: StagedIPA) throws {
@@ -407,80 +280,9 @@ actor AppFileStore {
         }
     }
 
-    func rollback(_ transaction: AppFileTransaction) throws {
-        try validate(transaction)
-        let fileManager = FileManager.default
-        try updateJournal(transactionID: transaction.id) { journal in
-            journal.phase = .rollingBack
-        }
-
-        for (index, finalURL) in transaction.finalURLs.enumerated() {
-            let rollbackNewURL = transaction.rollbackNewURLs[index]
-            let backupPair = transaction.backupPairs.first { $0.original == finalURL }
-            let backupExists = backupPair.map {
-                fileManager.fileExists(atPath: $0.backup.path)
-            } ?? false
-
-            if fileManager.fileExists(atPath: rollbackNewURL.path) == false,
-               fileManager.fileExists(atPath: finalURL.path),
-               backupExists || transaction.hadOriginalFiles == false {
-                do {
-                    try beforeFileOperation(.moveNewAside)
-                    try fileManager.moveItem(at: finalURL, to: rollbackNewURL)
-                } catch {
-                    throw transactionFailure(
-                        reason: "无法暂存新文件；恢复操作已记录并可重试"
-                    )
-                }
-            }
-
-            if let backupPair,
-               fileManager.fileExists(atPath: backupPair.backup.path) {
-                do {
-                    try beforeFileOperation(.restoreBackup)
-                    try fileManager.moveItem(at: backupPair.backup, to: backupPair.original)
-                } catch {
-                    if fileManager.fileExists(atPath: finalURL.path) == false,
-                       fileManager.fileExists(atPath: rollbackNewURL.path) {
-                        do {
-                            try beforeFileOperation(.restoreNewFiles)
-                            try fileManager.moveItem(at: rollbackNewURL, to: finalURL)
-                            try updateJournal(transactionID: transaction.id) { journal in
-                                journal.phase = .prepared
-                            }
-                        } catch {
-                            throw transactionFailure(
-                                reason: "旧文件与新文件都无法恢复到正式位置；恢复操作已记录"
-                            )
-                        }
-                    }
-                    throw transactionFailure(
-                        reason: "旧文件恢复失败；新文件已复位，恢复操作可重试"
-                    )
-                }
-            }
-
-            if fileManager.fileExists(atPath: rollbackNewURL.path) {
-                do {
-                    try beforeFileOperation(.removeRollbackNew)
-                    try fileManager.removeItem(at: rollbackNewURL)
-                } catch {
-                    throw transactionFailure(
-                        reason: "旧文件已恢复，但新文件临时副本清理失败；清理可重试"
-                    )
-                }
-            }
-        }
-        if fileManager.fileExists(atPath: transaction.pendingURL.path) {
-            try fileManager.removeItem(at: transaction.pendingURL)
-        }
-        try removeJournal(transactionID: transaction.id)
-    }
-
-    func removeStoredFiles(_ files: StoredAppFiles) throws {
+    func rollback(_ files: StoredAppFiles) throws {
         let ipaURL = documentsDirectory.appending(path: files.ipaRelativePath)
-        let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
-        guard isDescendant(ipaURL, of: appsRoot) else {
+        guard isDescendant(ipaURL, of: documentsDirectory.appending(path: "Apps")) else {
             throw invalidStagedFileFailure()
         }
         let directory = ipaURL.deletingLastPathComponent()
@@ -546,34 +348,10 @@ actor AppFileStore {
         guard isDescendant(destination, of: documentsDirectory) else {
             throw invalidStagedFileFailure()
         }
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.copyItem(at: sourceURL, to: destination)
         try protect(destination)
         return relativePath
-    }
-
-    func restoreSignedIPA(
-        _ data: Data,
-        relativePath: String,
-        appID: UUID
-    ) throws {
-        let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
-        let appRoot = appsRoot.appending(path: appID.uuidString, directoryHint: .isDirectory)
-        let destination = documentsDirectory.appending(path: relativePath).standardizedFileURL
-        guard destination.lastPathComponent == "Signed.ipa",
-              isDescendant(destination, of: appRoot) else {
-            throw invalidStagedFileFailure()
-        }
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try data.write(to: destination, options: .atomic)
-        try protect(destination)
     }
 
     func removeSignedIPA(appID: UUID) throws {
@@ -590,15 +368,10 @@ actor AppFileStore {
         }
     }
 
-    @discardableResult
-    func clearOrphanedAppFiles(
-        validAppIDs: Set<UUID>,
-        preserving protectedAppIDs: Set<UUID> = []
-    ) throws -> AppFileCleanupResult {
+    func clearOrphanedAppFiles(validAppIDs: Set<UUID>) throws {
         let fileManager = FileManager.default
         let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
-        guard fileManager.fileExists(atPath: appsRoot.path) else { return AppFileCleanupResult() }
-        var result = AppFileCleanupResult()
+        guard fileManager.fileExists(atPath: appsRoot.path) else { return }
 
         let directories = try fileManager.contentsOfDirectory(
             at: appsRoot,
@@ -608,24 +381,14 @@ actor AppFileStore {
         for directory in directories {
             let name = directory.lastPathComponent
             if name.hasPrefix(".") {
-                if name == ".transactions"
-                    || name == ".removals"
-                    || name.contains(".removing-") {
-                    continue
-                }
                 try? fileManager.removeItem(at: directory)
                 continue
             }
             guard let appID = UUID(uuidString: name) else { continue }
-            if protectedAppIDs.contains(appID) {
-                result.skippedAppIDs.insert(appID)
-                continue
-            }
             if validAppIDs.contains(appID) == false {
                 try? fileManager.removeItem(at: directory)
             }
         }
-        return result
     }
 
     func removeApp(appID: UUID) throws {
@@ -641,117 +404,11 @@ actor AppFileStore {
         }
     }
 
-    func prepareRemoval(appID: UUID) throws -> AppFileRemovalTransaction {
-        try Task.checkCancellation()
-        let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
-        let originalURL = appsRoot
-            .appending(path: appID.uuidString, directoryHint: .isDirectory)
-            .standardizedFileURL
-        let transactionID = UUID()
-        let tombstoneURL = appsRoot
-            .appending(
-                path: ".\(appID.uuidString).removing-\(transactionID.uuidString)",
-                directoryHint: .isDirectory
-            )
-            .standardizedFileURL
-        let transaction = AppFileRemovalTransaction(
-            id: transactionID,
-            appID: appID,
-            originalURL: originalURL,
-            tombstoneURL: tombstoneURL
-        )
-        try validate(transaction)
-        try writeRemovalJournal(RemovalJournal(transaction: transaction, phase: .preparing))
-
-        do {
-            if FileManager.default.fileExists(atPath: originalURL.path) {
-                try beforeFileOperation(.prepareRemoval)
-                try FileManager.default.moveItem(at: originalURL, to: tombstoneURL)
-            }
-            try updateRemovalJournal(transactionID: transaction.id) { journal in
-                journal.phase = .prepared
-            }
-            return transaction
-        } catch {
-            try? rollbackRemoval(transaction)
-            throw error
-        }
-    }
-
-    func finalizeRemoval(_ transaction: AppFileRemovalTransaction) throws {
-        try validate(transaction)
-        try beforeFileOperation(.finalizeRemoval)
-        try updateRemovalJournal(transactionID: transaction.id) { journal in
-            journal.phase = .committed
-        }
-        let fileManager = FileManager.default
-        if fileManager.fileExists(atPath: transaction.tombstoneURL.path) {
-            try fileManager.removeItem(at: transaction.tombstoneURL)
-        }
-        if fileManager.fileExists(atPath: transaction.originalURL.path) {
-            try fileManager.removeItem(at: transaction.originalURL)
-        }
-        try removeRemovalJournal(transactionID: transaction.id)
-    }
-
-    func rollbackRemoval(_ transaction: AppFileRemovalTransaction) throws {
-        try validate(transaction)
-        let fileManager = FileManager.default
-        let originalExists = fileManager.fileExists(atPath: transaction.originalURL.path)
-        let tombstoneExists = fileManager.fileExists(atPath: transaction.tombstoneURL.path)
-        if tombstoneExists, originalExists == false {
-            try beforeFileOperation(.rollbackRemoval)
-            try fileManager.moveItem(at: transaction.tombstoneURL, to: transaction.originalURL)
-        } else if tombstoneExists, originalExists {
-            throw transactionFailure(reason: "删除回滚检测到冲突目录；恢复操作将在下次启动重试")
-        }
-        try removeRemovalJournal(transactionID: transaction.id)
-    }
-
-    func recoverRemovals(appRecords: [AppRecord]) throws {
-        let existingIDs = Set(appRecords.map(\.id))
-        for journal in try loadRemovalJournals() {
-            if existingIDs.contains(journal.transaction.appID) {
-                try rollbackRemoval(journal.transaction)
-            } else {
-                try finalizeRemoval(journal.transaction)
-            }
-        }
-    }
-
-    @discardableResult
-    func clearTemporaryFiles(
-        excluding protectedAppIDs: Set<UUID> = []
-    ) throws -> AppFileCleanupResult {
+    func clearTemporaryFiles() throws {
         let sealCache = temporaryDirectory.deletingLastPathComponent()
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: sealCache.path) else {
-            return AppFileCleanupResult()
-        }
-        guard protectedAppIDs.isEmpty == false else {
+        if FileManager.default.fileExists(atPath: sealCache.path) {
             try FileManager.default.removeItem(at: sealCache)
-            return AppFileCleanupResult()
         }
-
-        var result = AppFileCleanupResult()
-        if fileManager.fileExists(atPath: temporaryDirectory.path) {
-            result.skippedAppIDs.formUnion(protectedAppIDs)
-        }
-        let signingRoot = sealCache.appending(path: "Signing", directoryHint: .isDirectory)
-        if fileManager.fileExists(atPath: signingRoot.path) {
-            for directory in try fileManager.contentsOfDirectory(
-                at: signingRoot,
-                includingPropertiesForKeys: [.isDirectoryKey]
-            ) {
-                if let appID = UUID(uuidString: directory.lastPathComponent),
-                   protectedAppIDs.contains(appID) {
-                    result.skippedAppIDs.insert(appID)
-                } else {
-                    try fileManager.removeItem(at: directory)
-                }
-            }
-        }
-        return result
     }
 
     func storageUsage() throws -> SettingsStorageUsage {
@@ -778,32 +435,21 @@ actor AppFileStore {
         return usage
     }
 
-    @discardableResult
-    func clearSignedIPAs(
-        excluding protectedAppIDs: Set<UUID> = []
-    ) throws -> AppFileCleanupResult {
+    func clearSignedIPAs() throws {
         let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
-        guard FileManager.default.fileExists(atPath: appsRoot.path) else {
-            return AppFileCleanupResult()
-        }
-        var result = AppFileCleanupResult()
+        guard FileManager.default.fileExists(atPath: appsRoot.path) else { return }
         let directories = try FileManager.default.contentsOfDirectory(
             at: appsRoot,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         )
         for directory in directories {
-            guard let appID = UUID(uuidString: directory.lastPathComponent) else { continue }
+            guard UUID(uuidString: directory.lastPathComponent) != nil else { continue }
             let signedIPA = directory.appending(path: "Signed.ipa")
             if FileManager.default.fileExists(atPath: signedIPA.path) {
-                if protectedAppIDs.contains(appID) {
-                    result.skippedAppIDs.insert(appID)
-                } else {
-                    try FileManager.default.removeItem(at: signedIPA)
-                }
+                try FileManager.default.removeItem(at: signedIPA)
             }
         }
-        return result
     }
 
 
@@ -836,174 +482,6 @@ actor AppFileStore {
         try fileProtector.protect(url)
     }
 
-    private var transactionJournalDirectory: URL {
-        documentsDirectory.appending(
-            path: "Apps/.transactions",
-            directoryHint: .isDirectory
-        )
-    }
-
-    private var removalJournalDirectory: URL {
-        documentsDirectory.appending(
-            path: "Apps/.removals",
-            directoryHint: .isDirectory
-        )
-    }
-
-    private func journalURL(transactionID: UUID) -> URL {
-        transactionJournalDirectory.appending(path: "\(transactionID.uuidString).json")
-    }
-
-    private func removalJournalURL(transactionID: UUID) -> URL {
-        removalJournalDirectory.appending(path: "\(transactionID.uuidString).json")
-    }
-
-    private func writeJournal(_ journal: TransactionJournal) throws {
-        try FileManager.default.createDirectory(
-            at: transactionJournalDirectory,
-            withIntermediateDirectories: true
-        )
-        let data = try JSONEncoder().encode(journal)
-        try data.write(to: journalURL(transactionID: journal.transaction.id), options: .atomic)
-    }
-
-    private func updateJournal(
-        transactionID: UUID,
-        _ update: (inout TransactionJournal) -> Void
-    ) throws {
-        let url = journalURL(transactionID: transactionID)
-        let data = try Data(contentsOf: url)
-        var journal = try JSONDecoder().decode(TransactionJournal.self, from: data)
-        update(&journal)
-        try writeJournal(journal)
-    }
-
-    private func loadJournals() throws -> [TransactionJournal] {
-        guard FileManager.default.fileExists(atPath: transactionJournalDirectory.path) else {
-            return []
-        }
-        return try FileManager.default.contentsOfDirectory(
-            at: transactionJournalDirectory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )
-        .filter { $0.pathExtension == "json" }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        .map { url in
-            try JSONDecoder().decode(
-                TransactionJournal.self,
-                from: Data(contentsOf: url)
-            )
-        }
-    }
-
-    private func removeJournal(transactionID: UUID) throws {
-        let fileManager = FileManager.default
-        let url = journalURL(transactionID: transactionID)
-        if fileManager.fileExists(atPath: url.path) {
-            try fileManager.removeItem(at: url)
-        }
-        guard fileManager.fileExists(atPath: transactionJournalDirectory.path) else { return }
-        let remaining = try fileManager.contentsOfDirectory(
-            at: transactionJournalDirectory,
-            includingPropertiesForKeys: nil
-        )
-        if remaining.isEmpty {
-            try fileManager.removeItem(at: transactionJournalDirectory)
-        }
-    }
-
-    private func writeRemovalJournal(_ journal: RemovalJournal) throws {
-        try FileManager.default.createDirectory(
-            at: removalJournalDirectory,
-            withIntermediateDirectories: true
-        )
-        let data = try JSONEncoder().encode(journal)
-        try data.write(
-            to: removalJournalURL(transactionID: journal.transaction.id),
-            options: .atomic
-        )
-    }
-
-    private func updateRemovalJournal(
-        transactionID: UUID,
-        _ update: (inout RemovalJournal) -> Void
-    ) throws {
-        let url = removalJournalURL(transactionID: transactionID)
-        var journal = try JSONDecoder().decode(
-            RemovalJournal.self,
-            from: Data(contentsOf: url)
-        )
-        update(&journal)
-        try writeRemovalJournal(journal)
-    }
-
-    private func loadRemovalJournals() throws -> [RemovalJournal] {
-        guard FileManager.default.fileExists(atPath: removalJournalDirectory.path) else {
-            return []
-        }
-        return try FileManager.default.contentsOfDirectory(
-            at: removalJournalDirectory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )
-        .filter { $0.pathExtension == "json" }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        .map { url in
-            try JSONDecoder().decode(
-                RemovalJournal.self,
-                from: Data(contentsOf: url)
-            )
-        }
-    }
-
-    private func removeRemovalJournal(transactionID: UUID) throws {
-        let fileManager = FileManager.default
-        let url = removalJournalURL(transactionID: transactionID)
-        if fileManager.fileExists(atPath: url.path) {
-            try fileManager.removeItem(at: url)
-        }
-        guard fileManager.fileExists(atPath: removalJournalDirectory.path) else { return }
-        if try fileManager.contentsOfDirectory(
-            at: removalJournalDirectory,
-            includingPropertiesForKeys: nil
-        ).isEmpty {
-            try fileManager.removeItem(at: removalJournalDirectory)
-        }
-    }
-
-    private func transactionFailure(reason: String) -> ImportFailure {
-        ImportFailure(
-            title: "文件事务恢复未完成",
-            reason: reason,
-            recovery: "重试恢复；若问题持续，请重新打开 Seal",
-            code: "SEAL-IPA-206"
-        )
-    }
-
-    private func validate(_ transaction: AppFileTransaction) throws {
-        let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
-        let urls = transaction.finalURLs + transaction.backupPairs.flatMap {
-            [$0.original, $0.backup]
-        } + transaction.rollbackNewURLs + [transaction.pendingURL]
-        guard transaction.finalURLs.count == transaction.rollbackNewURLs.count,
-              urls.allSatisfy({ isDescendant($0, of: appsRoot) }) else {
-            throw invalidStagedFileFailure()
-        }
-    }
-
-    private func validate(_ transaction: AppFileRemovalTransaction) throws {
-        let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
-        guard isDescendant(transaction.originalURL, of: appsRoot),
-              isDescendant(transaction.tombstoneURL, of: appsRoot),
-              transaction.originalURL.lastPathComponent == transaction.appID.uuidString,
-              transaction.tombstoneURL.lastPathComponent.hasPrefix(
-                ".\(transaction.appID.uuidString).removing-"
-              ) else {
-            throw invalidStagedFileFailure()
-        }
-    }
-
     private func isDescendant(_ candidate: URL, of parent: URL) -> Bool {
         let parentPath = parent.standardizedFileURL.path
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -1018,39 +496,5 @@ actor AppFileStore {
             recovery: "重新选择 IPA",
             code: "SEAL-IPA-204"
         )
-    }
-
-    private struct TransactionJournal: Codable, Sendable {
-        var transaction: AppFileTransaction
-        var phase: Phase
-        var expectedRecord: AppRecordFingerprint?
-
-        init(
-            transaction: AppFileTransaction,
-            phase: Phase,
-            expectedRecord: AppRecordFingerprint? = nil
-        ) {
-            self.transaction = transaction
-            self.phase = phase
-            self.expectedRecord = expectedRecord
-        }
-
-        enum Phase: String, Codable, Sendable {
-            case preparing
-            case prepared
-            case committed
-            case rollingBack
-        }
-    }
-
-    private struct RemovalJournal: Codable, Sendable {
-        enum Phase: String, Codable, Sendable {
-            case preparing
-            case prepared
-            case committed
-        }
-
-        var transaction: AppFileRemovalTransaction
-        var phase: Phase
     }
 }

@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${SEAL_RUST_BRIDGE_PREBUILT:-0}" != "1" ]]; then
-  bash Scripts/build-rust-bridge.sh
-fi
-
 derived_data="$PWD/build/DerivedData"
 product="$derived_data/Build/Products/Release-iphoneos/Seal.app"
 package_root="$PWD/build/package"

@@ -45,12 +45,6 @@ internal func _rust_bridge_idevice_remove_app(
 	_ bundleId: UnsafePointer<Int8>?
 ) -> UnsafeMutablePointer<RustIdeviceFfiError>?
 
-@_silgen_name("rust_bridge_idevice_lookup_app")
-internal func _rust_bridge_idevice_lookup_app(
-    _ bundleId: UnsafePointer<Int8>?,
-    _ installedOut: UnsafeMutablePointer<UInt8>?
-) -> UnsafeMutablePointer<RustIdeviceFfiError>?
-
 @_silgen_name("rust_bridge_idevice_debug_app")
 internal func _rust_bridge_idevice_debug_app(
 	_ appId: UnsafePointer<Int8>?
@@ -81,18 +75,6 @@ internal func _rust_bridge_idevice_dump_provisioning_profile(
 internal func _rust_bridge_idevice_set_rppairing_file(
 	_ pairingFile: UnsafePointer<Int8>?
 ) -> UnsafeMutablePointer<RustIdeviceFfiError>?
-
-@_silgen_name("rust_bridge_idevice_clear_rppairing_state")
-internal func _rust_bridge_idevice_clear_rppairing_state()
-
-@_silgen_name("rust_bridge_idevice_has_rppairing_file")
-internal func _rust_bridge_idevice_has_rppairing_file() -> Bool
-
-@_silgen_name("rust_bridge_idevice_has_cached_rsd_connection")
-internal func _rust_bridge_idevice_has_cached_rsd_connection() -> Bool
-
-@_silgen_name("rust_bridge_idevice_rppairing_generation")
-internal func _rust_bridge_idevice_rppairing_generation() -> UInt64
 
 @_silgen_name("rust_bridge_idevice_mount_personalized_ddi")
 internal func _rust_bridge_idevice_mount_personalized_ddi(
@@ -164,15 +146,6 @@ public class RustIdevice {
 		try rustIdeviceThrowIfNeeded(_rust_bridge_idevice_remove_app(bundleId))
 	}
 
-    public static func lookupApp(bundleId: String) throws -> Bool {
-        var installed: UInt8 = 0
-        let error = withUnsafeMutablePointer(to: &installed) {
-            _rust_bridge_idevice_lookup_app(bundleId, $0)
-        }
-        try rustIdeviceThrowIfNeeded(error)
-        return installed != 0
-    }
-
 	public static func debugApp(appId: String) throws {
 		try rustIdeviceThrowIfNeeded(_rust_bridge_idevice_debug_app(appId))
 	}
@@ -204,22 +177,6 @@ public class RustIdevice {
 		try rustIdeviceThrowIfNeeded(_rust_bridge_idevice_set_rppairing_file(pairingFile))
 	}
 
-	public static func clearRpPairingState() {
-		_rust_bridge_idevice_clear_rppairing_state()
-	}
-
-	public static func hasRpPairingFile() -> Bool {
-		_rust_bridge_idevice_has_rppairing_file()
-	}
-
-	public static func hasCachedRsdConnection() -> Bool {
-		_rust_bridge_idevice_has_cached_rsd_connection()
-	}
-
-	public static func rpPairingGeneration() -> UInt64 {
-		_rust_bridge_idevice_rppairing_generation()
-	}
-
     public static func mountPersonalizedDDI(image: Data, trustcache: Data, manifest: Data) -> Int32 {
         return image.withUnsafeBytes { imgBuf in
             trustcache.withUnsafeBytes { tcBuf in
@@ -235,3 +192,4 @@ public class RustIdevice {
     }
 
 }
+

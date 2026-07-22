@@ -8,7 +8,6 @@ struct AddAccountView: View {
     @State private var email = ""
     @State private var password = ""
     @State private var verificationCode = ""
-    @State private var selectedTeamID: String?
     @State private var authenticationTask: Task<Void, Never>?
     @State private var authenticationFailure: ImportFailure?
     @State private var hasAppeared = false
@@ -23,13 +22,7 @@ struct AddAccountView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 22) {
-                    if let pending = viewModel.pendingAppleAuthentication {
-                        teamSelectionContent(pending)
-                    } else if verificationBroker.isRequested {
-                        verificationContent
-                    } else {
-                        credentialsContent
-                    }
+                    if verificationBroker.isRequested { verificationContent } else { credentialsContent }
                 }
                 .padding(20)
                 .padding(.bottom, 30)
@@ -42,7 +35,7 @@ struct AddAccountView: View {
             .onAppear {
                 guard hasAppeared == false else { return }
                 hasAppeared = true
-                viewModel.cancelPendingAppleAuthentication()
+                verificationBroker.cancel()
             }
             .onDisappear {
                 cancelAuthentication()
@@ -112,56 +105,6 @@ struct AddAccountView: View {
         }
     }
 
-    private func teamSelectionContent(_ pending: PendingAppleAuthentication) -> some View {
-        Group {
-            VStack(spacing: 10) {
-                Image(systemName: "person.3").font(.system(size: 46)).foregroundStyle(Color.sealAccent)
-                Text("选择开发团队").font(.title2.weight(.semibold))
-                Text("Seal 不会自动选择团队。请确认本次签名使用的开发团队。")
-                    .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                Text(pending.maskedEmail).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity).padding(24).glassSurface(cornerRadius: 24)
-
-            VStack(spacing: 10) {
-                ForEach(pending.teams) { team in
-                    Button {
-                        selectedTeamID = team.id
-                    } label: {
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(team.name).font(.headline)
-                                Text(team.isFreeTeam ? "免费个人团队" : team.identifier)
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: selectedTeamID == team.id ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(selectedTeamID == team.id ? Color.sealAccent : Color.secondary)
-                        }
-                        .padding(16)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .glassSurface(cornerRadius: 18)
-                }
-            }
-
-            Button("确认团队") {
-                completeAuthentication(pending)
-            }
-            .sealPrimaryAction()
-            .disabled(selectedTeamID == nil || viewModel.accountPhase == .authenticating)
-
-            Button("使用其他 Apple ID") {
-                selectedTeamID = nil
-                password = ""
-                viewModel.cancelPendingAppleAuthentication()
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-        }
-    }
-
     private var primaryActionDisabled: Bool {
         email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || password.isEmpty || viewModel.accountPhase == .authenticating
     }
@@ -171,18 +114,10 @@ struct AddAccountView: View {
         viewModel.alertFailure = nil
         authenticationFailure = nil
         authenticationTask = Task { @MainActor in
-            let isReadyForTeamSelection = await viewModel.beginAddingAccount(
-                email: email,
-                password: password
-            )
+            let added = await viewModel.addAccount(email: email, password: password, replacing: replacingAccount)
             authenticationTask = nil
-            if isReadyForTeamSelection, Task.isCancelled == false {
-                email = ""
-                password = ""
-                let teams = viewModel.pendingAppleAuthentication?.teams ?? []
-                selectedTeamID = teams.count == 1 ? teams.first?.id : nil
-            } else if Task.isCancelled == false, let failure = viewModel.alertFailure {
-                email = ""
+            if added, Task.isCancelled == false { dismiss() }
+            else if Task.isCancelled == false, let failure = viewModel.alertFailure {
                 verificationCode = ""
                 verificationBroker.cancel()
                 viewModel.alertFailure = nil
@@ -191,33 +126,5 @@ struct AddAccountView: View {
         }
     }
 
-    private func completeAuthentication(_ pending: PendingAppleAuthentication) {
-        guard authenticationTask == nil,
-              let selectedTeamID,
-              let team = pending.teams.first(where: { $0.id == selectedTeamID }) else { return }
-        viewModel.alertFailure = nil
-        authenticationFailure = nil
-        authenticationTask = Task { @MainActor in
-            let added = await viewModel.completeAddingAccount(
-                team: team,
-                replacing: replacingAccount
-            )
-            authenticationTask = nil
-            if added, Task.isCancelled == false {
-                dismiss()
-            } else if Task.isCancelled == false, let failure = viewModel.alertFailure {
-                viewModel.alertFailure = nil
-                authenticationFailure = failure
-            }
-        }
-    }
-
-    private func cancelAuthentication() {
-        authenticationTask?.cancel()
-        authenticationTask = nil
-        selectedTeamID = nil
-        email = ""
-        password = ""
-        viewModel.cancelPendingAppleAuthentication()
-    }
+    private func cancelAuthentication() { authenticationTask?.cancel(); authenticationTask = nil; verificationBroker.cancel() }
 }

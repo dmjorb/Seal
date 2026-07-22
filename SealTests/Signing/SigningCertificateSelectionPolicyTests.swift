@@ -33,29 +33,6 @@ struct SigningCertificateSelectionPolicyTests {
     }
 
     @Test
-    func requestedSerialWithOmittedLeadingZeroResolvesToLocalCertificate() throws {
-        let account = makeAccount(
-            localSerial: "0492CEFA41CB31633BDE03BED94193D9",
-            selectedSerial: "492CEFA41CB31633BDE03BED94193D9"
-        )
-        let app = makeApp(state: .imported)
-
-        #expect(
-            try SigningCertificateSelectionPolicy.resolvedSerialNumber(
-                for: app,
-                account: account,
-                requestedSerialNumber: "492CEFA41CB31633BDE03BED94193D9"
-            ) == "0492CEFA41CB31633BDE03BED94193D9"
-        )
-        #expect(
-            SigningCertificateSelectionPolicy.localAvailabilityMessage(
-                for: app,
-                account: account
-            ) == nil
-        )
-    }
-
-    @Test
     func arbitraryRequestedCertificateCannotOverrideLocalCertificate() throws {
         let account = makeAccount(localSerial: "LOCAL", selectedSerial: "LOCAL")
         let app = makeApp(state: .imported)

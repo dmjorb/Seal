@@ -12,7 +12,6 @@ public enum MinimuxerError: Error {
     case NoDevice
     case NoConnection
     case PairingFile
-    case LegacyPairingUnsupported
 
     case CreateDebug
     case CreateInstproxy
@@ -60,7 +59,6 @@ extension MinimuxerError: CustomStringConvertible {
         case .NoDevice: return "NoDevice"
         case .NoConnection: return "NoConnection"
         case .PairingFile: return "PairingFile"
-        case .LegacyPairingUnsupported: return "LegacyPairingUnsupported"
         case .CreateDebug: return "CreateDebug"
         case .CreateInstproxy: return "CreateInstproxy"
         case .CreateLockdown: return "CreateLockdown"

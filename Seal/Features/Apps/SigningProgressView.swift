@@ -322,9 +322,6 @@ struct SigningProgressView: View {
     }
 
     private func shouldOfferRetry(_ failure: ImportFailure) -> Bool {
-        // The primary action already retries certificate and generic failures.
-        // Never render a second button with the same title/action.
-        if primaryRecoveryTitle(failure) == "重试" { return false }
         if isAuthFailure(failure) || isAppIDFailure(failure) || isPairingFailure(failure) { return false }
         return true
     }

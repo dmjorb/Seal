@@ -15,13 +15,13 @@ enum BatchRefreshEvent: Sendable {
 
 actor RenewalCoordinator {
     private let appStore: any AppStore
-    private let signingCoordinator: any SigningCoordinating
+    private let signingCoordinator: SigningCoordinator
     private let queueStore: RefreshQueueStore
     private let planner: RefreshPlanner
 
     init(
         appStore: any AppStore,
-        signingCoordinator: any SigningCoordinating,
+        signingCoordinator: SigningCoordinator,
         queueStore: RefreshQueueStore,
         planner: RefreshPlanner = RefreshPlanner()
     ) {
@@ -35,27 +35,13 @@ actor RenewalCoordinator {
         try await queueStore.load().filter { $0.state != .completed }.count
     }
 
-    func reconcilePendingSelfRenewal(
-        _ reconciliation: DailyAutoRenewSelfReconciliation
-    ) async throws -> Bool {
-        try await queueStore.reconcileCompleted(
-            appID: reconciliation.appID,
-            sessionID: reconciliation.dayKey
-        )
-    }
-
-    func isBatchCompleted(sessionID: String) async throws -> Bool {
-        try await queueStore.isBatchCompleted(sessionID: sessionID)
-    }
-
     func refreshAll(
-        sessionID: String? = nil,
         progress: @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         let apps = try await appStore.fetchAll()
         let queue = planner.makeQueue(apps: apps)
-        let work = try await queueStore.prepare(with: queue, sessionID: sessionID)
-        return try await process(queue: work, progress: progress)
+        try await queueStore.replace(with: queue)
+        return try await process(queue: queue, progress: progress)
     }
 
     func resume(
@@ -160,7 +146,6 @@ actor RenewalCoordinator {
                     accountID: item.accountID,
                     requestedBundleIdentifier: app.mappedBundleIdentifier ?? app.preferredBundleIdentifier,
                     selectedCertificateSerialNumber: nil,
-                    allowDroppingExtensions: false,
                     progress: { stage in
                         await progress(
                             .appProgress(
@@ -233,6 +218,7 @@ actor RenewalCoordinator {
             }
         }
 
+        try? await queueStore.removeCompleted()
         return BatchRefreshResult(
             total: queue.count,
             succeeded: succeeded,

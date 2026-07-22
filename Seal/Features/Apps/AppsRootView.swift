@@ -263,14 +263,12 @@ struct AppsRootView: View {
                         Button("查看详情") { detailApp = app }
                         if mode == .unsigned {
                             Button(role: .destructive) { pendingDeleteApp = app } label: {
-                                Text(viewModel.isDeleting(appID: app.id) ? "正在删除…" : "删除应用")
+                                Text("删除应用")
                             }
-                            .disabled(viewModel.isDeleting(appID: app.id))
                         } else if mode == .installed, app.isSeal == false, isExpired(app) {
                             Button(role: .destructive) { pendingDeleteApp = app } label: {
-                                Text(viewModel.isDeleting(appID: app.id) ? "正在删除…" : "删除记录")
+                                Text("删除记录")
                             }
-                            .disabled(viewModel.isDeleting(appID: app.id))
                         }
                     }
 

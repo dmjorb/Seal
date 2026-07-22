@@ -4,19 +4,18 @@ import Testing
 
 struct AppRecordRecoveryTests {
     @Test
-    func restoresAnImportedRecordFromAPreservedOriginalIPA() async throws {
+    func restoresAnInstalledRecordFromAPreservedOriginalIPA() async throws {
         let environment = try makeEnvironment()
         defer { try? FileManager.default.removeItem(at: environment.root) }
         let source = try IPAArchiveFixture.make()
         defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
         let appID = UUID()
         let staged = try await environment.fileStore.stage(sourceURL: source)
-        let transaction = try await environment.fileStore.prepareCommit(
+        _ = try await environment.fileStore.commit(
             staged: staged,
             appID: appID,
             iconData: nil
         )
-        try await environment.fileStore.finalize(transaction)
 
         try await AppRecordRecovery(
             appStore: environment.appStore,
@@ -27,9 +26,7 @@ struct AppRecordRecoveryTests {
         let restored = try #require(records.first)
         #expect(restored.id == appID)
         #expect(restored.originalBundleIdentifier == "com.example.demo")
-        #expect(restored.state == .imported)
-        #expect(restored.expiryDate == nil)
-        #expect(restored.lastInstalledAt == nil)
+        #expect(restored.state == .installed)
         #expect(restored.accountID == nil)
     }
 
@@ -44,20 +41,17 @@ struct AppRecordRecoveryTests {
         let staleAppID = UUID()
         let currentAppID = UUID()
         let staged = try await environment.fileStore.stage(sourceURL: source)
-        let staleTransaction = try await environment.fileStore.prepareCommit(
+        _ = try await environment.fileStore.commit(
             staged: staged,
             appID: staleAppID,
             iconData: nil
         )
-        try await environment.fileStore.finalize(staleTransaction)
         let currentStaged = try await environment.fileStore.stage(sourceURL: source)
-        let currentTransaction = try await environment.fileStore.prepareCommit(
+        let files = try await environment.fileStore.commit(
             staged: currentStaged,
             appID: currentAppID,
             iconData: nil
         )
-        let files = currentTransaction.files
-        try await environment.fileStore.finalize(currentTransaction)
         try await environment.appStore.save(
             AppRecord(
                 originalBundleIdentifier: "com.mjorb.seal",

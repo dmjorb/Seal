@@ -16,11 +16,7 @@ actor AppRecordRecovery {
     }
 
     func restoreMissingRecords() async throws {
-        var existing = try await appStore.fetchAll()
-        try await fileStore.recoverRemovals(appRecords: existing)
-        existing = try await appStore.fetchAll()
-        try await fileStore.recoverTransactions(appRecords: existing)
-        existing = try await appStore.fetchAll()
+        let existing = try await appStore.fetchAll()
         let storedIPAs = try await fileStore.storedOriginalIPAs()
         for stored in storedIPAs {
             guard existing.contains(where: { $0.ipaRelativePath == stored.relativePath }) == false else {
@@ -44,9 +40,7 @@ actor AppRecordRecovery {
                 version: parsed.version,
                 buildNumber: parsed.buildNumber,
                 size: size,
-                state: .imported,
-                expiryDate: nil,
-                lastInstalledAt: nil,
+                state: .installed,
                 ipaRelativePath: stored.relativePath,
                 isPinned: false,
                 importedAt: Date(),

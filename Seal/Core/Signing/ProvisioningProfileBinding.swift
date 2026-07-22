@@ -40,9 +40,9 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
                 code: "SEAL-PROFILE-312"
             )
         }
-        guard certificateSerialNumbers.contains(where: {
-            CertificateSerial.matches($0, expectedCertificateSerialNumber)
-        }) else {
+        let normalizedExpectedSerial = Self.normalizedSerial(expectedCertificateSerialNumber)
+        let normalizedSerials = Set(certificateSerialNumbers.map(Self.normalizedSerial))
+        guard normalizedSerials.contains(normalizedExpectedSerial) else {
             throw Self.failure(
                 reason: "描述文件不包含当前签名证书。当前 Serial：\(expectedCertificateSerialNumber)。",
                 code: "SEAL-PROFILE-313"
@@ -115,6 +115,9 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
         )
     }
 
+    private static func normalizedSerial(_ value: String) -> String {
+        value.filter(\.isHexDigit).uppercased()
+    }
 
     private static func failure(reason: String, code: String) -> ImportFailure {
         ImportFailure(

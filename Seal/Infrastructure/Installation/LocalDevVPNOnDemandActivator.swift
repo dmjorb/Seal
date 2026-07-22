@@ -30,10 +30,9 @@ struct LocalDevVPNOnDemandActivator: VPNOnDemandActivating {
     }
 
     private func probe(_ endpoint: ProbeEndpoint, timeoutMilliseconds: Int) async -> Bool {
-        guard let port = NWEndpoint.Port(rawValue: endpoint.port) else { return false }
         let connection = NWConnection(
             host: NWEndpoint.Host(endpoint.host),
-            port: port,
+            port: NWEndpoint.Port(rawValue: endpoint.port)!,
             using: .tcp
         )
         let completion = ProbeCompletion()

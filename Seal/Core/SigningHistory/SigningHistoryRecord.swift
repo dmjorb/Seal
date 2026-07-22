@@ -203,11 +203,9 @@ struct SigningHistoryRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     var attemptedDisplayBundleIdentifier: String {
-        guard let attemptedBundleIdentifier,
-              attemptedBundleIdentifier.isEmpty == false else {
-            return displayBundleIdentifier
-        }
-        return attemptedBundleIdentifier
+        attemptedBundleIdentifier?.isEmpty == false
+            ? attemptedBundleIdentifier!
+            : displayBundleIdentifier
     }
 
     var versionDisplay: String {
@@ -256,12 +254,10 @@ struct SigningHistorySummary: Equatable, Sendable {
                 && (record.expiryDate ?? .distantPast) > now
         }.count
         expired = records.filter { record in
-            guard record.result == .success,
-                  record.lifecycleStatus != .deleted,
-                  let expiryDate = record.expiryDate else {
-                return false
-            }
-            return expiryDate <= now
+            record.result == .success
+                && record.lifecycleStatus != .deleted
+                && record.expiryDate != nil
+                && record.expiryDate! <= now
         }.count
         latestSignedAt = records.map(\.signedAt).max()
         deleted = records.filter { $0.lifecycleStatus == .deleted }.count

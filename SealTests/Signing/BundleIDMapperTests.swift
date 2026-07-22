@@ -1,4 +1,3 @@
-import Foundation
 import Testing
 @testable import Seal
 
@@ -36,43 +35,6 @@ struct BundleIDMapperTests {
                 teamID: "TEAM1",
                 requested: "com.example.demo.custom"
             ) == "com.example.demo.custom"
-        )
-    }
-
-    @Test
-    func blankRequestedBundleIdentifierFallsBackToNormalizedSealSuffix() {
-        let mapper = BundleIDMapper()
-
-        #expect(
-            mapper.mainBundleID(
-                original: "  com.example.demo  ",
-                teamID: "TEAM1",
-                requested: "   "
-            ) == "com.example.demo.seal"
-        )
-        #expect(
-            BundleIDPolicy.recommendedBundleIdentifier(for: "  com.example.demo  ")
-                == "com.example.demo.seal"
-        )
-    }
-
-    @Test
-    func policyUsesSealSuffixForNewImportWithoutExplicitOverride() throws {
-        let imported = AppRecord(
-            originalBundleIdentifier: "com.example.demo",
-            mappedBundleIdentifier: nil,
-            name: "Demo",
-            version: "1.0",
-            buildNumber: "1",
-            size: 1,
-            state: .imported,
-            ipaRelativePath: "Apps/demo.ipa",
-            importedAt: Date()
-        )
-
-        #expect(
-            try BundleIDPolicy.targetBundleIdentifier(for: imported)
-                == "com.example.demo.seal"
         )
     }
 

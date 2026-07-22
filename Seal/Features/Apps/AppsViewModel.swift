@@ -36,28 +36,25 @@ final class AppsViewModel: ObservableObject {
     @Published var requestedSettingsRoute: SettingsRoute?
     @Published private(set) var signingChannelStatus: SigningChannelStatus = .idle
     @Published private(set) var autoRenewInProgress = false
-    @Published private(set) var deletingAppIDs: Set<UUID> = []
 
     private let workflow: ImportWorkflow?
     private let appStore: (any AppStore)?
     private let fileStore: AppFileStore?
     private let accountRepository: (any AccountRepository)?
-    private let signingCoordinator: (any SigningCoordinating)?
+    private let signingCoordinator: SigningCoordinator?
     private let installChannel: (any InstallChannel)?
     private let renewalCoordinator: RenewalCoordinator?
     private let appRecordRecovery: AppRecordRecovery?
-    private let selfAppRegistrar: (any SelfAppRegistering)?
+    private let selfAppRegistrar: SelfAppRegistrar?
     private let logStore: SealLogStore?
     private let signingHistoryStore: SigningHistoryStore?
     private let notificationScheduler: ExpiryNotificationScheduler?
     private let notificationPreferences: NotificationPreferences?
     private let signingPreferenceStore: SigningPreferenceStore?
-    private let operationCoordinator: AppOperationCoordinator
     private let dailyAutoRenewStateStore: DailyAutoRenewStateStore
     private var signingTask: Task<Void, Never>?
     private var batchRefreshTask: Task<Void, Never>?
     private var channelTask: Task<Bool, Never>?
-    private var importLease: AppOperationCoordinator.Lease?
     private var pendingVPNAction: PendingVPNAction?
     private var currentAutoRenewDayKey: String?
     private var hasLoaded = false
@@ -82,13 +79,12 @@ final class AppsViewModel: ObservableObject {
         installChannel: any InstallChannel,
         renewalCoordinator: RenewalCoordinator,
         appRecordRecovery: AppRecordRecovery,
-        selfAppRegistrar: (any SelfAppRegistering)?,
+        selfAppRegistrar: SelfAppRegistrar?,
         logStore: SealLogStore,
         signingHistoryStore: SigningHistoryStore,
         notificationScheduler: ExpiryNotificationScheduler,
         notificationPreferences: NotificationPreferences,
-        signingPreferenceStore: SigningPreferenceStore,
-        operationCoordinator: AppOperationCoordinator
+        signingPreferenceStore: SigningPreferenceStore
     ) {
         self.workflow = workflow
         self.appStore = appStore
@@ -104,42 +100,7 @@ final class AppsViewModel: ObservableObject {
         self.notificationScheduler = notificationScheduler
         self.notificationPreferences = notificationPreferences
         self.signingPreferenceStore = signingPreferenceStore
-        self.operationCoordinator = operationCoordinator
         self.dailyAutoRenewStateStore = DailyAutoRenewStateStore()
-        apps = []
-        accounts = []
-        iconData = [:]
-        phase = .idle
-        isImportSheetPresented = false
-    }
-
-    init(
-        workflow: ImportWorkflow,
-        appStore: any AppStore,
-        fileStore: AppFileStore,
-        accountRepository: any AccountRepository,
-        appRecordRecovery: AppRecordRecovery?,
-        selfAppRegistrar: (any SelfAppRegistering)?,
-        operationCoordinator: AppOperationCoordinator,
-        installChannel: (any InstallChannel)? = nil,
-        signingCoordinator: (any SigningCoordinating)? = nil
-    ) {
-        self.workflow = workflow
-        self.appStore = appStore
-        self.fileStore = fileStore
-        self.accountRepository = accountRepository
-        self.signingCoordinator = signingCoordinator
-        self.installChannel = installChannel
-        renewalCoordinator = nil
-        self.appRecordRecovery = appRecordRecovery
-        self.selfAppRegistrar = selfAppRegistrar
-        logStore = nil
-        signingHistoryStore = nil
-        notificationScheduler = nil
-        notificationPreferences = nil
-        signingPreferenceStore = nil
-        self.operationCoordinator = operationCoordinator
-        dailyAutoRenewStateStore = DailyAutoRenewStateStore()
         apps = []
         accounts = []
         iconData = [:]
@@ -162,7 +123,6 @@ final class AppsViewModel: ObservableObject {
         notificationScheduler = nil
         notificationPreferences = nil
         signingPreferenceStore = nil
-        operationCoordinator = AppOperationCoordinator()
         dailyAutoRenewStateStore = DailyAutoRenewStateStore()
         apps = []
         accounts = []
@@ -187,7 +147,6 @@ final class AppsViewModel: ObservableObject {
         notificationScheduler = nil
         notificationPreferences = nil
         signingPreferenceStore = nil
-        operationCoordinator = AppOperationCoordinator()
         dailyAutoRenewStateStore = DailyAutoRenewStateStore()
         self.apps = apps
         accounts = []
@@ -280,7 +239,8 @@ final class AppsViewModel: ObservableObject {
         signingChannelStatus = .connecting
         let task = Task {
             do {
-                return try await installChannel.withStartedChannel { _ in true }
+                _ = try await installChannel.start()
+                return true
             } catch {
                 return false
             }
@@ -295,19 +255,7 @@ final class AppsViewModel: ObservableObject {
     func load(force: Bool = false) async {
         guard force || hasLoaded == false, let appStore else { return }
         do {
-            if let selfAppRegistrar {
-                do {
-                    try await selfAppRegistrar.ensureRegistered()
-                } catch is CancellationError {
-                    return
-                } catch let failure as ImportFailure {
-                    alertFailure = failure
-                    return
-                } catch {
-                    alertFailure = Self.selfRegistrationFailure
-                    return
-                }
-            }
+            try? await selfAppRegistrar?.ensureRegistered()
             try? await appRecordRecovery?.restoreMissingRecords()
             let fetched = try await appStore.fetchAll()
             let fetchedAccounts = try await accountRepository?.fetchAll() ?? []
@@ -355,21 +303,13 @@ final class AppsViewModel: ObservableObject {
 
     func performLightweightLaunchCheck() async {
         await load(force: true)
-        let selfApp = apps.first(where: \.isSeal)
-        let reconciliation = dailyAutoRenewStateStore.reconcilePendingSelfRenewal(
-            currentExpiry: SelfAppMetadata.current()?.expirationDate,
-            currentProvisioningExpiry: selfApp?.provisioningProfileExpirationDate,
-            currentLastSignedAt: selfApp?.lastSignedAt,
-            currentLastInstalledAt: selfApp?.lastInstalledAt
+        dailyAutoRenewStateStore.reconcilePendingSelfRenewal(
+            currentExpiry: SelfAppMetadata.current()?.expirationDate
         )
-        if let reconciliation,
-           let renewalCoordinator,
-           (try? await renewalCoordinator.reconcilePendingSelfRenewal(reconciliation)) == true {
-            dailyAutoRenewStateStore.markCompleted(dayKey: reconciliation.dayKey)
-        }
     }
 
     func startDailyAutoRenewIfNeeded(now: Date = Date()) async {
+        await performLightweightLaunchCheck()
         guard autoRenewInProgress == false,
               signingTask == nil,
               batchRefreshTask == nil,
@@ -426,7 +366,7 @@ final class AppsViewModel: ObservableObject {
     }
 
     func importSelectedFile(_ url: URL) async {
-        guard let workflow, phase == .idle, importLease == nil else { return }
+        guard let workflow, phase == .idle else { return }
         let hasSecurityScope = url.startAccessingSecurityScopedResource()
         defer {
             if hasSecurityScope {
@@ -438,13 +378,6 @@ final class AppsViewModel: ObservableObject {
         sheetFailure = nil
         isImportSheetPresented = false
         phase = .preparing
-        do {
-            importLease = try await operationCoordinator.acquire(appID: nil, kind: .importing)
-        } catch {
-            phase = .idle
-            alertFailure = Self.operationBusyFailure
-            return
-        }
         await workflow.prepare(sourceURL: url)
         await consumeWorkflowState()
     }
@@ -466,38 +399,14 @@ final class AppsViewModel: ObservableObject {
         phase = .committing
         sheetFailure = nil
         isImportSheetPresented = true
-        do {
-            if importLease == nil {
-                importLease = try await operationCoordinator.acquire(
-                    appID: draft.appID,
-                    kind: .importing
-                )
-            }
-        } catch {
-            phase = .idle
-            sheetFailure = Self.operationBusyFailure
-            return
-        }
         await workflow.confirm(preferredDraft: draft)
         await consumeWorkflowState()
     }
 
     func retryImport() async {
-        guard let workflow, let draft = sheetDraft else { return }
+        guard let workflow, sheetDraft != nil else { return }
         phase = .committing
         sheetFailure = nil
-        do {
-            if importLease == nil {
-                importLease = try await operationCoordinator.acquire(
-                    appID: draft.appID,
-                    kind: .importing
-                )
-            }
-        } catch {
-            phase = .idle
-            sheetFailure = Self.operationBusyFailure
-            return
-        }
         await workflow.retry()
         await consumeWorkflowState()
     }
@@ -510,7 +419,6 @@ final class AppsViewModel: ObservableObject {
         sheetFailure = nil
         isImportSheetPresented = false
         phase = .idle
-        await releaseImportLease()
     }
 
     func handleImporterFailure(_ error: Error) {
@@ -675,12 +583,8 @@ final class AppsViewModel: ObservableObject {
     func selectAccount(_ account: AppleAccountRecord, for app: AppRecord) {
         accountSelectionApp = nil
         Task { [weak self] in
-            do {
-                try await Task.sleep(for: .milliseconds(350))
-                try Task.checkCancellation()
-            } catch {
-                return
-            }
+            try? await Task.sleep(for: .milliseconds(350))
+            guard Task.isCancelled == false else { return }
             await self?.selectActiveAccount(id: account.id)
             self?.startSigning(app: app, account: account)
         }
@@ -718,10 +622,9 @@ final class AppsViewModel: ObservableObject {
 
 
     func cancelSigning() {
-        guard let signingTask,
-              case .running = signingSession?.status else { return }
-        signingSession?.cancellationRequested = true
-        signingTask.cancel()
+        signingTask?.cancel()
+        signingSession = nil
+        selectedOperationApp = nil
     }
 
     func dismissSigningResult() {
@@ -733,25 +636,14 @@ final class AppsViewModel: ObservableObject {
 
     func delete(_ app: AppRecord) async -> Bool {
         guard let appStore, let fileStore else { return false }
-        guard deletingAppIDs.contains(app.id) == false else { return false }
-        deletingAppIDs.insert(app.id)
-        defer { deletingAppIDs.remove(app.id) }
-        let signingHistoryStore = self.signingHistoryStore
         do {
-            try await operationCoordinator.withLease(appID: app.id, kind: .cleaning) { _ in
-                let removal = try await fileStore.prepareRemoval(appID: app.id)
-                do {
-                    try await appStore.delete(id: app.id)
-                } catch {
-                    do {
-                        try await fileStore.rollbackRemoval(removal)
-                    } catch let rollbackError {
-                        throw rollbackError
-                    }
-                    throw error
-                }
-                try await fileStore.finalizeRemoval(removal)
+            try await appStore.delete(id: app.id)
+            do {
+                try await fileStore.removeApp(appID: app.id)
                 try? await signingHistoryStore?.markDeleted(appID: app.id)
+            } catch {
+                try? await appStore.save(app)
+                throw error
             }
             await load(force: true)
             return true
@@ -764,10 +656,6 @@ final class AppsViewModel: ObservableObject {
             )
             return false
         }
-    }
-
-    func isDeleting(appID: UUID) -> Bool {
-        deletingAppIDs.contains(appID)
     }
 
     func refreshAll() {
@@ -896,16 +784,10 @@ final class AppsViewModel: ObservableObject {
             } else if resume {
                 try await renewalCoordinator.resume(progress: progress)
             } else {
-                try await renewalCoordinator.refreshAll(
-                    sessionID: dailyAutoRenewDayKey,
-                    progress: progress
-                )
+                try await renewalCoordinator.refreshAll(progress: progress)
             }
             if result.total == 0 {
-                if let dailyAutoRenewDayKey,
-                   (try? await renewalCoordinator.isBatchCompleted(
-                       sessionID: dailyAutoRenewDayKey
-                   )) == true {
+                if let dailyAutoRenewDayKey {
                     dailyAutoRenewStateStore.markCompleted(dayKey: dailyAutoRenewDayKey)
                 }
                 batchRefreshSession = nil
@@ -926,11 +808,7 @@ final class AppsViewModel: ObservableObject {
                 }
             } else {
                 batchRefreshSession?.status = .completed(result)
-                if let dailyAutoRenewDayKey,
-                   result.failed == 0,
-                   (try? await renewalCoordinator.isBatchCompleted(
-                       sessionID: dailyAutoRenewDayKey
-                   )) == true {
+                if let dailyAutoRenewDayKey, result.failed == 0 {
                     dailyAutoRenewStateStore.markCompleted(dayKey: dailyAutoRenewDayKey)
                 }
                 try? await logStore?.append(
@@ -979,11 +857,7 @@ final class AppsViewModel: ObservableObject {
                let currentAutoRenewDayKey {
                 dailyAutoRenewStateStore.markPendingSelfRenewal(
                     dayKey: currentAutoRenewDayKey,
-                    appID: app.id,
-                    previousExpiry: SelfAppMetadata.current()?.expirationDate,
-                    previousProvisioningExpiry: app.provisioningProfileExpirationDate,
-                    previousLastSignedAt: app.lastSignedAt,
-                    previousLastInstalledAt: app.lastInstalledAt
+                    previousExpiry: SelfAppMetadata.current()?.expirationDate
                 )
             }
         case .appSucceeded(let index, let total, let app):
@@ -1067,7 +941,6 @@ final class AppsViewModel: ObservableObject {
               batchRefreshTask == nil,
               signingCoordinator != nil else { return }
         signingSession?.allowsDroppingExtensions = allowDroppingExtensions
-        signingSession?.cancellationRequested = false
         signingSession?.status = .running(.waitingForChannel)
         signingTask = Task { [weak self] in
             await self?.runSigning(
@@ -1122,7 +995,6 @@ final class AppsViewModel: ObservableObject {
             await load(force: true)
         } catch is CancellationError {
             signingSession = nil
-            selectedOperationApp = nil
         } catch let failure as ImportFailure {
             signingSession?.status = .failed(failure)
             try? await logStore?.append(
@@ -1222,35 +1094,18 @@ final class AppsViewModel: ObservableObject {
         return fetchedAccounts?.first { $0.id == accountID }
     }
 
-    func cleanTemporaryFilesIfNeeded(appID: UUID? = nil) async {
+    private func cleanTemporaryFilesIfNeeded(appID: UUID? = nil) async {
         guard UserDefaults.standard.bool(forKey: "behavior.deleteIPAAfterInstall"),
               let fileStore else { return }
-        let coordinator = operationCoordinator
-        let appStore = self.appStore
         do {
-            try await coordinator.withLease(appID: nil, kind: .cleaning) { _ in
-                let protectedAppIDs = await coordinator.snapshot()
-                try await fileStore.clearTemporaryFiles(excluding: protectedAppIDs)
+            try await fileStore.clearTemporaryFiles()
 
-                if let appID {
-                    guard protectedAppIDs.contains(appID) == false else { return }
-                    try await fileStore.removeSignedIPA(appID: appID)
-                    guard let appStore else { return }
-                    var apps = try await appStore.fetchAll()
-                    guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
-                    apps[index].signedIPARelativePath = nil
-                    try await appStore.save(apps[index])
-                } else {
-                    try await fileStore.clearSignedIPAs(excluding: protectedAppIDs)
-                    guard let appStore else { return }
-                    var apps = try await appStore.fetchAll()
-                    for index in apps.indices
-                    where apps[index].signedIPARelativePath != nil
-                        && protectedAppIDs.contains(apps[index].id) == false {
-                        apps[index].signedIPARelativePath = nil
-                        try await appStore.save(apps[index])
-                    }
-                }
+            if let appID {
+                try await fileStore.removeSignedIPA(appID: appID)
+                try await clearStoredSignedIPAPath(appID: appID)
+            } else {
+                try await fileStore.clearSignedIPAs()
+                try await clearAllStoredSignedIPAPaths()
             }
 
             try? await logStore?.append(
@@ -1264,6 +1119,23 @@ final class AppsViewModel: ObservableObject {
                 message: "安装完成后清理签名缓存失败",
                 code: "SEAL-STORAGE-001"
             )
+        }
+    }
+
+    private func clearStoredSignedIPAPath(appID: UUID) async throws {
+        guard let appStore else { return }
+        var apps = try await appStore.fetchAll()
+        guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
+        apps[index].signedIPARelativePath = nil
+        try await appStore.save(apps[index])
+    }
+
+    private func clearAllStoredSignedIPAPaths() async throws {
+        guard let appStore else { return }
+        var apps = try await appStore.fetchAll()
+        for index in apps.indices where apps[index].signedIPARelativePath != nil {
+            apps[index].signedIPARelativePath = nil
+            try await appStore.save(apps[index])
         }
     }
 
@@ -1292,25 +1164,15 @@ final class AppsViewModel: ObservableObject {
         switch workflowState {
         case .idle:
             phase = .idle
-            await releaseImportLease()
         case .preparing:
             phase = .preparing
         case .awaitingConfirmation(let draft):
             sheetDraft = draft
             sheetFailure = nil
-            isImportSheetPresented = true
-            phase = .idle
-            if let importLease {
-                do {
-                    try await operationCoordinator.associate(importLease, with: draft.appID)
-                } catch {
-                    await workflow.cancel()
-                    await releaseImportLease()
-                    sheetDraft = nil
-                    isImportSheetPresented = false
-                    alertFailure = Self.operationBusyFailure
-                }
-            }
+            isImportSheetPresented = false
+            phase = .committing
+            await workflow.confirm(preferredDraft: draft)
+            await consumeWorkflowState()
         case .committing(let draft):
             phase = .committing
             sheetDraft = draft
@@ -1320,25 +1182,17 @@ final class AppsViewModel: ObservableObject {
             sheetDraft = nil
             sheetFailure = nil
             isImportSheetPresented = false
-            await releaseImportLease()
             await load(force: true)
             importCompletionCount += 1
         case .failed(let failure):
             phase = .idle
             if sheetDraft == nil {
-                await releaseImportLease()
                 alertFailure = failure
             } else {
                 sheetFailure = failure
                 isImportSheetPresented = true
             }
         }
-    }
-
-    private func releaseImportLease() async {
-        guard let lease = importLease else { return }
-        importLease = nil
-        await lease.release()
     }
 
     static func uiTestModel(arguments: [String]) -> AppsViewModel? {
@@ -1395,19 +1249,5 @@ final class AppsViewModel: ObservableObject {
         reason: "本地数据读取失败",
         recovery: "重试",
         code: "SEAL-APP-002"
-    )
-
-    private static let operationBusyFailure = ImportFailure(
-        title: "应用操作正忙",
-        reason: "另一个导入、签名或清理任务正在使用相关文件。",
-        recovery: "稍后重试",
-        code: "SEAL-APP-004"
-    )
-
-    private static let selfRegistrationFailure = ImportFailure(
-        title: "无法登记 Seal",
-        reason: "账号或应用记录暂时不可读。",
-        recovery: "重试",
-        code: "SEAL-SELF-REG-001"
     )
 }

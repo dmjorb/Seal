@@ -49,12 +49,12 @@ enum SigningCertificateSelectionPolicy {
         let local = normalized(account.certificateSerialNumber)
         if let requested = normalized(requestedSerialNumber),
            let local,
-           CertificateSerial.matches(requested, local) {
+           requested.caseInsensitiveCompare(local) == .orderedSame {
             return local
         }
         if let selected = normalized(account.selectedCertificateSerialNumber),
            let local,
-           CertificateSerial.matches(selected, local) {
+           selected.caseInsensitiveCompare(local) == .orderedSame {
             return local
         }
         return local
@@ -73,7 +73,7 @@ enum SigningCertificateSelectionPolicy {
         }
         guard let selected = normalized(account.selectedCertificateSerialNumber) else { return nil }
         guard let local = normalized(account.certificateSerialNumber),
-              CertificateSerial.matches(selected, local) else {
+              selected.caseInsensitiveCompare(local) == .orderedSame else {
             return "本机没有所选证书对应的私钥，将在签名时自动处理证书。"
         }
         return nil

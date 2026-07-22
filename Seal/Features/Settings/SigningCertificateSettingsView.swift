@@ -52,7 +52,7 @@ struct SigningCertificateSettingsView: View {
     private var accountCard: some View {
         VStack(spacing: 0) {
             if let account = activeAccount {
-                detailRow("Apple ID", account.maskedEmail)
+                detailRow("Apple ID", viewModel.fullEmail(for: account))
                 Divider()
                 detailRow("Team", account.teamName)
                 Divider()

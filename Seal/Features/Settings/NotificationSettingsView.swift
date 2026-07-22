@@ -17,11 +17,10 @@ struct NotificationSettingsView: View {
                     Spacer()
                     Toggle("", isOn: Binding(
                         get: { viewModel.notificationsEnabled },
-                        set: { viewModel.submitNotificationsEnabled($0) }
+                        set: { enabled in Task { await viewModel.setNotificationsEnabled(enabled) } }
                     ))
                     .labelsHidden()
                     .tint(.sealAccent)
-                    .disabled(viewModel.isNotificationOperationRunning)
                 }
                 .padding(18)
                 .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))

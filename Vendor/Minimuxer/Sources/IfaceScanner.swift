@@ -6,55 +6,34 @@
 //  Copyright © 2026 SideStore. All rights reserved.
 //
 
+
 import Foundation
-#if canImport(Darwin)
 import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
 
 // MARK: - IPv4 helpers
 
 @inline(__always)
 private func ipv4String(_ value: UInt32) -> String? {
     var addr = in_addr(s_addr: value.bigEndian)
-    var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-    guard inet_ntop(AF_INET, &addr, &buffer, UInt32(INET_ADDRSTRLEN)) != nil else {
-        return nil
-    }
-    return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+    guard inet_ntop(AF_INET, &addr, &buf, UInt32(INET_ADDRSTRLEN)) != nil else { return nil }
+    return String(cString: buf)
 }
 
 @inline(__always)
-private func sockaddrIPv4(_ address: inout sockaddr) -> UInt32? {
-    var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-    #if canImport(Darwin)
-    let addressLength = socklen_t(address.sa_len)
-    #else
-    let addressLength = socklen_t(MemoryLayout<sockaddr>.size)
-    #endif
-
-    guard getnameinfo(
-        &address,
-        addressLength,
-        &buffer,
-        socklen_t(buffer.count),
-        nil,
-        0,
-        NI_NUMERICHOST
-    ) == 0 else {
-        return nil
-    }
-
-    let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-    let string = String(decoding: bytes, as: UTF8.self)
-    var parsed = in_addr()
-    return inet_pton(AF_INET, string, &parsed) == 1 ? parsed.s_addr.bigEndian : nil
+private func sockaddrIPv4(_ sa: inout sockaddr) -> UInt32? {
+    var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+    guard getnameinfo(&sa, socklen_t(sa.sa_len), &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0,
+          let s = String(validatingUTF8: buf) else { return nil }
+    var a = in_addr()
+    return inet_pton(AF_INET, s, &a) == 1 ? a.s_addr.bigEndian : nil
 }
 
 // MARK: - NetInfo
 
-public struct NetInfo: Hashable, CustomStringConvertible, Sendable {
+
+public struct NetInfo: Hashable, CustomStringConvertible {
+
     public let name: String
     public let hostIP: String
     public let maskIP: String
@@ -63,26 +42,25 @@ public struct NetInfo: Hashable, CustomStringConvertible, Sendable {
     fileprivate let mask: UInt32
 
     init?(ifa: ifaddrs) {
-        guard let name = String(utf8String: ifa.ifa_name),
-              var address = ifa.ifa_addr?.pointee,
-              var netmask = ifa.ifa_netmask?.pointee,
-              let host = sockaddrIPv4(&address),
-              let mask = sockaddrIPv4(&netmask),
-              let hostString = ipv4String(host),
-              let maskString = ipv4String(mask)
-        else {
-            return nil
-        }
+        guard
+            let name = String(utf8String: ifa.ifa_name),
+            var addr = ifa.ifa_addr?.pointee,
+            var mask = ifa.ifa_netmask?.pointee,
+            let host = sockaddrIPv4(&addr),
+            let maskU = sockaddrIPv4(&mask),
+            let hostStr = ipv4String(host),
+            let maskStr = ipv4String(maskU)
+        else { return nil }
 
         self.name = name
         self.host = host
-        self.mask = mask
-        hostIP = hostString
-        maskIP = maskString
+        self.mask = maskU
+        self.hostIP = hostStr
+        self.maskIP = maskStr
     }
-
+    
     var peerIP: String? {
-        IfaceScanner.shared.getPeer(for: self)
+        IfaceScanner.shared.getPeer(for: self).flatMap{ $0 }
     }
 
     var networkBase: UInt32 { host & mask }
@@ -91,6 +69,7 @@ public struct NetInfo: Hashable, CustomStringConvertible, Sendable {
     public var description: String {
         "\(name) | ip=\(hostIP) mask=\(maskIP)"
     }
+    
 }
 
 public final class TunnelConfigBinding: Sendable {
@@ -115,135 +94,121 @@ public final class TunnelConfigBinding: Sendable {
     }
 }
 
-final class IfaceScanner: @unchecked Sendable {
+
+final class IfaceScanner {
+
     static let shared = IfaceScanner()
+    private(set) var interfaces: Set<NetInfo> = []
 
-    private let lock = NSLock()
-    private var interfaces = Set<NetInfo>()
     private var refreshed = false
-    private var tunnelConfig: TunnelConfigBinding?
+    private let lock = NSLock()
 
-    private init() {}
+    private var tunnelConfigCache: TunnelConfigBinding?
 
     func bindTunnelConfig(_ binding: TunnelConfigBinding) {
-        lock.lock()
-        tunnelConfig = binding
-        lock.unlock()
-
+        tunnelConfigCache = binding
+        
+        // ask all observers to be refreshed
         NetworkObserver.shared.refreshEndpoint()
     }
 
-    var cachedOverrideFakeIP: String? {
-        lock.lock()
-        let binding = tunnelConfig
-        lock.unlock()
-        return binding?.getOverrideFakeIP()
-    }
+    var cachedOverrideFakeIP: String? { tunnelConfigCache?.getOverrideFakeIP() }
+    
+    private init() {}
 
     func refresh() {
-        let scannedInterfaces = Self.scan()
-
-        lock.lock()
-        interfaces = scannedInterfaces
+        lock.lock(); defer { lock.unlock() }
+        
+        interfaces = Self.scan()
         refreshed = true
-        let binding = tunnelConfig
-        lock.unlock()
 
-        let vpnInterface = scannedInterfaces.first { $0.name.hasPrefix("utun") }
-        let overrideIP = binding?.getOverrideFakeIP()
-        let peerIP = overrideIP.flatMap { candidate in
-            Minimuxer.testDeviceConnection(ifaddr: candidate) ? candidate : nil
-        }
-        let isOverrideActive = peerIP != nil && peerIP == overrideIP
-
-        binding?.setDeviceIP(vpnInterface?.hostIP)
-        binding?.setSubnetMask(vpnInterface?.maskIP)
-        binding?.setFakeIP(peerIP)
-        binding?.setOverrideEffective(isOverrideActive)
-
+        let vpnIface = try? probableVPN()
+        tunnelConfigCache?.setDeviceIP(vpnIface?.hostIP)
+        tunnelConfigCache?.setSubnetMask(vpnIface?.maskIP)
+        let peerIP = vpnIface?.peerIP
+        let isOverrideActive = peerIP != nil && peerIP == cachedOverrideFakeIP
+        tunnelConfigCache?.setFakeIP(peerIP)
+        tunnelConfigCache?.setOverrideEffective(isOverrideActive)
+        
         print("""
         [minimuxer] [iface] rescan routes
-          • interfaces: \(scannedInterfaces.count)
-          • vpn host: \(vpnInterface?.hostIP ?? "nil")
-          • vpn mask: \(vpnInterface?.maskIP ?? "nil")
+          • interfaces: \(interfaces.count)
+          • vpn host: \(vpnIface?.hostIP ?? "nil")
+          • vpn mask: \(vpnIface?.maskIP ?? "nil")
           • vpn peer: \(peerIP ?? "nil")
-          • cachedOverrideFakeIP: \(overrideIP ?? "nil")
+          • cachedOverrideFakeIP: \(cachedOverrideFakeIP ?? "nil")
           • overrideEffective: \(isOverrideActive)
-          • refreshed: true
+          • refreshed: \(refreshed)
         """)
     }
 
-    public func getPeer(for interface: NetInfo) -> String? {
-        _ = interface
-        guard let overrideIP = cachedOverrideFakeIP else {
-            print("[minimuxer] [iface] no override peer configured")
-            return nil
-        }
-
-        guard Minimuxer.testDeviceConnection(ifaddr: overrideIP) else {
-            print("[minimuxer] [iface] override peer NOT reachable at:", overrideIP)
-            return nil
-        }
-
-        print("[minimuxer] [iface] override peer reachable at:", overrideIP)
-        return overrideIP
+    private func ensureReady() throws {
+        guard refreshed else { throw IfaceError.notRefreshed }
     }
 
+    // MARK: scan
+    private static func scan() -> Set<NetInfo> {
+        print("[minimuxer] [iface] scan requested...")
+
+        var result = Set<NetInfo>()
+        var head: UnsafeMutablePointer<ifaddrs>? = nil
+        guard getifaddrs(&head) == 0, let first = head else { return result }
+        defer { freeifaddrs(head) }
+
+        var cur: UnsafeMutablePointer<ifaddrs>? = first
+        while let p = cur {
+            let e = p.pointee
+            let flags = Int32(e.ifa_flags)
+
+            let ipv4 = e.ifa_addr?.pointee.sa_family == UInt8(AF_INET)
+            let active = (flags & (IFF_UP | IFF_RUNNING | IFF_LOOPBACK)) == (IFF_UP | IFF_RUNNING)
+
+            if ipv4, active, let info = NetInfo(ifa: e) {
+                print("[minimuxer] [iface]", info)
+                result.insert(info)
+            }
+
+            cur = e.ifa_next
+        }
+
+        print("[minimuxer] [iface] total:", result.count)
+        return result
+    }
+    
+    
+    public func getPeer(for iface: NetInfo) -> String? {
+        if let cachedDeviceIP = cachedOverrideFakeIP {
+            let reachable = Minimuxer.testDeviceConnection(ifaddr: cachedDeviceIP)
+            if reachable {
+                print("[minimuxer] [iface] override peer reachable at:", cachedDeviceIP)
+                return cachedDeviceIP
+            } else {
+                print("[minimuxer] [iface] override peer NOT reachable at:", cachedDeviceIP)
+                return nil
+            }
+        }
+        print("[minimuxer] [iface] no override peer configured")
+        return nil
+    }
+
+    // MARK: selection
+
     func probableVPN() throws -> NetInfo? {
-        try snapshot().first { $0.name.hasPrefix("utun") }
+        try ensureReady()
+        return interfaces.first { $0.name.hasPrefix("utun") }
     }
 
     func probableLAN() throws -> NetInfo? {
-        try snapshot().first { $0.name.hasPrefix("en") }
+        try ensureReady()
+        return interfaces.first { $0.name.hasPrefix("en") }
     }
 
     func vpnPatched() -> Bool {
         guard let lan = try? probableLAN(),
               let vpn = try? probableVPN()
-        else {
-            return false
-        }
+        else { return false }
+
         return lan.maskIP == vpn.maskIP
-    }
-
-    private func snapshot() throws -> Set<NetInfo> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard refreshed else {
-            throw IfaceError.notRefreshed
-        }
-        return interfaces
-    }
-
-    private static func scan() -> Set<NetInfo> {
-        print("[minimuxer] [iface] scan requested...")
-
-        var result = Set<NetInfo>()
-        var head: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&head) == 0, let first = head else {
-            return result
-        }
-        defer { freeifaddrs(head) }
-
-        var current: UnsafeMutablePointer<ifaddrs>? = first
-        while let pointer = current {
-            let entry = pointer.pointee
-            let flags = Int32(entry.ifa_flags)
-            let isIPv4 = entry.ifa_addr?.pointee.sa_family == sa_family_t(AF_INET)
-            let up = Int32(IFF_UP)
-            let running = Int32(IFF_RUNNING)
-            let loopback = Int32(IFF_LOOPBACK)
-            let isActive = (flags & (up | running | loopback)) == (up | running)
-
-            if isIPv4, isActive, let info = NetInfo(ifa: entry) {
-                print("[minimuxer] [iface]", info)
-                result.insert(info)
-            }
-            current = entry.ifa_next
-        }
-
-        print("[minimuxer] [iface] total:", result.count)
-        return result
     }
 }
 
