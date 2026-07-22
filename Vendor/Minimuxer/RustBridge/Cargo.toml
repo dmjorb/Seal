@@ -17,6 +17,7 @@ rev = "a714d35d95dc16769f8a54a6168ccec6338b73c7"
 default-features = false
 features = [
   "afc",
+  "core_device_proxy",
   "debug_proxy",
   "dvt",
   "heartbeat",
