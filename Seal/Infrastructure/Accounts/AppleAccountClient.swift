@@ -17,9 +17,10 @@ enum AppleAuthenticationFailure {
                 code: "SEAL-AUTH-107"
             )
         case .teamLookup:
+            let nsError = error as NSError
             return ImportFailure(
                 title: "无法添加账号",
-                reason: "验证码已接受，但 Apple 没有返回可用的开发团队。",
+                reason: "验证码已接受，但 Apple 没有返回可用的开发团队。\n来源：\(nsError.domain) \(nsError.code)；\(nsError.localizedDescription)",
                 recovery: "重试",
                 code: "SEAL-AUTH-105"
             )
@@ -27,19 +28,121 @@ enum AppleAuthenticationFailure {
     }
 }
 
+struct AppleAccountAuthenticationSession: Sendable {
+    let appleID: String
+    let accountIdentifier: String
+    let dsid: String
+    let authToken: String
+}
+
 @MainActor
-final class AppleAccountClient {
-    private let anisetteProvider: any AnisetteProvider
-
-    init(anisetteProvider: any AnisetteProvider = AnisetteV3Client()) {
-        self.anisetteProvider = anisetteProvider
-    }
-
+protocol AppleAccountAPI: AnyObject {
     func authenticate(
         email: String,
         password: String,
+        anisetteData: ALTAnisetteData,
         verificationCode: @escaping @MainActor @Sendable () async -> String?
-    ) async throws -> AuthenticatedAppleAccount {
+    ) async throws -> AppleAccountAuthenticationSession
+
+    func fetchTeams(
+        authentication: AppleAccountAuthenticationSession,
+        anisetteData: ALTAnisetteData
+    ) async throws -> [AppleTeamOption]
+}
+
+@MainActor
+private final class DefaultAppleAccountAPI: AppleAccountAPI {
+    func authenticate(
+        email: String,
+        password: String,
+        anisetteData: ALTAnisetteData,
+        verificationCode: @escaping @MainActor @Sendable () async -> String?
+    ) async throws -> AppleAccountAuthenticationSession {
+        try await withCheckedThrowingContinuation { continuation in
+            let callback = LegacyCallbackBox(continuation)
+            ALTAppleAPI.shared.authenticate(
+                appleID: email,
+                password: password,
+                anisetteData: anisetteData,
+                verificationHandler: { response in
+                    let reply = VerificationReply(response)
+                    Task { @MainActor in
+                        reply.send(await verificationCode())
+                    }
+                }
+            ) { account, session, error in
+                if let account, let session {
+                    callback.resume(
+                        returning: AppleAccountAuthenticationSession(
+                            appleID: email,
+                            accountIdentifier: account.identifier,
+                            dsid: session.dsid,
+                            authToken: session.authToken
+                        )
+                    )
+                } else {
+                    callback.resume(
+                        throwing: error ?? URLError(.userAuthenticationRequired)
+                    )
+                }
+            }
+        }
+    }
+
+    func fetchTeams(
+        authentication: AppleAccountAuthenticationSession,
+        anisetteData: ALTAnisetteData
+    ) async throws -> [AppleTeamOption] {
+        let session = ALTAppleAPISession(
+            dsid: authentication.dsid,
+            authToken: authentication.authToken,
+            anisetteData: anisetteData
+        )
+        let account = ALTAccount()
+        account.appleID = authentication.appleID
+        account.identifier = authentication.accountIdentifier
+        return try await withCheckedThrowingContinuation { continuation in
+            let callback = LegacyCallbackBox(continuation)
+            ALTAppleAPI.shared.fetchTeams(for: account, session: session) { teams, error in
+                if let teams {
+                    callback.resume(
+                        returning: teams.compactMap { team in
+                            guard team.type != .unknown else { return nil }
+                            return AppleTeamOption(
+                                id: team.identifier,
+                                name: team.name,
+                                isFreeTeam: team.type == .free
+                            )
+                        }
+                    )
+                } else {
+                    callback.resume(
+                        throwing: error ?? URLError(.badServerResponse)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@MainActor
+final class AppleAccountClient {
+    private let anisetteProvider: any AnisetteProvider
+    private let api: any AppleAccountAPI
+
+    init(
+        anisetteProvider: any AnisetteProvider = AnisetteV3Client(),
+        api: (any AppleAccountAPI)? = nil
+    ) {
+        self.anisetteProvider = anisetteProvider
+        self.api = api ?? DefaultAppleAccountAPI()
+    }
+
+    func beginAuthentication(
+        email: String,
+        password: String,
+        verificationCode: @escaping @MainActor @Sendable () async -> String?
+    ) async throws -> PendingAppleAuthentication {
         do {
             return try await authenticateOnce(
                 email: email,
@@ -66,27 +169,25 @@ final class AppleAccountClient {
         email: String,
         password: String,
         verificationCode: @escaping @MainActor @Sendable () async -> String?
-    ) async throws -> AuthenticatedAppleAccount {
+    ) async throws -> PendingAppleAuthentication {
         var stage: AppleAuthenticationStage = .signIn
         do {
             try Task.checkCancellation()
             let anisetteData = try await anisetteProvider.fetch()
-            let auth = try await authenticate(
+            let authentication = try await api.authenticate(
                 email: email,
                 password: password,
                 anisetteData: anisetteData,
                 verificationCode: verificationCode
-            ).value
-            try Task.checkCancellation()
-            stage = .teamLookup
-            let teams = try await fetchTeams(
-                account: auth.account,
-                session: auth.session
             )
             try Task.checkCancellation()
-            guard let team = teams.first(where: {
-                $0.type != .free && $0.type != .unknown
-            }) ?? teams.first(where: { $0.type == .free }) else {
+            stage = .teamLookup
+            let teamOptions = try await api.fetchTeams(
+                authentication: authentication,
+                anisetteData: anisetteData
+            )
+            try Task.checkCancellation()
+            guard teamOptions.isEmpty == false else {
                 throw ImportFailure(
                     title: "无法添加账号",
                     reason: "未找到开发团队",
@@ -95,23 +196,18 @@ final class AppleAccountClient {
                 )
             }
 
-            let id = UUID()
-            let record = AppleAccountRecord(
-                id: id,
-                maskedEmail: Self.mask(email),
-                accountIdentifier: auth.account.identifier,
-                teamID: team.identifier,
-                teamName: team.name,
-                isFreeTeam: team.type == .free,
-                lastVerifiedAt: Date()
-            )
             let secret = AccountSecret(
                 email: email,
-                accountIdentifier: auth.account.identifier,
-                dsid: auth.session.dsid,
-                authToken: auth.session.authToken
+                accountIdentifier: authentication.accountIdentifier,
+                dsid: authentication.dsid,
+                authToken: authentication.authToken
             )
-            return AuthenticatedAppleAccount(record: record, secret: secret)
+            return PendingAppleAuthentication(
+                accountIdentifier: authentication.accountIdentifier,
+                secret: secret,
+                maskedEmail: Self.mask(email),
+                teams: teamOptions
+            )
         } catch is CancellationError {
             throw CancellationError()
         } catch ALTAppleAPIError.incorrectVerificationCode {
@@ -147,17 +243,18 @@ final class AppleAccountClient {
         do {
             try Task.checkCancellation()
             let anisetteData = try await anisetteProvider.fetch()
-            let session = ALTAppleAPISession(
+            let authentication = AppleAccountAuthenticationSession(
+                appleID: secret.email,
+                accountIdentifier: secret.accountIdentifier,
                 dsid: secret.dsid,
-                authToken: secret.authToken,
+                authToken: secret.authToken
+            )
+            let teams = try await api.fetchTeams(
+                authentication: authentication,
                 anisetteData: anisetteData
             )
-            let altAccount = ALTAccount()
-            altAccount.appleID = secret.email
-            altAccount.identifier = secret.accountIdentifier
-            let teams = try await fetchTeams(account: altAccount, session: session)
             try Task.checkCancellation()
-            guard teams.contains(where: { $0.identifier == account.teamID }) else {
+            guard teams.contains(where: { $0.id == account.teamID }) else {
                 throw ImportFailure(
                     title: "账号需要验证",
                     reason: "开发团队不可用",
@@ -292,81 +389,6 @@ final class AppleAccountClient {
         return min(3, max(1, digits.count - 10))
     }
 
-    private func authenticate(
-        email: String,
-        password: String,
-        anisetteData: ALTAnisetteData,
-        verificationCode: @escaping @MainActor @Sendable () async -> String?
-    ) async throws -> LegacyBox<AuthObjects> {
-        try await Self.authenticateWithAPI(
-            email: email,
-            password: password,
-            anisetteData: anisetteData,
-            verificationCode: verificationCode
-        )
-    }
-
-    private nonisolated static func authenticateWithAPI(
-        email: String,
-        password: String,
-        anisetteData: ALTAnisetteData,
-        verificationCode: @escaping @MainActor @Sendable () async -> String?
-    ) async throws -> LegacyBox<AuthObjects> {
-        try await withCheckedThrowingContinuation { continuation in
-            let callback = LegacyCallbackBox(continuation)
-            ALTAppleAPI.shared.authenticate(
-                appleID: email,
-                password: password,
-                anisetteData: anisetteData,
-                verificationHandler: { response in
-                    let reply = VerificationReply(response)
-                    Task { @MainActor in
-                        reply.send(await verificationCode())
-                    }
-                }
-            ) { account, session, error in
-                if let account, let session {
-                    callback.resume(
-                        returning: LegacyBox(
-                            AuthObjects(account: account, session: session)
-                        )
-                    )
-                } else {
-                    callback.resume(
-                        throwing: error ?? URLError(.userAuthenticationRequired)
-                    )
-                }
-            }
-        }
-    }
-
-    private func fetchTeams(
-        account: ALTAccount,
-        session: ALTAppleAPISession
-    ) async throws -> [ALTTeam] {
-        try await Self.fetchTeamsWithAPI(account: account, session: session)
-    }
-
-    private nonisolated static func fetchTeamsWithAPI(
-        account: ALTAccount,
-        session: ALTAppleAPISession
-    ) async throws -> [ALTTeam] {
-        let box: LegacyBox<[ALTTeam]> = try await withCheckedThrowingContinuation {
-            continuation in
-            let callback = LegacyCallbackBox(continuation)
-            ALTAppleAPI.shared.fetchTeams(for: account, session: session) { teams, error in
-                if let teams {
-                    callback.resume(returning: LegacyBox(teams))
-                } else {
-                    callback.resume(
-                        throwing: error ?? URLError(.badServerResponse)
-                    )
-                }
-            }
-        }
-        return box.value
-    }
-
     private static func failure(from error: Error) -> ImportFailure {
         if let anisetteError = error as? AnisetteV3Error {
             let code: String
@@ -397,11 +419,6 @@ final class AppleAccountClient {
             code: isVerificationFailure ? "SEAL-AUTH-101" : "SEAL-AUTH-107"
         )
     }
-}
-
-private struct AuthObjects {
-    let account: ALTAccount
-    let session: ALTAppleAPISession
 }
 
 struct LegacyBox<Value>: @unchecked Sendable {

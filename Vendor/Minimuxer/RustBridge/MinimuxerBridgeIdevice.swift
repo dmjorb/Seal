@@ -76,6 +76,18 @@ internal func _rust_bridge_idevice_set_rppairing_file(
 	_ pairingFile: UnsafePointer<Int8>?
 ) -> UnsafeMutablePointer<RustIdeviceFfiError>?
 
+@_silgen_name("rust_bridge_idevice_clear_rppairing_state")
+internal func _rust_bridge_idevice_clear_rppairing_state()
+
+@_silgen_name("rust_bridge_idevice_has_rppairing_file")
+internal func _rust_bridge_idevice_has_rppairing_file() -> Bool
+
+@_silgen_name("rust_bridge_idevice_has_cached_rsd_connection")
+internal func _rust_bridge_idevice_has_cached_rsd_connection() -> Bool
+
+@_silgen_name("rust_bridge_idevice_rppairing_generation")
+internal func _rust_bridge_idevice_rppairing_generation() -> UInt64
+
 @_silgen_name("rust_bridge_idevice_mount_personalized_ddi")
 internal func _rust_bridge_idevice_mount_personalized_ddi(
     _ image_ptr: UnsafePointer<UInt8>?, _ image_len: UInt32,
@@ -177,6 +189,22 @@ public class RustIdevice {
 		try rustIdeviceThrowIfNeeded(_rust_bridge_idevice_set_rppairing_file(pairingFile))
 	}
 
+	public static func clearRpPairingState() {
+		_rust_bridge_idevice_clear_rppairing_state()
+	}
+
+	public static func hasRpPairingFile() -> Bool {
+		_rust_bridge_idevice_has_rppairing_file()
+	}
+
+	public static func hasCachedRsdConnection() -> Bool {
+		_rust_bridge_idevice_has_cached_rsd_connection()
+	}
+
+	public static func rpPairingGeneration() -> UInt64 {
+		_rust_bridge_idevice_rppairing_generation()
+	}
+
     public static func mountPersonalizedDDI(image: Data, trustcache: Data, manifest: Data) -> Int32 {
         return image.withUnsafeBytes { imgBuf in
             trustcache.withUnsafeBytes { tcBuf in
@@ -192,4 +220,3 @@ public class RustIdevice {
     }
 
 }
-

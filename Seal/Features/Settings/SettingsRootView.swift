@@ -90,7 +90,7 @@ struct SettingsRootView: View {
                         Toggle(isOn: Binding(
                             get: { viewModel.notificationsEnabled },
                             set: { enabled in
-                                Task { await viewModel.setNotificationsEnabled(enabled) }
+                                viewModel.submitNotificationsEnabled(enabled)
                             }
                         )) {
                             settingsRow(
@@ -102,6 +102,7 @@ struct SettingsRootView: View {
                             )
                         }
                         .tint(.sealAccent)
+                        .disabled(viewModel.isNotificationOperationRunning)
                     }
                     Text("开启后，每天第一次打开 Seal 会自动续签全部 App。")
                         .font(.system(size: 13, weight: .regular))
@@ -324,9 +325,13 @@ struct SettingsRootView: View {
 
     private var certificateSummary: String {
         guard let account = viewModel.activeAccount else { return "不可用" }
-        let serial = account.selectedCertificateSerialNumber
-            ?? account.certificateSerialNumber
-        guard serial != nil else { return "签名时创建" }
+        guard CertificateSerial.canonical(account.certificateSerialNumber) != nil else {
+            return "签名时创建"
+        }
+        if let selected = account.selectedCertificateSerialNumber,
+           CertificateSerial.matches(selected, account.certificateSerialNumber) == false {
+            return "私钥不可用"
+        }
         return "本机可用"
     }
 
@@ -369,7 +374,7 @@ struct SettingsRootView: View {
             return Color.sealTextSecondary.opacity(0.55)
         }
         if let selected = account.selectedCertificateSerialNumber,
-           selected != account.certificateSerialNumber {
+           CertificateSerial.matches(selected, account.certificateSerialNumber) == false {
             return Color.sealDanger
         }
         return account.certificateSerialNumber == nil

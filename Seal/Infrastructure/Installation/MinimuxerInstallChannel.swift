@@ -1,31 +1,105 @@
 import Foundation
+import UIKit
 @preconcurrency import Minimuxer
+
+protocol MinimuxerRuntime: Sendable {
+    func start(pairingFile: String, logPath: String) async throws
+    func stop() async
+    func isReady() async -> Bool
+    func fetchDeviceIdentifier() async -> String?
+    func stageIPA(bundleID: String, data: Data) async throws
+    func installIPA(bundleID: String) async throws
+    func lookupApp(bundleID: String) async -> String?
+}
+
+struct LiveMinimuxerRuntime: MinimuxerRuntime {
+    func start(pairingFile: String, logPath: String) async throws {
+        try Minimuxer.start(pairingFile: pairingFile, logPath: logPath)
+    }
+
+    func stop() async {
+        Minimuxer.stop()
+    }
+
+    func isReady() async -> Bool {
+        Minimuxer.ready()
+    }
+
+    func fetchDeviceIdentifier() async -> String? {
+        Minimuxer.fetchUDID()
+    }
+
+    func stageIPA(bundleID: String, data: Data) async throws {
+        try Minimuxer.yeetAppAfc(bundleId: bundleID, ipaBytes: data)
+    }
+
+    func installIPA(bundleID: String) async throws {
+        try Minimuxer.installIpa(bundleId: bundleID)
+    }
+
+    func lookupApp(bundleID: String) async -> String? {
+        Minimuxer.lookupApp(bundleId: bundleID)
+    }
+}
 
 actor MinimuxerInstallChannel: InstallChannel {
     private let pairingStore: PairingStore
     private let logDirectory: URL
     private let onDemandActivator: any VPNOnDemandActivating
+    private let runtime: any MinimuxerRuntime
 
     init(
         pairingStore: PairingStore,
         logDirectory: URL,
-        onDemandActivator: any VPNOnDemandActivating = LocalDevVPNOnDemandActivator()
+        onDemandActivator: any VPNOnDemandActivating = LocalDevVPNOnDemandActivator(),
+        runtime: any MinimuxerRuntime = LiveMinimuxerRuntime()
     ) {
         self.pairingStore = pairingStore
         self.logDirectory = logDirectory
         self.onDemandActivator = onDemandActivator
+        self.runtime = runtime
     }
 
     func start() async throws -> String {
-        let diagnostics = await diagnose()
-        if let failure = diagnostics.failure { throw failure }
-        guard let deviceIdentifier = diagnostics.deviceIdentifier else {
-            throw Self.channelNotReadyFailure
+        do {
+            let diagnostics = try await diagnoseForStart()
+            if let failure = diagnostics.failure { throw failure }
+            guard let deviceIdentifier = diagnostics.deviceIdentifier else {
+                throw Self.channelNotReadyFailure
+            }
+            return deviceIdentifier
+        } catch is CancellationError {
+            await stop()
+            throw CancellationError()
+        } catch {
+            await stop()
+            throw error
         }
-        return deviceIdentifier
     }
 
     func diagnose() async -> InstallChannelDiagnostics {
+        do {
+            let diagnostics = try await diagnoseForStart()
+            await stop()
+            return diagnostics
+        } catch {
+            await stop()
+            return InstallChannelDiagnostics(
+                steps: InstallChannelDiagnostics.empty.steps,
+                deviceIdentifier: nil,
+                failure: Self.channelNotReadyFailure
+            )
+        }
+    }
+
+    func stop() async {
+        await runtime.stop()
+        #if !targetEnvironment(simulator)
+        _ = NetworkObserver.shared.stop()
+        #endif
+    }
+
+    private func diagnoseForStart() async throws -> InstallChannelDiagnostics {
         var steps = InstallChannelDiagnostics.empty.steps
         var deviceIdentifier: String?
 
@@ -59,13 +133,16 @@ actor MinimuxerInstallChannel: InstallChannel {
             run(.pairingFile)
             let pairingRecord = try await pairingStore.current()
             _ = try await pairingStore.contents()
-            guard pairingRecord != nil else {
+            guard let pairingRecord else {
                 return fail(.pairingFile, Self.missingPairingFailure)
+            }
+            guard pairingRecord.isRemotePairing else {
+                return fail(.pairingFile, Self.legacyPairingUnsupportedFailure)
             }
             pass(.pairingFile)
 
             #if targetEnvironment(simulator)
-            deviceIdentifier = pairingRecord?.deviceIdentifier ?? "SIMULATOR"
+            deviceIdentifier = pairingRecord.deviceIdentifier ?? "SIMULATOR"
             pass(.vpnTunnel)
             pass(.minimuxer)
             pass(.deviceIdentifier)
@@ -85,7 +162,7 @@ actor MinimuxerInstallChannel: InstallChannel {
             bindTunnelConfiguration()
 
             run(.vpnTunnel)
-            await waitForNetworkRefresh(rounds: 4, delay: .milliseconds(250))
+            try await waitForNetworkRefresh(rounds: 4, delay: .milliseconds(250))
             let tunnelReachable = await onDemandActivator.probeTunnel()
             if tunnelReachable { pass(.vpnTunnel) }
 
@@ -95,7 +172,7 @@ actor MinimuxerInstallChannel: InstallChannel {
                 pass(.minimuxer)
                 pass(.deviceIdentifier)
                 if let mismatch = Self.pairingMismatchFailure(
-                    expected: pairingRecord?.deviceIdentifier,
+                    expected: pairingRecord.deviceIdentifier,
                     actual: udid
                 ) {
                     return fail(.pairingMatch, mismatch)
@@ -112,11 +189,13 @@ actor MinimuxerInstallChannel: InstallChannel {
             run(.minimuxer)
             do {
                 let pairing = try await pairingStore.contents()
-                try Minimuxer.start(pairingFile: pairing, logPath: logDirectory.path)
+                try await runtime.start(pairingFile: pairing, logPath: logDirectory.path)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 return fail(.minimuxer, Self.connectionFailure(error))
             }
-            await waitForNetworkRefresh(rounds: 40, delay: .milliseconds(500))
+            try await waitForNetworkRefresh(rounds: 40, delay: .milliseconds(500))
             guard let udid = try await readyDeviceIdentifier() else {
                 if tunnelReachable == false {
                     return fail(.vpnTunnel, Self.vpnTunnelUnavailableFailure)
@@ -129,7 +208,7 @@ actor MinimuxerInstallChannel: InstallChannel {
             pass(.deviceIdentifier)
 
             if let mismatch = Self.pairingMismatchFailure(
-                expected: pairingRecord?.deviceIdentifier,
+                expected: pairingRecord.deviceIdentifier,
                 actual: udid
             ) {
                 return fail(.pairingMatch, mismatch)
@@ -146,6 +225,8 @@ actor MinimuxerInstallChannel: InstallChannel {
                 failure: nil
             )
             #endif
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let failure as ImportFailure {
             return fail(.pairingFile, failure)
         } catch {
@@ -157,7 +238,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         #if targetEnvironment(simulator)
         return true
         #else
-        return Minimuxer.ready()
+        return await runtime.isReady()
         #endif
     }
 
@@ -167,19 +248,37 @@ actor MinimuxerInstallChannel: InstallChannel {
         isSelfReplacement: Bool
     ) async throws {
         #if !targetEnvironment(simulator)
+        try Task.checkCancellation()
         guard await isReady() else { throw Self.channelNotReadyFailure }
         do {
-            try Minimuxer.yeetAppAfc(bundleId: bundleID, ipaBytes: ipaData)
-            if isSelfReplacement {
-                let installation = Task.detached(priority: .userInitiated) {
-                    try Minimuxer.installIpa(bundleId: bundleID)
-                }
-                try await Task.sleep(for: .milliseconds(250))
-                await SelfReplacementController.returnToHomeScreen()
-                try await installation.value
+            try Task.checkCancellation()
+            try await runtime.stageIPA(bundleID: bundleID, data: ipaData)
+            try Task.checkCancellation()
+
+            let backgroundTask: UIBackgroundTaskIdentifier? = if isSelfReplacement {
+                await SelfReplacementController.beginInstallationBackgroundTask()
             } else {
-                try Minimuxer.installIpa(bundleId: bundleID)
+                nil
             }
+            if isSelfReplacement {
+                await SelfReplacementController.returnToHomeScreen()
+            }
+
+            do {
+                try Task.checkCancellation()
+                try await runtime.installIPA(bundleID: bundleID)
+                try Task.checkCancellation()
+                if let backgroundTask {
+                    await SelfReplacementController.endInstallationBackgroundTask(backgroundTask)
+                }
+            } catch {
+                if let backgroundTask {
+                    await SelfReplacementController.endInstallationBackgroundTask(backgroundTask)
+                }
+                throw error
+            }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw Self.installationFailure(error)
         }
@@ -192,8 +291,9 @@ actor MinimuxerInstallChannel: InstallChannel {
         #else
         guard await isReady() else { throw Self.channelNotReadyFailure }
         for _ in 0..<8 {
-            if Minimuxer.lookupApp(bundleId: bundleID) != nil { return }
-            try? await Task.sleep(for: .milliseconds(650))
+            try Task.checkCancellation()
+            if await runtime.lookupApp(bundleID: bundleID) != nil { return }
+            try await Task.sleep(for: .milliseconds(650))
         }
         throw ImportFailure(
             title: "安装后验证失败",
@@ -220,16 +320,17 @@ actor MinimuxerInstallChannel: InstallChannel {
     private func waitForNetworkRefresh(
         rounds: Int,
         delay: Duration
-    ) async {
+    ) async throws {
         for _ in 0..<rounds {
+            try Task.checkCancellation()
             NetworkObserver.shared.refreshEndpoint()
-            try? await Task.sleep(for: delay)
+            try await Task.sleep(for: delay)
         }
     }
 
     private func readyDeviceIdentifier() async throws -> String? {
         guard await isReady() else { return nil }
-        guard let udid = Minimuxer.fetchUDID(), udid.isEmpty == false else {
+        guard let udid = await runtime.fetchDeviceIdentifier(), udid.isEmpty == false else {
             return nil
         }
         return udid
@@ -317,6 +418,13 @@ actor MinimuxerInstallChannel: InstallChannel {
         reason: "当前设备没有可用配对文件。",
         recovery: "导入配对文件",
         code: "SEAL-PAIR-203"
+    )
+
+    private static let legacyPairingUnsupportedFailure = ImportFailure(
+        title: "需要重新配对",
+        reason: "旧式 lockdown 配对文件需要向本机端口公开私钥，Seal 已停用这条不安全路径。",
+        recovery: "请重新生成并导入 RPPairing 私钥配对文件。",
+        code: "SEAL-PAIR-301"
     )
 
     private static let vpnTunnelUnavailableFailure = ImportFailure(

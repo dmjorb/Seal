@@ -14,6 +14,12 @@ import Darwin
 import Glibc
 #endif
 
+public enum PairRecordAccessPolicy {
+    public static func pairRecordData() -> Data? {
+        nil
+    }
+}
+
 public class Muxer {
     public static var started = false
     public static var usbmuxdReady = false
@@ -45,35 +51,55 @@ public class Muxer {
         }
 
         guard let pairingData = pairingFile.data(using: .utf8),
-              let pairingDict = try? PropertyListSerialization.propertyList(from: pairingData, options: [], format: nil) as? [String: Any],
-              let pairingXml  = try? PropertyListSerialization.data(fromPropertyList: pairingDict, format: .xml, options: 0)
+              let pairingDict = try? PropertyListSerialization.propertyList(
+                  from: pairingData,
+                  options: [],
+                  format: nil
+              ) as? [String: Any]
         else {
             print("[minimuxer] ERROR: Failed to parse pairing file")
             throw MinimuxerError.PairingFile
         }
         
-        cachedPairingDict = pairingDict
-        cachedPairingXml  = pairingXml
-
-        if let _ = pairingDict["private_key"] as? Data {
+        if hasRemotePrivateKey(pairingDict) {
             print("[minimuxer] INFO: RPPairing file detected")
-            isrppairing = true
         } else if let _ = pairingDict["UDID"] as? String {
-            print("[minimuxer] INFO: Lockdown pairing file detected")
+            // The legacy transport can only feed libimobiledevice by exposing
+            // the complete pair record over an unauthenticated localhost
+            // usbmuxd listener. Never start or cache credentials for it.
+            print("[minimuxer] ERROR: Legacy lockdown pairing is disabled")
+            throw MinimuxerError.LegacyPairingUnsupported
         } else {
             print("[minimuxer] ERROR: Pairing file missing UDID")
             throw MinimuxerError.PairingFile
         }
 
+        try RustIdevice.setRpPairingFile(pairingFile)
+        isrppairing = true
         started = true
-        
-        if isrppairing {
-            try RustIdevice.setRpPairingFile(pairingFile)
-        } else {
-            Thread.detachNewThread { listenLoop() }
-            Heartbeat.startBeat()
-        }
         print("[minimuxer] minimuxer has started!")
+    }
+
+    public static func stop() {
+        // No Swift pairing bytes survive an operation. Legacy listeners are
+        // no longer started, and these resets also clean state left by an
+        // interrupted operation in an older call path.
+        cachedPairingXml?.resetBytes(in: 0..<cachedPairingXml!.count)
+        cachedPairingXml = nil
+        cachedPairingDict = nil
+        currentDeviceIP = nil
+        currentEvent = nil
+        usbmuxdReady = false
+        isrppairing = false
+        started = false
+    }
+
+    static var securityListenerActive: Bool {
+        usbmuxdReady
+    }
+
+    static var securityCachedPairingByteCount: Int {
+        cachedPairingXml?.count ?? 0
     }
 
     // MARK: - Listener
@@ -142,7 +168,7 @@ public class Muxer {
                 var nosig = 1
                 setsockopt(clientFd, SOL_SOCKET, SO_NOSIGPIPE, &nosig, socklen_t(MemoryLayout<Int32>.size))
 
-                Task.detached { handleClient(fd: clientFd) }
+                Thread.detachNewThread { handleClient(fd: clientFd) }
             }
 
             // socket died — close and let outer loop restart
@@ -234,13 +260,11 @@ public class Muxer {
                 
             case "Listen":
                 if let deviceIP = currentDeviceIP{
-                     Task.detached {
-                         if let payload = try? buildPayload(deviceIP: deviceIP, event: currentEvent){
-                             let pkt = RawPacket(plist: payload, version: 1, message: 8, tag: 0)
-                             let data = pkt.data
-                             data.withUnsafeBytes { _ = send(fd, $0.baseAddress!, data.count, 0) }
-                         }
-                     }
+                    if let payload = try? buildPayload(deviceIP: deviceIP, event: currentEvent) {
+                        let pkt = RawPacket(plist: payload, version: 1, message: 8, tag: 0)
+                        let data = pkt.data
+                        data.withUnsafeBytes { _ = send(fd, $0.baseAddress!, data.count, 0) }
+                    }
                 }
                 return ["MessageType": "Result", "Number": 0]
                 
@@ -248,7 +272,11 @@ public class Muxer {
                 return ["BUID": "00000000-0000-0000-0000-000000000000"]
 
             case "ReadPairRecord":
-                let pairingData = cachedPairingXml ?? Data()
+                // Deliberately never disclose pairing material to a local
+                // client. Legacy pairing is rejected by start().
+                guard let pairingData = PairRecordAccessPolicy.pairRecordData() else {
+                    return ["MessageType": "Result", "Number": Int32(-1)]
+                }
                 return ["PairRecordData": pairingData]
 
             default:
@@ -295,5 +323,13 @@ public class Muxer {
             for (i, byte) in ipBytes.enumerated() { data[4 + i] = byte }
         }
         return data
+    }
+
+    private static func hasRemotePrivateKey(_ dictionary: [String: Any]) -> Bool {
+        ["private_key", "privateKey", "PrivateKey"].contains { key in
+            if let data = dictionary[key] as? Data { return data.isEmpty == false }
+            if let string = dictionary[key] as? String { return string.isEmpty == false }
+            return false
+        }
     }
 }

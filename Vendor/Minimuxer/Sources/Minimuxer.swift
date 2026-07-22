@@ -14,6 +14,14 @@ import Darwin
 import Glibc
 #endif
 
+public struct MinimuxerSecuritySnapshot: Equatable, Sendable {
+    public let isListenerActive: Bool
+    public let cachedPairingByteCount: Int
+    public let rustHasPairingFile: Bool
+    public let rustHasCachedConnection: Bool
+    public let pairingGeneration: UInt64
+}
+
 public struct Minimuxer {
     public static func describeError(_ error: MinimuxerError) -> String {
         return error.description
@@ -81,6 +89,25 @@ public struct Minimuxer {
 
     public static func startWithLogger(pairingFile: String, logPath: String, isConsoleLoggingEnabled: Bool) throws {
         try Muxer.start(pairingFile: pairingFile, logPath: logPath)
+    }
+
+    public static func stop() {
+        Muxer.stop()
+        RustIdevice.clearRpPairingState()
+    }
+
+    public static func setRemotePairingFile(_ pairingFile: String) throws {
+        try RustIdevice.setRpPairingFile(pairingFile)
+    }
+
+    public static func securitySnapshot() -> MinimuxerSecuritySnapshot {
+        MinimuxerSecuritySnapshot(
+            isListenerActive: Muxer.securityListenerActive,
+            cachedPairingByteCount: Muxer.securityCachedPairingByteCount,
+            rustHasPairingFile: RustIdevice.hasRpPairingFile(),
+            rustHasCachedConnection: RustIdevice.hasCachedRsdConnection(),
+            pairingGeneration: RustIdevice.rpPairingGeneration()
+        )
     }
 
     public static func retargetUsbmuxdAddr() {

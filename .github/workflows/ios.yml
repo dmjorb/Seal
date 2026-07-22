@@ -30,11 +30,25 @@ jobs:
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
 
+      - name: Rebuild Rust bridge
+        run: bash Scripts/build-rust-bridge.sh
+
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Run tests
+        run: SEAL_RUST_BRIDGE_PREBUILT=1 bash Scripts/ci-test.sh
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Seal-TestResults-${{ github.run_number }}
+          path: build/TestResults.xcresult
+          if-no-files-found: warn
+
       - name: Build unsigned IPA
-        run: bash Scripts/build-unsigned-ipa.sh
+        run: SEAL_RUST_BRIDGE_PREBUILT=1 bash Scripts/build-unsigned-ipa.sh
 
       - name: Verify unsigned IPA
         run: bash Scripts/verify-ipa.sh build/Seal.ipa

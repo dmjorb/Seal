@@ -6,6 +6,7 @@ use std::io::Write;
 
 use crate::idevice_support::rsd::{
     connect_to_rsd_services, get_or_create_rppairing_rsd_connection,
+    store_rppairing_rsd_connection,
 };
 
 pub async fn mount_personalized_ddi_rppairing(
@@ -65,28 +66,31 @@ pub async fn mount_personalized_ddi_rppairing(
             return 6;
         }
     };
-    let conn = &mut *connection;
-    if let Err(e) = mounter
-        .mount_personalized_with_callback_rsd(
-            &mut conn.adapter,
-            &mut conn.handshake,
-            image_bytes.to_vec(),
-            trustcache_bytes.to_vec(),
-            manifest_bytes,
-            None,
-            unique_chip_id,
-            async |((n, d), _)| {
-                let pct = (n as f64 / d as f64) * 100.0;
-                print!("\rProgress: {pct:.2}%");
-                std::io::stdout().flush().unwrap();
-                if n == d {
-                    println!();
-                }
-            },
-            (),
-        )
-        .await
-    {
+    let mount_result = {
+        let conn = &mut *connection;
+        mounter
+            .mount_personalized_with_callback_rsd(
+                &mut conn.adapter,
+                &mut conn.handshake,
+                image_bytes.to_vec(),
+                trustcache_bytes.to_vec(),
+                manifest_bytes,
+                None,
+                unique_chip_id,
+                async |((n, d), _)| {
+                    let pct = (n as f64 / d as f64) * 100.0;
+                    print!("\rProgress: {pct:.2}%");
+                    std::io::stdout().flush().unwrap();
+                    if n == d {
+                        println!();
+                    }
+                },
+                (),
+            )
+            .await
+    };
+    store_rppairing_rsd_connection(connection);
+    if let Err(e) = mount_result {
         error!("Mount failed: {:?}", e);
         return 8;
     }

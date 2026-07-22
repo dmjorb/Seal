@@ -13,7 +13,8 @@ struct BundleIDMapper: Sendable {
         teamID: String,
         requested: String? = nil
     ) -> String {
-        if let requested, requested.isEmpty == false {
+        if let requested = requested?.trimmingCharacters(in: .whitespacesAndNewlines),
+           requested.isEmpty == false {
             return requested
         }
         return BundleIDPolicy.recommendedBundleIdentifier(for: original)

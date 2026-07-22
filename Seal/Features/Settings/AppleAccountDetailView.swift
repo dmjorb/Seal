@@ -82,7 +82,7 @@ struct AppleAccountDetailView: View {
 
     private var accountCard: some View {
         VStack(spacing: 0) {
-            detailRow("Apple ID", viewModel.fullEmail(for: currentAccount))
+            detailRow("Apple ID", currentAccount.maskedEmail)
             Divider()
             detailRow("Team", currentAccount.teamName)
             Divider()

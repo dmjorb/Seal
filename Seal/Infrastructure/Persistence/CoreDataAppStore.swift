@@ -1,16 +1,31 @@
 import CoreData
 import Foundation
 
+enum CoreDataWriteOperation: Equatable, Sendable {
+    case save
+    case replaceImportedApp
+    case delete
+}
+
 actor CoreDataAppStore: AppStore {
     private let context: NSManagedObjectContext
+    private let beforeSave: @Sendable (CoreDataWriteOperation) throws -> Void
 
-    init(inMemory: Bool) throws {
+    init(
+        inMemory: Bool,
+        beforeSave: @escaping @Sendable (CoreDataWriteOperation) throws -> Void = { _ in }
+    ) throws {
         guard inMemory else { throw AppStoreError.invalidConfiguration }
         context = try Self.makeContext(storeType: NSInMemoryStoreType, storeURL: nil)
+        self.beforeSave = beforeSave
     }
 
-    init(storeURL: URL) throws {
+    init(
+        storeURL: URL,
+        beforeSave: @escaping @Sendable (CoreDataWriteOperation) throws -> Void = { _ in }
+    ) throws {
         context = try Self.makeContext(storeType: NSSQLiteStoreType, storeURL: storeURL)
+        self.beforeSave = beforeSave
     }
 
     func fetchAll() throws -> [AppRecord] {
@@ -37,11 +52,14 @@ actor CoreDataAppStore: AppStore {
                 Self.write(record, to: app, context: context)
 
                 if context.hasChanges {
+                    try Task.checkCancellation()
+                    try beforeSave(.save)
+                    try Task.checkCancellation()
                     try context.save()
                 }
             } catch {
                 context.rollback()
-                throw error
+                throw AppStoreError.persistence(error)
             }
         }
     }
@@ -55,7 +73,7 @@ actor CoreDataAppStore: AppStore {
                 // Importing an IPA must never replace a real installed record.
                 // Keep installed / self records separate even when the original Bundle ID matches.
                 request.predicate = NSPredicate(
-                    format: "originalBundleIdentifier == %@ AND stateRaw != %@ AND isSeal == NO",
+                    format: "originalBundleIdentifier ==[c] %@ AND stateRaw != %@ AND isSeal == NO",
                     record.originalBundleIdentifier,
                     AppState.installed.rawValue
                 )
@@ -69,22 +87,37 @@ actor CoreDataAppStore: AppStore {
                 )
                 Self.write(record, to: app, context: context)
 
+                try Task.checkCancellation()
+                try beforeSave(.replaceImportedApp)
+                try Task.checkCancellation()
                 try context.save()
                 return replaced
             } catch {
                 context.rollback()
-                throw error
+                throw AppStoreError.persistence(error)
             }
         }
     }
 
     func delete(id: UUID) throws {
         try context.performAndWait {
-            if let app = try Self.fetchApp(id: id, context: context) {
-                context.delete(app)
-                try context.save()
+            do {
+                if let app = try Self.fetchApp(id: id, context: context) {
+                    context.delete(app)
+                    try Task.checkCancellation()
+                    try beforeSave(.delete)
+                    try Task.checkCancellation()
+                    try context.save()
+                }
+            } catch {
+                context.rollback()
+                throw AppStoreError.persistence(error)
             }
         }
+    }
+
+    func hasUncommittedChanges() -> Bool {
+        context.performAndWait { context.hasChanges }
     }
 
     private static func makeContext(

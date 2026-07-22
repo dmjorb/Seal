@@ -13,7 +13,7 @@ public final class NetworkObserver {
 
     public static let shared = NetworkObserver()   // keep alive
 
-    private let monitor = NWPathMonitor()
+    private var monitor: NWPathMonitor?
     private let queue = DispatchQueue(label: "net.monitor")
 
     private var started = false
@@ -29,6 +29,7 @@ public final class NetworkObserver {
             return false
         }
 
+        let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             print("[minimuxer] [net] path changed, status:", path.status)
             guard path.status == .satisfied else { return }
@@ -36,6 +37,7 @@ public final class NetworkObserver {
         }
 
         monitor.start(queue: queue)
+        self.monitor = monitor
         started = true
         print("[minimuxer] [net] monitor started")
         return true
@@ -75,7 +77,8 @@ public final class NetworkObserver {
             return false
         }
 
-        monitor.cancel()
+        monitor?.cancel()
+        monitor = nil
         started = false
         print("[minimuxer] [net] monitor stopped")
         return true

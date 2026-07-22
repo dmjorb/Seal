@@ -1,16 +1,20 @@
 TARGET=rust_bridge
-RUST_DIR="."
+RUST_DIR=.
 SCHEME=Minimuxer
 BUILD_DIR=lib
 FRAMEWORK_NAME=Minimuxer
 
-.PHONY: all build rust xcframework zip clean
+.PHONY: all build test rust xcframework clean
 
 # --- Core Build ---
 
-all: build
+all: test xcframework
 
 build: rust
+
+test:
+	@echo "--- Testing Rust Bridge ---"
+	cd $(RUST_DIR) && cargo test --lib
 
 rust:
 	@echo "--- Building Rust Bridge ---"

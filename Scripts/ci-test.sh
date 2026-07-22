@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${SEAL_RUST_BRIDGE_PREBUILT:-0}" != "1" ]]; then
+  bash Scripts/build-rust-bridge.sh
+fi
+
 mkdir -p build
 rm -rf build/TestResults.xcresult
 
