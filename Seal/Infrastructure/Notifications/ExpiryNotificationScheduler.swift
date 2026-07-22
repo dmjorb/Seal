@@ -113,7 +113,11 @@ final class ExpiryNotificationScheduler: ExpiryNotificationScheduling {
         let requests = await center.pendingNotificationRequests()
             .filter { $0.identifier.hasPrefix(identifierPrefix) }
         let nextFireDate = requests
+            .compactMap {
+                (        let nextFireDate = requests
             .compactMap { $0.trigger?.nextTriggerDate() }
+            .min().trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate()
+            }
             .min()
         return ExpiryNotificationStatusSnapshot(
             authorization: authorization,

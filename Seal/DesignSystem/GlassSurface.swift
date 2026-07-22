@@ -9,32 +9,42 @@ struct GlassSurfaceModifier: ViewModifier {
     func body(content: Content) -> some View {
         if reduceTransparency {
             content
-                .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: cornerRadius))
+                .background(
+                    Color.sealSurface,
+                    in: RoundedRectangle(
+                        cornerRadius: cornerRadius,
+                        style: .continuous
+                    )
+                )
                 .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .stroke(.secondary.opacity(0.18), lineWidth: 0.5)
-                }
-        } else if #available(iOS 26.0, *) {
-            content
-                .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
-                .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .stroke(Color.sealHairline.opacity(0.72), lineWidth: 0.7)
+                    RoundedRectangle(
+                        cornerRadius: cornerRadius,
+                        style: .continuous
+                    )
+                    .stroke(.secondary.opacity(0.18), lineWidth: 0.5)
                 }
         } else {
             content
                 .background(
                     Color.sealSurface,
-                    in: RoundedRectangle(cornerRadius: cornerRadius)
+                    in: RoundedRectangle(
+                        cornerRadius: cornerRadius,
+                        style: .continuous
+                    )
                 )
                 .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .stroke(Color.sealHairline.opacity(0.72), lineWidth: 0.7)
+                    RoundedRectangle(
+                        cornerRadius: cornerRadius,
+                        style: .continuous
+                    )
+                    .stroke(
+                        Color.sealHairline.opacity(0.72),
+                        lineWidth: 0.7
+                    )
                 }
         }
     }
 }
-
 
 struct SealSheetBackground: ViewModifier {
     let level: SealScreenLevel
