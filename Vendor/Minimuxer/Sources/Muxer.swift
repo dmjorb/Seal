@@ -84,7 +84,9 @@ public class Muxer {
         // No Swift pairing bytes survive an operation. Legacy listeners are
         // no longer started, and these resets also clean state left by an
         // interrupted operation in an older call path.
-        cachedPairingXml?.resetBytes(in: 0..<cachedPairingXml!.count)
+        if let byteCount = cachedPairingXml?.count {
+            cachedPairingXml?.resetBytes(in: 0..<byteCount)
+        }
         cachedPairingXml = nil
         cachedPairingDict = nil
         currentDeviceIP = nil
