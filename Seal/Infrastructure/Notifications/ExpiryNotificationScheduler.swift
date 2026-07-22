@@ -113,10 +113,8 @@ final class ExpiryNotificationScheduler: ExpiryNotificationScheduling {
         let requests = await center.pendingNotificationRequests()
             .filter { $0.identifier.hasPrefix(identifierPrefix) }
         let nextFireDate = requests
-            .compactMap {
-                (        let nextFireDate = requests
-            .compactMap { $0.trigger?.nextTriggerDate() }
-            .min().trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate()
+            .compactMap { request in
+                (request.trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate()
             }
             .min()
         return ExpiryNotificationStatusSnapshot(
@@ -125,7 +123,6 @@ final class ExpiryNotificationScheduler: ExpiryNotificationScheduling {
             nextFireDate: nextFireDate
         )
     }
-
     func setEnabled(
         _ enabled: Bool,
         apps: [AppRecord],
