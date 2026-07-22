@@ -170,7 +170,8 @@ fn new_owned_connection(
 pub async fn connect_to_rsd_services<Service: RsdService>() -> Result<Service, IdeviceError> {
     let (cached_connection, pairing_file, generation) = checkout_connection();
     if let Some(mut connection) = cached_connection {
-        let result = Service::connect_rsd(&mut connection.adapter, &mut connection.handshake).await;
+        let CachedRsdConnection { adapter, handshake } = &mut *connection;
+        let result = Service::connect_rsd(adapter, handshake).await;
         match result {
             Ok(service) => {
                 info!("using existing connection");
@@ -197,7 +198,8 @@ pub async fn connect_to_rsd_services<Service: RsdService>() -> Result<Service, I
     let connection = create_rppairing_rsd_connection(pairing_file).await?;
     info!("creating new connection");
     let mut connection = new_owned_connection(connection, generation);
-    let result = Service::connect_rsd(&mut connection.adapter, &mut connection.handshake).await;
+    let CachedRsdConnection { adapter, handshake } = &mut *connection;
+    let result = Service::connect_rsd(adapter, handshake).await;
     store_rppairing_rsd_connection(connection);
     result
 }
@@ -206,7 +208,8 @@ pub async fn get_or_create_rppairing_rsd_connection(
 ) -> Result<OwnedRsdConnection, IdeviceError> {
     let (cached_connection, pairing_file, generation) = checkout_connection();
     if let Some(mut connection) = cached_connection {
-        if HeartbeatClient::connect_rsd(&mut connection.adapter, &mut connection.handshake)
+        let CachedRsdConnection { adapter, handshake } = &mut *connection;
+        if HeartbeatClient::connect_rsd(adapter, handshake)
             .await
             .is_ok()
         {

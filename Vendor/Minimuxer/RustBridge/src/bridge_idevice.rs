@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn null_bytes_are_valid_only_for_zero_length() {
-        assert_eq!(ffi_bytes(std::ptr::null(), 0).unwrap(), &[]);
+        assert!(ffi_bytes(std::ptr::null(), 0).unwrap().is_empty());
         assert!(ffi_bytes(std::ptr::null(), 1).is_err());
     }
 
