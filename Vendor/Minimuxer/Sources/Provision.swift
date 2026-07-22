@@ -21,14 +21,12 @@ public class Provision {
     private static func getProvider() -> any ProvisionProvider {
         if let provider {
             return provider
-        } else {
-            if Muxer.isrppairing {
-                provider = RPProvision()
-            } else {
-                provider = LockDownProvision()
-            }
         }
-        return provider!
+        let selectedProvider: any ProvisionProvider = Muxer.isrppairing
+            ? RPProvision()
+            : LockDownProvision()
+        provider = selectedProvider
+        return selectedProvider
     }
     
     public static func installProvisioningProfile(profile: Data) throws {
@@ -96,8 +94,8 @@ public class LockDownProvision: ProvisionProvider {
         let dumpDir = "\(path)/PROVISION"
         try? FileManager.default.createDirectory(atPath: dumpDir, withIntermediateDirectories: true)
 
-        let xmlPrefix = "<?xml version=".data(using: .utf8)!
-        let xmlSuffix = "</plist>".data(using: .utf8)!
+        let xmlPrefix = Data("<?xml version=".utf8)
+        let xmlSuffix = Data("</plist>".utf8)
 
         for (i, profileObj) in rawProfiles.enumerated() {
             guard let profileData = profileObj as? Data else { continue }

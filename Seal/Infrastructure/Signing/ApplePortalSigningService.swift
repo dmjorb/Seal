@@ -386,7 +386,7 @@ actor ApplePortalSigningService: SigningPortal {
                 progress: progress
             )
             try Task.checkCancellation()
-            guard let mainProfile = profilePreparation.profiles.first(where: {
+            guard profilePreparation.profiles.contains(where: {
                 $0.bundleIdentifier == prepared.mappedMainBundleID
             }) else {
                 throw Self.failure(
@@ -605,7 +605,6 @@ actor ApplePortalSigningService: SigningPortal {
         ).value
         try Task.checkCancellation()
 
-        var wasPersisted = false
         do {
             let refreshed = try await fetchCertificates(team: team, session: session)
             try Task.checkCancellation()
@@ -635,10 +634,8 @@ actor ApplePortalSigningService: SigningPortal {
             updatedSecret.certificateMachineIdentifier = certificate.machineIdentifier
 
             try await persistSigningMaterial(updatedSecret, certificate.serialNumber)
-            wasPersisted = true
             return SigningIdentity(certificate: certificate, secret: updatedSecret)
         } catch {
-            guard wasPersisted == false else { throw error }
             let cleanedUp = await cleanUpNewCertificate(
                 serialNumber: requested.serialNumber,
                 certificate: requested,

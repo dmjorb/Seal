@@ -40,7 +40,8 @@ public class Muxer {
         unsetenv(MuxerConstants.usbmuxdEnvKey)
         print("[minimuxer] setenv(USBMUXD_SOCKET_ADDRESS, \(MuxerConstants.usbmuxdSocket))")
         setenv(MuxerConstants.usbmuxdEnvKey, MuxerConstants.usbmuxdSocket, 1)
-        let value = String(cString: getenv(MuxerConstants.usbmuxdEnvKey))
+        let value = getenv(MuxerConstants.usbmuxdEnvKey)
+            .map { String(cString: $0) } ?? "<unset>"
         print("[minimuxer] getenv(USBMUXD_SOCKET_ADDRESS) =", value)
     }
 
@@ -135,7 +136,8 @@ public class Muxer {
                 }
             }
 
-            let value = String(cString: getenv(MuxerConstants.usbmuxdEnvKey))
+            let value = getenv(MuxerConstants.usbmuxdEnvKey)
+                .map { String(cString: $0) } ?? "<unset>"
             print("[minimuxer] muxer: (ENV) USBMUXD_SOCKET_ADDRESS =", value)
 
             guard bindResult == 0, listen(fd, 16) == 0 else {
@@ -208,7 +210,8 @@ public class Muxer {
                 let responsePacket = RawPacket(plist: response, version: 1, message: 8, tag: packet.tag)
                 let responseData = responsePacket.data
                 responseData.withUnsafeBytes { ptr in
-                    _ = send(fd, ptr.baseAddress!, responseData.count, 0)
+                    guard let baseAddress = ptr.baseAddress else { return }
+                    _ = send(fd, baseAddress, responseData.count, 0)
                 }
             } catch {}
         }
@@ -265,7 +268,10 @@ public class Muxer {
                     if let payload = try? buildPayload(deviceIP: deviceIP, event: currentEvent) {
                         let pkt = RawPacket(plist: payload, version: 1, message: 8, tag: 0)
                         let data = pkt.data
-                        data.withUnsafeBytes { _ = send(fd, $0.baseAddress!, data.count, 0) }
+                        data.withUnsafeBytes { bytes in
+                            guard let baseAddress = bytes.baseAddress else { return }
+                            _ = send(fd, baseAddress, data.count, 0)
+                        }
                     }
                 }
                 return ["MessageType": "Result", "Number": 0]
@@ -299,15 +305,17 @@ public class Muxer {
 
 
     private static func emitDeviceEvent(fd: Int32, type: String, payload: [String: Any]) {
+        guard let deviceID = payload["DeviceID"] else { return }
         let plist: [String: Any] = [
             "MessageType": type,
-            "DeviceID": payload["DeviceID"]!
+            "DeviceID": deviceID
         ]
 
         let pkt = RawPacket(plist: plist, version: 1, message: 8, tag: 0)
         let data = pkt.data
-        data.withUnsafeBytes {
-            _ = send(fd, $0.baseAddress!, data.count, 0)
+        data.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            _ = send(fd, baseAddress, data.count, 0)
         }
     }
     
