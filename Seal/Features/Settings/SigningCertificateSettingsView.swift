@@ -52,7 +52,7 @@ struct SigningCertificateSettingsView: View {
     private var accountCard: some View {
         VStack(spacing: 0) {
             if let account = activeAccount {
-                detailRow("Apple ID", viewModel.fullEmail(for: account))
+                detailRow("Apple ID", account.maskedEmail)
                 Divider()
                 detailRow("Team", account.teamName)
                 Divider()
@@ -91,9 +91,15 @@ struct SigningCertificateSettingsView: View {
                     .font(.subheadline)
                     .foregroundStyle(Color.sealTextSecondary)
                 Text("Serial：\(serial)")
-                    .font(.system(size: 13, weight: .regular, design: .monospaced))
+                    .font(.caption.monospaced())
                     .foregroundStyle(Color.sealTextSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .contextMenu {
+                        Button("复制 Serial") {
+                            SealPasteboard.copy(serial, announcement: "Serial 已复制")
+                        }
+                    }
                 Text("本机可用")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.sealSuccess)

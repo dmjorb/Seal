@@ -36,12 +36,16 @@ struct AppContainer {
             let appStore = try CoreDataAppStore(
                 storeURL: sealDirectory.appending(path: "Seal.sqlite")
             )
+            let operationCoordinator = AppOperationCoordinator()
             let fileStore = try AppFileStore.live()
             let accountRepository = ProtectedAccountRepository(
                 fileURL: sealDirectory.appending(path: "Accounts.json")
             )
             let keychain = KeychainVault()
             let signingPreferenceStore = SigningPreferenceStore()
+            let customizationStore = AppCustomizationStore(
+                fileURL: sealDirectory.appending(path: "AppCustomizations.json")
+            )
             let pairingStore = PairingStore(
                 fileURL: sealDirectory.appending(path: "Pairing.plist")
             )
@@ -66,7 +70,8 @@ struct AppContainer {
                 installChannel: installChannel,
                 portal: ApplePortalSigningService(
                     anisetteProvider: anisetteProvider
-                )
+                ),
+                operationCoordinator: operationCoordinator
             )
             let refreshQueueStore = RefreshQueueStore(
                 fileURL: sealDirectory.appending(path: "RefreshQueue.json")
@@ -93,7 +98,8 @@ struct AppContainer {
                     metadata: $0,
                     appStore: appStore,
                     accountRepository: accountRepository,
-                    fileStore: fileStore
+                    fileStore: fileStore,
+                    operationCoordinator: operationCoordinator
                 )
             }
 
@@ -112,7 +118,9 @@ struct AppContainer {
                     signingHistoryStore: signingHistoryStore,
                     notificationScheduler: notificationScheduler,
                     notificationPreferences: notificationPreferences,
-                    signingPreferenceStore: signingPreferenceStore
+                    signingPreferenceStore: signingPreferenceStore,
+                    customizationStore: customizationStore,
+                    operationCoordinator: operationCoordinator
                 ),
                 settingsViewModel: SettingsViewModel(
                     accountRepository: accountRepository,
@@ -129,7 +137,8 @@ struct AppContainer {
                     notificationScheduler: notificationScheduler,
                     notificationPreferences: notificationPreferences,
                     anisetteEnvironment: anisetteProvider,
-                    signingPreferenceStore: signingPreferenceStore
+                    signingPreferenceStore: signingPreferenceStore,
+                    operationCoordinator: operationCoordinator
                 )
             )
         } catch {

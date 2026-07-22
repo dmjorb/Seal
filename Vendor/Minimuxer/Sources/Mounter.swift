@@ -19,16 +19,10 @@ public class Mounter {
     public static var provider: MounterProvider?;
     
     private static func getProvider() -> any MounterProvider {
-        if let provider {
-            return provider
-        } else {
-            if Muxer.isrppairing {
-                provider = RPMounter()
-            } else {
-                provider = LockDownMounter()
-            }
-        }
-        return provider!
+        if let provider { return provider }
+        let resolved: any MounterProvider = Muxer.isrppairing ? RPMounter() : LockDownMounter()
+        provider = resolved
+        return resolved
     }
     public static func startAutoMounter(docsPath: String) {
         getProvider().startAutoMounter(docsPath: docsPath)

@@ -54,32 +54,48 @@ actor ApplePortalCertificateService {
         secret: AccountSecret
     ) async throws -> CreatedCertificateMaterial {
         let context = try await context(account: account, secret: secret)
-        let existing = try await fetchCertificates(team: context.team, session: context.session)
+        _ = try await fetchCertificates(team: context.team, session: context.session)
         let deviceName = await MainActor.run { UIDevice.current.name }
-
-        let requested: ALTCertificate
-        do {
-            requested = try await addCertificate(
-                team: context.team,
-                session: context.session,
-                deviceName: deviceName
-            )
-        } catch {
-            guard Self.isCertificateLimitError(error) else { throw error }
-            throw Self.failure(
-                title: "签名失败",
-                reason: "Apple 返回：无法创建签名证书",
-                recovery: "重试",
-                code: "SEAL-CERT-204"
-            )
-        }
+        let localP12Serial: String? = {
+            guard let p12 = secret.certificateP12,
+                  let certificate = try? ALTCertificate(p12Data: p12, password: nil) else {
+                return nil
+            }
+            return certificate.serialNumber
+        }()
+        let operations = CertificatePortalOperations<LegacyBox<ALTCertificate>>(
+            addCertificate: { [self] in
+                LegacyBox(
+                    try await addCertificate(
+                        team: context.team,
+                        session: context.session,
+                        deviceName: deviceName
+                    )
+                )
+            },
+            cleanupCandidates: { [self] in
+                try await fetchCertificates(team: context.team, session: context.session)
+                    .filter { CertificateSerial.matches($0.serialNumber, localP12Serial) == false }
+                    .map(LegacyBox.init)
+            },
+            revokeCertificate: { [self] certificate in
+                try await revoke(
+                    certificate.value,
+                    team: context.team,
+                    session: context.session
+                )
+            }
+        )
+        let requested = try await ApplePortalCertificateCapacityOrchestrator.create(
+            using: operations
+        ).value
         do {
             let refreshed = try await fetchCertificates(
                 team: context.team,
                 session: context.session
             )
             guard let certificate = refreshed.first(where: {
-                $0.serialNumber.caseInsensitiveCompare(requested.serialNumber) == .orderedSame
+                CertificateSerial.matches($0.serialNumber, requested.serialNumber)
             }) else {
                 throw Self.failure(
                     title: "证书创建结果不一致",
@@ -152,7 +168,7 @@ actor ApplePortalCertificateService {
             return false
         }
         guard let exactCertificate = certificates.first(where: {
-            $0.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame
+            CertificateSerial.matches($0.serialNumber, serialNumber)
         }) else {
             return true
         }
@@ -171,7 +187,7 @@ actor ApplePortalCertificateService {
         let context = try await context(account: account, secret: secret)
         let certificates = try await fetchCertificates(team: context.team, session: context.session)
         guard let certificate = certificates.first(where: {
-            $0.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame
+            CertificateSerial.matches($0.serialNumber, serialNumber)
         }) else {
             throw Self.failure(
                 title: "证书不存在",

@@ -40,6 +40,38 @@ struct PairingStoreTests {
     }
 
     @Test
+    func reimportingPairingFileResetsPreviousVerifiedMetadata() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appending(path: "Source.plist")
+        let destination = root.appending(path: "Pairing.plist")
+        let store = PairingStore(fileURL: destination)
+
+        let first = try PropertyListSerialization.data(
+            fromPropertyList: standardPairingDictionary(udid: "device-123"),
+            format: .xml,
+            options: 0
+        )
+        try first.write(to: source)
+        _ = try await store.importFile(at: source)
+        _ = try await store.markValidated(deviceIdentifier: "device-123")
+        #expect(try await store.current()?.validationStatus == .verified)
+
+        let replacement = try PropertyListSerialization.data(
+            fromPropertyList: standardPairingDictionary(udid: "device-456"),
+            format: .xml,
+            options: 0
+        )
+        try replacement.write(to: source, options: .atomic)
+        let imported = try await store.importFile(at: source)
+
+        #expect(imported.validationStatus == .unverified)
+        #expect(try await store.current()?.validationStatus == .unverified)
+        #expect(try await store.current()?.deviceIdentifier == "device-456")
+    }
+
+    @Test
     func importsRemotePairingWithPrivateKeyOnly() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

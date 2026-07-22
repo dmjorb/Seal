@@ -7,6 +7,7 @@ enum AppState: String, Codable, CaseIterable, Equatable, Sendable {
     case preparingCertificate
     case preparingProfiles
     case signing
+    case signed
     case waitingForInstallChannel
     case installing
     case verifying
@@ -20,6 +21,8 @@ enum AppState: String, Codable, CaseIterable, Equatable, Sendable {
             return "未签名"
         case .preparingCertificate, .preparingProfiles, .signing:
             return "签名中"
+        case .signed:
+            return "已签名"
         case .waitingForInstallChannel:
             return "等待连接"
         case .installing, .verifying:

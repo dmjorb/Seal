@@ -97,13 +97,16 @@ struct StorageMaintenanceView: View {
 
     private var actionCard: some View {
         VStack(spacing: 12) {
-            Button("清理 IPA 与签名缓存") { confirmsIPACacheClear = true }
+            Button(
+                viewModel.isStorageMaintenanceRunning ? "正在清理…" : "清理 IPA 与签名缓存"
+            ) { confirmsIPACacheClear = true }
                 .sealPrimaryAction(cornerRadius: 12)
             Button("只清理临时缓存") { confirmsTemporaryClear = true }
                 .sealOutlineAction(cornerRadius: 12)
             Button("只清理签名产物") { confirmsSignedCacheClear = true }
                 .sealOutlineAction(cornerRadius: 12)
         }
+        .disabled(viewModel.isStorageMaintenanceRunning)
     }
 
 

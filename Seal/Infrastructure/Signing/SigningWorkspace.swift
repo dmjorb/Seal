@@ -1,5 +1,6 @@
 import Foundation
 import ZIPFoundation
+import UIKit
 
 struct SigningWorkspace: Sendable {
     let limits: ArchiveLimits
@@ -18,7 +19,8 @@ struct SigningWorkspace: Sendable {
         workspaceRoot: URL,
         originalBundleID: String,
         teamID: String,
-        targetMainBundleID: String? = nil
+        targetMainBundleID: String? = nil,
+        customization: AppSigningCustomization = .none
     ) throws -> PreparedSigningWorkspace {
         let archive = try Archive(url: ipaURL, accessMode: .read)
         let entries = Array(archive)
@@ -60,6 +62,7 @@ struct SigningWorkspace: Sendable {
             )
             var mappings = [originalBundleID: mappedMain]
             try updateBundleIdentifier(at: appURL, to: mappedMain)
+            try applyCustomization(customization, to: appURL)
 
             let extensionURLs = try appExtensionURLs(in: appURL)
             for extensionURL in extensionURLs {
@@ -67,6 +70,7 @@ struct SigningWorkspace: Sendable {
                 let original = try bundleIdentifier(at: extensionURL)
                 let mapped = bundleIDMapper.extensionBundleID(
                     original: original,
+                    originalMainBundleID: originalBundleID,
                     mappedMainBundleID: mappedMain
                 )
                 try updateBundleIdentifier(at: extensionURL, to: mapped)
@@ -234,6 +238,170 @@ struct SigningWorkspace: Sendable {
             options: 0
         )
         try updated.write(to: infoURL, options: .atomic)
+    }
+
+    private func applyCustomization(
+        _ customization: AppSigningCustomization,
+        to appURL: URL
+    ) throws {
+        if let displayName = customization.normalizedDisplayName {
+            try updateDisplayName(at: appURL, to: displayName)
+        }
+        if let iconData = customization.iconData {
+            try replacePrimaryIcon(in: appURL, with: iconData)
+        }
+    }
+
+    private func updateDisplayName(at appURL: URL, to displayName: String) throws {
+        let infoURL = appURL.appending(path: "Info.plist")
+        let data = try Data(contentsOf: infoURL)
+        var format = PropertyListSerialization.PropertyListFormat.binary
+        let value = try PropertyListSerialization.propertyList(
+            from: data,
+            options: [.mutableContainersAndLeaves],
+            format: &format
+        )
+        guard var info = value as? [String: Any] else {
+            throw Self.signingFailure(reason: "应用信息无效", code: "SEAL-SIGN-404")
+        }
+        info["CFBundleDisplayName"] = displayName
+        info["CFBundleName"] = displayName
+        let updated = try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: format,
+            options: 0
+        )
+        try updated.write(to: infoURL, options: .atomic)
+    }
+
+    private func replacePrimaryIcon(in appURL: URL, with sourceData: Data) throws {
+        guard let sourceImage = UIImage(data: sourceData) else {
+            throw Self.signingFailure(reason: "所选 App 图标无法读取", code: "SEAL-SIGN-405")
+        }
+
+        let specifications: [(name: String, pixels: CGFloat)] = [
+            ("SealCustomIcon20@2x.png", 40),
+            ("SealCustomIcon20@3x.png", 60),
+            ("SealCustomIcon29@2x.png", 58),
+            ("SealCustomIcon29@3x.png", 87),
+            ("SealCustomIcon40@2x.png", 80),
+            ("SealCustomIcon40@3x.png", 120),
+            ("SealCustomIcon60@2x.png", 120),
+            ("SealCustomIcon60@3x.png", 180),
+            ("SealCustomIcon76@2x.png", 152),
+            ("SealCustomIcon83.5@2x.png", 167)
+        ]
+        for specification in specifications {
+            guard let rendered = renderIcon(
+                sourceImage,
+                size: CGSize(width: specification.pixels, height: specification.pixels)
+            ), let pngData = rendered.pngData() else {
+                throw Self.signingFailure(reason: "App 图标处理失败", code: "SEAL-SIGN-405")
+            }
+            try pngData.write(
+                to: appURL.appending(path: specification.name),
+                options: .atomic
+            )
+        }
+
+        let infoURL = appURL.appending(path: "Info.plist")
+        let data = try Data(contentsOf: infoURL)
+        var format = PropertyListSerialization.PropertyListFormat.binary
+        let value = try PropertyListSerialization.propertyList(
+            from: data,
+            options: [.mutableContainersAndLeaves],
+            format: &format
+        )
+        guard var info = value as? [String: Any] else {
+            throw Self.signingFailure(reason: "应用信息无效", code: "SEAL-SIGN-404")
+        }
+
+        let phoneFiles = [
+            "SealCustomIcon20", "SealCustomIcon29", "SealCustomIcon40", "SealCustomIcon60"
+        ]
+        let padFiles = [
+            "SealCustomIcon20", "SealCustomIcon29", "SealCustomIcon40",
+            "SealCustomIcon76", "SealCustomIcon83.5"
+        ]
+        info["CFBundleIconFiles"] = phoneFiles
+        info["CFBundleIcons"] = [
+            "CFBundlePrimaryIcon": [
+                "CFBundleIconFiles": phoneFiles,
+                "UIPrerenderedIcon": false
+            ]
+        ]
+        info["CFBundleIcons~ipad"] = [
+            "CFBundlePrimaryIcon": [
+                "CFBundleIconFiles": padFiles,
+                "UIPrerenderedIcon": false
+            ]
+        ]
+        info.removeValue(forKey: "CFBundleIconName")
+        let updated = try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: format,
+            options: 0
+        )
+        try updated.write(to: infoURL, options: .atomic)
+    }
+
+    private func primaryIconNames(from info: [String: Any]) -> [String] {
+        var values: [String] = []
+        if let iconFiles = info["CFBundleIconFiles"] as? [String] {
+            values.append(contentsOf: iconFiles)
+        }
+        if let icons = info["CFBundleIcons"] as? [String: Any],
+           let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+           let iconFiles = primary["CFBundleIconFiles"] as? [String] {
+            values.append(contentsOf: iconFiles)
+        }
+        if let icons = info["CFBundleIcons~ipad"] as? [String: Any],
+           let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+           let iconFiles = primary["CFBundleIconFiles"] as? [String] {
+            values.append(contentsOf: iconFiles)
+        }
+        return Array(Set(values.filter { $0.isEmpty == false }))
+    }
+
+    private func iconCandidates(named name: String, in appURL: URL) -> [URL] {
+        let fileManager = FileManager.default
+        let baseName = URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent.lowercased()
+        return (try? fileManager.contentsOfDirectory(
+            at: appURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ))?.filter { url in
+            let candidate = url.deletingPathExtension().lastPathComponent.lowercased()
+            let ext = url.pathExtension.lowercased()
+            return ["png", "jpg", "jpeg"].contains(ext)
+                && (candidate == baseName || candidate.hasPrefix(baseName + "@"))
+        } ?? []
+    }
+
+    private func imageDimensions(at url: URL) -> CGSize? {
+        guard let data = try? Data(contentsOf: url),
+              let image = UIImage(data: data) else { return nil }
+        return image.size
+    }
+
+    private func renderIcon(_ image: UIImage, size: CGSize) -> UIImage? {
+        guard size.width > 0, size.height > 0 else { return nil }
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { _ in
+            let sourceRatio = image.size.width / max(image.size.height, 1)
+            let targetRatio = size.width / max(size.height, 1)
+            let drawSize: CGSize
+            if sourceRatio > targetRatio {
+                drawSize = CGSize(width: size.height * sourceRatio, height: size.height)
+            } else {
+                drawSize = CGSize(width: size.width, height: size.width / max(sourceRatio, 0.0001))
+            }
+            let origin = CGPoint(
+                x: (size.width - drawSize.width) / 2,
+                y: (size.height - drawSize.height) / 2
+            )
+            image.draw(in: CGRect(origin: origin, size: drawSize))
+        }
     }
 
     private func removeOldSignatures(in appURL: URL) throws {

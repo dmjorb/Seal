@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import Testing
 @testable import Seal
 
@@ -33,7 +34,7 @@ struct ImportWorkflowTests {
 
         let record = try requireCompleted(await workflow.state)
         #expect(record.id == appID)
-        #expect(record.state == .preflightPassed)
+        #expect(record.state == .imported)
         #expect(record.ipaRelativePath == "Apps/\(appID.uuidString)/Original.ipa")
         #expect(try await environment.appStore.fetchAll() == [record])
         #expect(FileManager.default.fileExists(
@@ -111,11 +112,159 @@ struct ImportWorkflowTests {
     }
 
     @Test
+    func replacementSaveFailureRestoresPreviousIPAAndIconWithoutLeavingBackup() async throws {
+        let failingStore = FailOnceAppStore()
+        let environment = try makeEnvironment(appStore: failingStore)
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let appID = UUID()
+        let oldIPAData = Data("old ipa".utf8)
+        let oldIconData = Data("old icon".utf8)
+        let oldRecord = AppRecord(
+            id: appID,
+            originalBundleIdentifier: "com.example.demo",
+            name: "Old Demo",
+            version: "0.9",
+            buildNumber: "1",
+            size: Int64(oldIPAData.count),
+            iconRelativePath: "Apps/\(appID.uuidString)/Icon.png",
+            state: .imported,
+            ipaRelativePath: "Apps/\(appID.uuidString)/Original.ipa",
+            importedAt: Date(timeIntervalSince1970: 100)
+        )
+        let oldIPAURL = environment.documents.appending(path: oldRecord.ipaRelativePath)
+        let oldIconURL = environment.documents.appending(path: oldRecord.iconRelativePath!)
+        try FileManager.default.createDirectory(
+            at: oldIPAURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try oldIPAData.write(to: oldIPAURL, options: .atomic)
+        try oldIconData.write(to: oldIconURL, options: .atomic)
+        try await failingStore.save(oldRecord)
+        let source = try IPAArchiveFixture.make()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let workflow = makeWorkflow(environment: environment, appID: UUID())
+
+        await workflow.prepare(sourceURL: source)
+        await workflow.confirm()
+
+        let failure = try requireFailure(await workflow.state)
+        #expect(failure.code == "SEAL-IPA-205")
+        #expect(try Data(contentsOf: oldIPAURL) == oldIPAData)
+        #expect(try Data(contentsOf: oldIconURL) == oldIconData)
+        let appsRoot = environment.documents.appending(path: "Apps", directoryHint: .isDirectory)
+        let hiddenEntries = try FileManager.default.contentsOfDirectory(
+            at: appsRoot,
+            includingPropertiesForKeys: nil,
+            options: []
+        ).filter { $0.lastPathComponent.hasPrefix(".") }
+        #expect(hiddenEntries.isEmpty)
+        #expect(try await failingStore.fetchAll() == [oldRecord])
+    }
+
+    @Test
+    func successfulReplacementFinalizesWithoutLeavingBackup() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let appID = UUID()
+        let oldData = Data("old ipa".utf8)
+        let oldRecord = AppRecord(
+            id: appID,
+            originalBundleIdentifier: "com.example.demo",
+            name: "Old Demo",
+            version: "0.9",
+            buildNumber: "1",
+            size: Int64(oldData.count),
+            state: .imported,
+            ipaRelativePath: "Apps/\(appID.uuidString)/Original.ipa",
+            importedAt: Date(timeIntervalSince1970: 100)
+        )
+        let oldIPAURL = environment.documents.appending(path: oldRecord.ipaRelativePath)
+        try FileManager.default.createDirectory(
+            at: oldIPAURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try oldData.write(to: oldIPAURL, options: .atomic)
+        try await environment.appStore.save(oldRecord)
+        let source = try IPAArchiveFixture.make()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let workflow = makeWorkflow(environment: environment, appID: UUID())
+
+        await workflow.prepare(sourceURL: source)
+        await workflow.confirm()
+
+        let completed = try requireCompleted(await workflow.state)
+        #expect(completed.id == appID)
+        #expect(try Data(contentsOf: oldIPAURL) != oldData)
+        let appsRoot = environment.documents.appending(path: "Apps", directoryHint: .isDirectory)
+        let hiddenEntries = try FileManager.default.contentsOfDirectory(
+            at: appsRoot,
+            includingPropertiesForKeys: nil,
+            options: []
+        ).filter { $0.lastPathComponent.hasPrefix(".") }
+        #expect(hiddenEntries.isEmpty)
+    }
+
+    @Test
+    func cancelInvalidatesSuspendedCommitBeforeItCanWriteDatabaseOrFiles() async throws {
+        let gate = BlockingPersistenceGate()
+        let appStore = try CoreDataAppStore(
+            inMemory: true,
+            beforeSave: { operation in
+                guard operation == .replaceImportedApp else { return }
+                gate.suspendUntilResumed()
+            }
+        )
+        let environment = try makeEnvironment(appStore: appStore)
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let appID = UUID()
+        let oldData = Data("old ipa".utf8)
+        let oldRecord = AppRecord(
+            id: appID,
+            originalBundleIdentifier: "com.example.demo",
+            name: "Old Demo",
+            version: "0.9",
+            buildNumber: "1",
+            size: Int64(oldData.count),
+            state: .imported,
+            ipaRelativePath: "Apps/\(appID.uuidString)/Original.ipa",
+            importedAt: Date(timeIntervalSince1970: 100)
+        )
+        let oldIPAURL = environment.documents.appending(path: oldRecord.ipaRelativePath)
+        try FileManager.default.createDirectory(
+            at: oldIPAURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try oldData.write(to: oldIPAURL, options: .atomic)
+        try await appStore.save(oldRecord)
+        let source = try IPAArchiveFixture.make()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let workflow = makeWorkflow(environment: environment, appID: UUID())
+        await workflow.prepare(sourceURL: source)
+
+        let confirmation = Task { await workflow.confirm() }
+        gate.waitUntilSuspended()
+        await workflow.cancel()
+        gate.resume()
+        await confirmation.value
+
+        #expect(await workflow.state == .idle)
+        #expect(try await appStore.fetchAll() == [oldRecord])
+        #expect(try Data(contentsOf: oldIPAURL) == oldData)
+        let appsRoot = environment.documents.appending(path: "Apps", directoryHint: .isDirectory)
+        let hiddenEntries = try FileManager.default.contentsOfDirectory(
+            at: appsRoot,
+            includingPropertiesForKeys: nil,
+            options: []
+        ).filter { $0.lastPathComponent.hasPrefix(".") }
+        #expect(hiddenEntries.isEmpty)
+    }
+
+    @Test
     func duplicateBundleIdentifierIsReplacedAtomically() async throws {
         let environment = try makeEnvironment()
         defer { try? FileManager.default.removeItem(at: environment.root) }
         let oldRecord = AppRecord(
-            originalBundleIdentifier: "com.example.demo",
+            originalBundleIdentifier: "com.Example.Demo",
             name: "Old Demo",
             version: "0.9",
             buildNumber: "1",
@@ -141,7 +290,7 @@ struct ImportWorkflowTests {
 
         let records = try await environment.appStore.fetchAll()
         #expect(records.count == 1)
-        #expect(records.first?.id == newID)
+        #expect(records.first?.id == oldRecord.id)
         #expect(records.first?.name == "Demo")
         #expect(FileManager.default.fileExists(atPath: oldIPA.path) == false)
     }
@@ -218,6 +367,24 @@ struct ImportWorkflowTests {
             throw TestFailure.unexpectedState
         }
         return failure
+    }
+}
+
+private final class BlockingPersistenceGate: @unchecked Sendable {
+    private let suspended = DispatchSemaphore(value: 0)
+    private let resumed = DispatchSemaphore(value: 0)
+
+    func suspendUntilResumed() {
+        suspended.signal()
+        resumed.wait()
+    }
+
+    func waitUntilSuspended() {
+        suspended.wait()
+    }
+
+    func resume() {
+        resumed.signal()
     }
 }
 

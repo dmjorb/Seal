@@ -16,6 +16,22 @@ struct ProvisioningProfileBindingTests {
         #expect(result == binding)
     }
 
+
+    @Test
+    func acceptsSameCertificateSerialWhenEmbeddedProfileRetainsLeadingZero() throws {
+        let binding = makeBinding(
+            certificateSerialNumbers: ["0492CEFA41CB31633BDE03BED94193D9"]
+        )
+        let result = try binding.validated(
+            expectedTeamID: "TEAM123",
+            expectedBundleID: "com.example.app",
+            expectedCertificateSerialNumber: "492CEFA41CB31633BDE03BED94193D9",
+            expectedDeviceIdentifier: "UDID-123",
+            now: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        #expect(result == binding)
+    }
+
     @Test
     func rejectsCertificateMismatchWithoutSilentReplacement() {
         let binding = makeBinding()
@@ -84,7 +100,9 @@ struct ProvisioningProfileBindingTests {
         )
     }
 
-    private func makeBinding() -> ProvisioningProfileBinding {
+    private func makeBinding(
+        certificateSerialNumbers: [String] = ["A1B2C3"]
+    ) -> ProvisioningProfileBinding {
         ProvisioningProfileBinding(
             bundleIdentifier: "com.example.app",
             profileUUID: "PROFILE-UUID",
@@ -92,7 +110,7 @@ struct ProvisioningProfileBindingTests {
             teamIdentifier: "TEAM123",
             creationDate: Date(timeIntervalSince1970: 1_700_000_000),
             expirationDate: Date(timeIntervalSince1970: 1_800_000_000),
-            certificateSerialNumbers: ["A1B2C3"],
+            certificateSerialNumbers: certificateSerialNumbers,
             deviceIdentifiers: ["UDID-123"],
             entitlements: [
                 "application-identifier": .string("TEAM123.com.example.app"),

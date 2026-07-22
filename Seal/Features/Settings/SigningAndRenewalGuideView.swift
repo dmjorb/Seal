@@ -42,12 +42,12 @@ struct SigningAndRenewalGuideView: View {
                 ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
                     HStack(alignment: .top, spacing: 12) {
                         Text("\(index + 1)")
-                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .font(.caption.weight(.bold))
                             .foregroundStyle(Color.sealAccent)
                             .frame(width: 26, height: 26)
                             .background(Color.sealAccent.opacity(0.14), in: Circle())
                         Text(step)
-                            .font(.system(size: 15, weight: .regular))
+                            .font(.subheadline)
                             .foregroundStyle(.primary)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)

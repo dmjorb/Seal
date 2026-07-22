@@ -9,6 +9,7 @@ struct BundleIDMapperTests {
         let repeated = mapper.mainBundleID(original: "com.example.demo", teamID: "TEAM2")
         let appExtension = mapper.extensionBundleID(
             original: "com.example.demo.share",
+            originalMainBundleID: "com.example.demo",
             mappedMainBundleID: first
         )
         let appGroup = mapper.appGroupID(
@@ -18,12 +19,25 @@ struct BundleIDMapperTests {
 
         #expect(first == "com.example.demo.seal")
         #expect(first == repeated)
-        #expect(appExtension.hasPrefix("\(first).e"))
+        #expect(appExtension == "\(first).share")
         #expect(appGroup.hasPrefix("group.com.mjorb.seal.groups."))
         #expect(appGroup == mapper.appGroupID(
             original: "group.com.example.demo",
             teamID: "TEAM1"
         ))
+    }
+
+
+    @Test
+    func existingSealSuffixIsNotRepeated() {
+        #expect(
+            BundleIDPolicy.recommendedBundleIdentifier(for: "com.example.demo.seal")
+                == "com.example.demo.seal"
+        )
+        #expect(
+            BundleIDPolicy.recommendedBundleIdentifier(for: "  com.example.demo.SeAl  ")
+                == "com.example.demo.SeAl"
+        )
     }
 
     @Test
@@ -35,6 +49,43 @@ struct BundleIDMapperTests {
                 teamID: "TEAM1",
                 requested: "com.example.demo.custom"
             ) == "com.example.demo.custom"
+        )
+    }
+
+    @Test
+    func blankRequestedBundleIdentifierFallsBackToNormalizedSealSuffix() {
+        let mapper = BundleIDMapper()
+
+        #expect(
+            mapper.mainBundleID(
+                original: "  com.example.demo  ",
+                teamID: "TEAM1",
+                requested: "   "
+            ) == "com.example.demo.seal"
+        )
+        #expect(
+            BundleIDPolicy.recommendedBundleIdentifier(for: "  com.example.demo  ")
+                == "com.example.demo.seal"
+        )
+    }
+
+    @Test
+    func policyUsesSealSuffixForNewImportWithoutExplicitOverride() throws {
+        let imported = AppRecord(
+            originalBundleIdentifier: "com.example.demo",
+            mappedBundleIdentifier: nil,
+            name: "Demo",
+            version: "1.0",
+            buildNumber: "1",
+            size: 1,
+            state: .imported,
+            ipaRelativePath: "Apps/demo.ipa",
+            importedAt: Date()
+        )
+
+        #expect(
+            try BundleIDPolicy.targetBundleIdentifier(for: imported)
+                == "com.example.demo.seal"
         )
     }
 

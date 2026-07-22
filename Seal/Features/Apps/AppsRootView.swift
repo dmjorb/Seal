@@ -1,32 +1,36 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct AppsRootView: View {
-    private enum ListMode: String, Identifiable {
-        case unsigned = "待签名"
-        case installed = "已安装"
-
-        var id: Self { self }
-    }
-
     @ObservedObject var viewModel: AppsViewModel
     @ObservedObject var settingsViewModel: SettingsViewModel
+
     @ScaledMetric(relativeTo: .largeTitle) private var sealTitleSize = 38
-    @State private var mode: ListMode = .unsigned
+    @State private var mode: AppListPresentationMode = .installed
+    @State private var didResolveInitialMode = false
     @State private var detailApp: AppRecord?
+    @State private var signedActionApp: AppRecord?
     @State private var pendingDeleteApp: AppRecord?
 
     var body: some View {
         NavigationStack {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 24) {
-                    header
-                    modeTabs
-                    appSection
+            VStack(spacing: 0) {
+                header
+                    .padding(.horizontal, 20)
+                    .padding(.top, 18)
+
+                modeTabs
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+
+                TabView(selection: $mode) {
+                    appPage(.unsigned).tag(AppListPresentationMode.unsigned)
+                    appPage(.signed).tag(AppListPresentationMode.signed)
+                    appPage(.installed).tag(AppListPresentationMode.installed)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 18)
-                .padding(.bottom, 34)
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .animation(.easeInOut(duration: 0.25), value: mode)
             }
             .toolbar(.hidden, for: .navigationBar)
             .fileImporter(
@@ -52,28 +56,38 @@ struct AppsRootView: View {
                             }
                         }
                     )
+                    .presentationDetents([.medium, .large])
                 }
             }
             .sheet(item: $viewModel.selectedOperationApp, onDismiss: viewModel.dismissOperation) { app in
                 AppSigningSheet(
                     app: app,
                     viewModel: viewModel,
-                    onFinish: { mode = .installed }
+                    onFinish: moveToSigningResult
                 )
-                    .presentationDetents([.height(500)])
-                    .compatiblePresentationCornerRadius(28)
+                .presentationDetents([.medium, .large])
+            }
+            .sheet(item: $signedActionApp) { app in
+                SignedIPAActionSheet(
+                    app: app,
+                    viewModel: viewModel,
+                    onInstalled: { move(to: .installed) },
+                    onDeleted: { move(to: .unsigned) },
+                    onResign: { presentSigningAfterSignedDrawer(for: app) }
+                )
+                .presentationDetents([.medium, .large])
             }
             .sheet(item: $viewModel.accountSelectionApp) { app in
                 AccountSelectionView(
                     app: app,
-                    accounts: viewModel.verifiedAccounts,
+                    accounts: viewModel.selectableAccounts,
                     onSelect: { viewModel.selectAccount($0, for: app) }
                 )
+                .presentationDetents([.medium, .large])
             }
             .sheet(item: $viewModel.batchRefreshSession) { _ in
                 BatchRefreshView(viewModel: viewModel)
-                    .presentationDetents([.height(430)])
-                    .compatiblePresentationCornerRadius(28)
+                    .presentationDetents([.medium, .large])
             }
             .sheet(item: $detailApp) { app in
                 NavigationStack {
@@ -81,7 +95,6 @@ struct AppsRootView: View {
                 }
                 .sealSheetBackground()
                 .presentationDetents([.large])
-                .compatiblePresentationCornerRadius(28)
             }
             .alert(deleteAlertTitle, isPresented: Binding(
                 get: { pendingDeleteApp != nil },
@@ -96,19 +109,19 @@ struct AppsRootView: View {
             } message: {
                 Text(deleteAlertMessage)
             }
-
             .alert(item: rootAlertFailure) { failure in
                 standardAlert(failure)
             }
             .task {
                 await settingsViewModel.load()
                 await viewModel.load()
+                resolveInitialModeIfNeeded()
                 if settingsViewModel.environment.isConfigured {
                     _ = await viewModel.refreshSigningChannel()
                 }
             }
             .onChange(of: viewModel.importCompletionCount) { _ in
-                withAnimation(.easeOut(duration: 0.18)) { mode = .unsigned }
+                move(to: .unsigned)
             }
         }
         .sealScreenBackground()
@@ -137,69 +150,75 @@ struct AppsRootView: View {
     }
 
     private var modeTabs: some View {
-        HStack(spacing: 44) {
-            modeButton(.unsigned, count: viewModel.unsignedApps.count)
-            modeButton(.installed, count: viewModel.installedApps.count)
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func modeButton(_ item: ListMode, count: Int) -> some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.2)) { mode = item }
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 12) {
-                    Text(item.rawValue)
-                        .font(.system(size: 18, weight: .semibold))
-                    Text("\(count)")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(mode == item ? Color.sealAccent : Color.sealTextSecondary)
-                        .frame(minWidth: 32, minHeight: 32)
-                        .background(
-                            mode == item ? Color.sealAccent.opacity(0.10) : Color.secondary.opacity(0.08),
-                            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        )
+        GeometryReader { proxy in
+            let itemWidth = proxy.size.width / CGFloat(AppListPresentationMode.allCases.count)
+            ZStack(alignment: .bottomLeading) {
+                HStack(spacing: 0) {
+                    ForEach(AppListPresentationMode.allCases) { item in
+                        Button {
+                            move(to: item)
+                        } label: {
+                            HStack(spacing: 7) {
+                                Text(item.rawValue)
+                                let count = appCount(for: item)
+                                if count > 0 {
+                                    Text("\(count)")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(mode == item ? Color.sealAccent : Color.sealTextSecondary)
+                                }
+                            }
+                            .font(.headline.weight(mode == item ? .semibold : .regular))
+                            .foregroundStyle(mode == item ? Color.primary : Color.sealTextSecondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(item.rawValue)，\(appCount(for: item)) 个")
+                        .accessibilityAddTraits(mode == item ? .isSelected : [])
+                    }
                 }
+
                 Capsule()
-                    .fill(mode == item ? Color.sealAccent : .clear)
-                    .frame(width: 78, height: 4)
+                    .fill(Color.sealAccent)
+                    .frame(width: itemWidth * 0.42, height: 3)
+                    .offset(
+                        x: itemWidth * CGFloat(modeIndex) + itemWidth * 0.29,
+                        y: 0
+                    )
+                    .animation(.easeInOut(duration: 0.25), value: mode)
             }
-            .foregroundStyle(mode == item ? Color.sealAccent : Color.sealTextSecondary)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(item.rawValue)，\(count) 个")
-        .accessibilityAddTraits(mode == item ? .isSelected : [])
+        .frame(height: 52)
+        .accessibilityElement(children: .contain)
     }
 
-    private var appSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center) {
-                Text(mode == .unsigned ? "待签名应用" : "已安装应用")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .accessibilityAddTraits(.isHeader)
-
-                Spacer(minLength: 12)
-
-                if mode == .installed, viewModel.installedApps.isEmpty == false {
-                    batchRefreshMenu
-                }
+    private func appPage(_ pageMode: AppListPresentationMode) -> some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 16) {
+                sectionHeader(pageMode)
+                appList(pageMode)
             }
-            appList
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 34)
         }
+        .scrollDismissesKeyboard(.interactively)
     }
 
+    private func sectionHeader(_ pageMode: AppListPresentationMode) -> some View {
+        HStack(alignment: .center) {
+            Text(pageMode.sectionTitle)
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.primary)
+                .accessibilityAddTraits(.isHeader)
 
-    private var deleteAlertTitle: String {
-        pendingDeleteApp?.state == .installed ? "删除记录？" : "删除应用？"
-    }
+            Spacer(minLength: 12)
 
-    private var deleteAlertMessage: String {
-        guard pendingDeleteApp?.state == .installed else {
-            return "删除后将从 Seal 的待签名列表中移除，并删除 Seal 保存的 IPA 文件，不会影响手机上已安装的应用。"
+            if pageMode == .installed, viewModel.installedApps.isEmpty == false {
+                batchRefreshMenu
+            }
         }
-        return "该应用已过期。删除后将从 Seal 的已安装列表中移除，不会卸载手机上的应用。"
+        .frame(height: 32)
     }
 
     private var batchRefreshMenu: some View {
@@ -223,7 +242,7 @@ struct AppsRootView: View {
                 Image(systemName: "arrow.triangle.2.circlepath")
                 Text("批量续签")
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.caption.weight(.semibold))
             .foregroundStyle(Color.sealAccent)
             .padding(.horizontal, 10)
             .frame(height: 30)
@@ -233,9 +252,9 @@ struct AppsRootView: View {
     }
 
     @ViewBuilder
-    private var appList: some View {
-        let apps = mode == .installed ? viewModel.installedApps : viewModel.unsignedApps
-        if viewModel.phase == .preparing {
+    private func appList(_ pageMode: AppListPresentationMode) -> some View {
+        let apps = apps(for: pageMode)
+        if viewModel.phase == .preparing, pageMode == .unsigned {
             HStack(spacing: 12) {
                 ProgressView()
                 Text("正在读取 IPA")
@@ -245,30 +264,48 @@ struct AppsRootView: View {
             .frame(maxWidth: .infinity, minHeight: 116)
             .sealListCard(cornerRadius: 18)
         } else if apps.isEmpty {
-            emptyState
+            emptyState(pageMode)
         } else {
             VStack(spacing: 0) {
                 ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
                     Button {
-                        viewModel.presentOperation(for: app)
+                        open(app, in: pageMode)
                     } label: {
-                        ImportedAppRow(app: app, iconData: viewModel.iconData[app.id])
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
-                            .contentShape(Rectangle())
+                        ImportedAppRow(
+                            app: app,
+                            mode: pageMode,
+                            displayName: viewModel.displayName(for: app),
+                            iconData: viewModel.displayIconData(for: app),
+                            signedIPAFileStatus: viewModel.signedIPAFileStatus(for: app)
+                        )
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
                     }
                     .buttonStyle(.plain)
-                    .contentShape(Rectangle())
                     .contextMenu {
+                        Button("复制 Bundle ID") {
+                            SealPasteboard.copy(
+                                displayBundleIdentifier(for: app, mode: pageMode),
+                                announcement: "Bundle ID 已复制"
+                            )
+                        }
                         Button("查看详情") { detailApp = app }
-                        if mode == .unsigned {
+                        if pageMode == .unsigned {
                             Button(role: .destructive) { pendingDeleteApp = app } label: {
-                                Text("删除应用")
+                                Text(viewModel.isDeleting(appID: app.id) ? "正在删除…" : "删除应用")
                             }
-                        } else if mode == .installed, app.isSeal == false, isExpired(app) {
+                            .disabled(viewModel.isDeleting(appID: app.id))
+                        } else if pageMode == .signed {
+                            Button("安装") { signedActionApp = app }
+                            Button("导出") { signedActionApp = app }
+                            Button(role: .destructive) { signedActionApp = app } label: {
+                                Text("删除已签名 IPA")
+                            }
+                        } else if app.isSeal == false, isExpired(app) {
                             Button(role: .destructive) { pendingDeleteApp = app } label: {
-                                Text("删除记录")
+                                Text(viewModel.isDeleting(appID: app.id) ? "正在删除…" : "删除记录")
                             }
+                            .disabled(viewModel.isDeleting(appID: app.id))
                         }
                     }
 
@@ -283,14 +320,29 @@ struct AppsRootView: View {
         }
     }
 
-    private var emptyState: some View {
+    private func displayBundleIdentifier(
+        for app: AppRecord,
+        mode pageMode: AppListPresentationMode
+    ) -> String {
+        switch pageMode {
+        case .unsigned:
+            return app.preferredBundleIdentifier
+                ?? BundleIDPolicy.recommendedBundleIdentifier(for: app.originalBundleIdentifier)
+        case .signed, .installed:
+            return app.mappedBundleIdentifier
+                ?? app.preferredBundleIdentifier
+                ?? app.originalBundleIdentifier
+        }
+    }
+
+    private func emptyState(_ pageMode: AppListPresentationMode) -> some View {
         VStack(spacing: 12) {
-            Image(systemName: mode == .installed ? "app.badge.checkmark" : "square.and.arrow.down")
+            Image(systemName: emptyStateIcon(pageMode))
                 .font(.system(size: 30, weight: .medium))
                 .foregroundStyle(Color.sealAccent)
-            Text(mode == .installed ? "暂无已安装应用" : "暂无待签名应用")
+            Text(emptyStateTitle(pageMode))
                 .font(.headline)
-            if mode == .unsigned {
+            if pageMode == .unsigned {
                 Text("点击右上角 + 导入 IPA")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -298,6 +350,85 @@ struct AppsRootView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 160)
         .sealListCard(cornerRadius: 20)
+    }
+
+    private func open(_ app: AppRecord, in pageMode: AppListPresentationMode) {
+        switch pageMode {
+        case .unsigned, .installed:
+            viewModel.presentOperation(for: app)
+        case .signed:
+            signedActionApp = app
+        }
+    }
+
+    private func apps(for pageMode: AppListPresentationMode) -> [AppRecord] {
+        switch pageMode {
+        case .unsigned: viewModel.unsignedApps
+        case .signed: viewModel.signedApps
+        case .installed: viewModel.installedApps
+        }
+    }
+
+    private func appCount(for pageMode: AppListPresentationMode) -> Int {
+        apps(for: pageMode).count
+    }
+
+    private var modeIndex: Int {
+        AppListPresentationMode.allCases.firstIndex(of: mode) ?? 0
+    }
+
+    private func move(to destination: AppListPresentationMode) {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            mode = destination
+        }
+    }
+
+    private func moveToSigningResult() {
+        guard case .succeeded(let result) = viewModel.signingSession?.status else { return }
+        move(to: result.state == .installed ? .installed : .signed)
+    }
+
+    private func presentSigningAfterSignedDrawer(for app: AppRecord) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            viewModel.presentOperation(for: app)
+        }
+    }
+
+    private func resolveInitialModeIfNeeded() {
+        guard didResolveInitialMode == false else { return }
+        didResolveInitialMode = true
+        let allEmpty = viewModel.unsignedApps.isEmpty
+            && viewModel.signedApps.isEmpty
+            && viewModel.installedApps.isEmpty
+        mode = allEmpty ? .unsigned : .installed
+    }
+
+    private func emptyStateIcon(_ pageMode: AppListPresentationMode) -> String {
+        switch pageMode {
+        case .unsigned: "square.and.arrow.down"
+        case .signed: "checkmark.seal"
+        case .installed: "app.badge.checkmark"
+        }
+    }
+
+    private func emptyStateTitle(_ pageMode: AppListPresentationMode) -> String {
+        switch pageMode {
+        case .unsigned: "暂无待签名应用"
+        case .signed: "暂无已签名 IPA"
+        case .installed: "暂无已安装应用"
+        }
+    }
+
+    private var deleteAlertTitle: String {
+        pendingDeleteApp?.state == .installed ? "删除记录？" : "删除应用？"
+    }
+
+    private var deleteAlertMessage: String {
+        guard pendingDeleteApp?.state == .installed else {
+            return "删除后将从 Seal 的待签名列表中移除，并删除 Seal 保存的 IPA 文件，不会影响手机上已安装的应用。"
+        }
+        return "该应用已过期。删除后将从 Seal 的已安装列表中移除，不会卸载手机上的应用。"
     }
 
     private func isExpired(_ app: AppRecord, now: Date = Date()) -> Bool {
@@ -318,7 +449,9 @@ struct AppsRootView: View {
     private var rootAlertFailure: Binding<ImportFailure?> {
         Binding(
             get: {
-                viewModel.selectedOperationApp == nil ? viewModel.alertFailure : nil
+                viewModel.selectedOperationApp == nil && signedActionApp == nil
+                    ? viewModel.alertFailure
+                    : nil
             },
             set: { viewModel.alertFailure = $0 }
         )
@@ -329,7 +462,6 @@ struct AppsRootView: View {
             Task { await viewModel.cancelImport() }
         }
     }
-
 }
 
 private extension UTType {

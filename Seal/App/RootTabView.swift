@@ -7,6 +7,7 @@ struct RootTabView: View {
     @State private var selection: AppSection = .apps
     @State private var launchCheckInProgress = false
     @AppStorage("behavior.autoRenew") private var autoRenew = false
+    @AppStorage(SealAppearanceMode.storageKey) private var appearanceModeRawValue = SealAppearanceMode.system.rawValue
 
     var body: some View {
         TabView(selection: $selection) {
@@ -29,7 +30,7 @@ struct RootTabView: View {
             .tag(AppSection.settings)
         }
         .tint(.sealAccent)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(appearanceMode.colorScheme)
         .sealScreenBackground()
         .task {
             await LocalNetworkPermissionPrimer.requestIfNeeded()
@@ -48,6 +49,16 @@ struct RootTabView: View {
             guard phase == .active else { return }
             Task { await performLaunchCheck() }
         }
+        .onChange(of: selection) { section in
+            Task {
+                switch section {
+                case .apps:
+                    await appsViewModel.load(force: true)
+                case .settings:
+                    await settingsViewModel.load(force: true)
+                }
+            }
+        }
         .onOpenURL { url in
             if LocalDevVPNLink.isCallback(url) {
                 selection = .apps
@@ -62,6 +73,10 @@ struct RootTabView: View {
             selection = .apps
             Task { await appsViewModel.importSelectedFile(url) }
         }
+    }
+
+    private var appearanceMode: SealAppearanceMode {
+        SealAppearanceMode(rawValue: appearanceModeRawValue) ?? .system
     }
 
     @MainActor

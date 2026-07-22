@@ -11,6 +11,7 @@ struct SettingsRootView: View {
 
     @AppStorage("behavior.autoRenew") private var autoRenew = false
     @AppStorage("behavior.deleteIPAAfterInstall") private var deleteIPAAfterInstall = false
+    @AppStorage(SealAppearanceMode.storageKey) private var appearanceModeRawValue = SealAppearanceMode.system.rawValue
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -76,6 +77,26 @@ struct SettingsRootView: View {
                         .disabled(isChecking)
                     }
 
+                    settingsSection("外观") {
+                        Menu {
+                            ForEach(SealAppearanceMode.allCases) { appearance in
+                                Button {
+                                    appearanceModeRawValue = appearance.rawValue
+                                } label: {
+                                    Label(appearance.title, systemImage: appearance.systemImage)
+                                }
+                            }
+                        } label: {
+                            settingsRow(
+                                title: "外观",
+                                value: appearanceMode.title,
+                                icon: appearanceMode.systemImage,
+                                showsChevron: true
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+
                     settingsSection("自动化") {
                         Toggle(isOn: $autoRenew) {
                             settingsRow(
@@ -90,21 +111,37 @@ struct SettingsRootView: View {
                         Toggle(isOn: Binding(
                             get: { viewModel.notificationsEnabled },
                             set: { enabled in
-                                Task { await viewModel.setNotificationsEnabled(enabled) }
+                                viewModel.submitNotificationsEnabled(enabled)
                             }
                         )) {
                             settingsRow(
                                 title: "到期前 24 小时提醒",
-                                value: viewModel.notificationsEnabled ? "开" : "关",
+                                value: viewModel.notificationStatusSummary,
                                 icon: "bell",
                                 showsChevron: false,
                                 iconColor: Color.sealWarning
                             )
                         }
                         .tint(.sealAccent)
+                        .disabled(viewModel.isNotificationOperationRunning)
+
+                        if viewModel.isSystemNotificationDenied {
+                            sectionDivider
+                            Button(action: openSystemSettings) {
+                                settingsRow(
+                                    title: "系统通知权限",
+                                    value: "未开启",
+                                    icon: "gearshape",
+                                    showsChevron: true,
+                                    statusColor: Color.sealWarning,
+                                    iconColor: Color.sealTextSecondary
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    Text("开启后，每天第一次打开 Seal 会自动续签全部 App。")
-                        .font(.system(size: 13, weight: .regular))
+                    Text("开启后，每天第一次打开 Seal 时检查并续签；需要有效配对和 LocalDevVPN。")
+                        .font(.footnote)
                         .foregroundStyle(Color.sealTextSecondary)
                         .padding(.horizontal, 8)
                         .padding(.top, -14)
@@ -216,16 +253,9 @@ struct SettingsRootView: View {
                 }
             }
             .alert(item: $viewModel.alertFailure) { failure in
-                Alert(
-                    title: Text(failure.title),
-                    message: Text(failure.userMessage),
-                    dismissButton: .default(Text(failure.recovery))
-                )
+                settingsAlert(for: failure)
             }
             .task { await viewModel.load(force: true) }
-            .onAppear {
-                Task { await viewModel.load(force: true) }
-            }
             .refreshable {
                 await viewModel.load(force: true)
                 await viewModel.refreshStorageUsage()
@@ -246,13 +276,17 @@ struct SettingsRootView: View {
         .sealScreenBackground()
     }
 
+    private var appearanceMode: SealAppearanceMode {
+        SealAppearanceMode(rawValue: appearanceModeRawValue) ?? .system
+    }
+
     private func settingsSection<Content: View>(
         _ title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.sealTextSecondary)
                 .padding(.leading, 8)
             VStack(spacing: 0, content: content)
@@ -282,7 +316,10 @@ struct SettingsRootView: View {
                 .foregroundStyle(.primary)
             Spacer(minLength: 12)
             if let statusColor {
-                Circle().fill(statusColor).frame(width: 9, height: 9)
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 9, height: 9)
+                    .accessibilityHidden(true)
             }
             if let value {
                 Text(value)
@@ -297,10 +334,30 @@ struct SettingsRootView: View {
         }
         .frame(minHeight: 56)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 
     private var sectionDivider: some View {
         Divider().padding(.leading, 50)
+    }
+
+    private func settingsAlert(for failure: ImportFailure) -> Alert {
+        let button: Alert.Button
+        if failure.code == "SEAL-NOTIFY-001" {
+            button = .default(Text(failure.recovery), action: openSystemSettings)
+        } else {
+            button = .default(Text(failure.recovery))
+        }
+        return Alert(
+            title: Text(failure.title),
+            message: Text(failure.userMessage),
+            dismissButton: button
+        )
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     private func runEnvironmentCheck() {
@@ -324,9 +381,13 @@ struct SettingsRootView: View {
 
     private var certificateSummary: String {
         guard let account = viewModel.activeAccount else { return "不可用" }
-        let serial = account.selectedCertificateSerialNumber
-            ?? account.certificateSerialNumber
-        guard serial != nil else { return "签名时创建" }
+        guard CertificateSerial.canonical(account.certificateSerialNumber) != nil else {
+            return "签名时创建"
+        }
+        if let selected = account.selectedCertificateSerialNumber,
+           CertificateSerial.matches(selected, account.certificateSerialNumber) == false {
+            return "私钥不可用"
+        }
         return "本机可用"
     }
 
@@ -369,7 +430,7 @@ struct SettingsRootView: View {
             return Color.sealTextSecondary.opacity(0.55)
         }
         if let selected = account.selectedCertificateSerialNumber,
-           selected != account.certificateSerialNumber {
+           CertificateSerial.matches(selected, account.certificateSerialNumber) == false {
             return Color.sealDanger
         }
         return account.certificateSerialNumber == nil

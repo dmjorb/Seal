@@ -1,5 +1,7 @@
+import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct AppSigningSheet: View {
     let app: AppRecord
@@ -9,7 +11,12 @@ struct AppSigningSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedAccountID: UUID?
     @State private var targetBundleID = ""
+    @State private var displayName = ""
+    @State private var selectedIconData: Data?
     @State private var isBundleIDEditorPresented = false
+    @State private var isNameEditorPresented = false
+    @State private var isIconFileImporterPresented = false
+    @State private var photoPickerItem: PhotosPickerItem?
 
     var body: some View {
         Group {
@@ -19,21 +26,45 @@ struct AppSigningSheet: View {
                 configuration
             }
         }
-        .presentationDragIndicator(.hidden)
         .interactiveDismissDisabled(isRunning)
         .task {
             await viewModel.load(force: true)
             await viewModel.refreshActiveAccountSelection()
             selectDefaultAccount()
-            resetBundleIDDraftIfNeeded()
+            resetDraftsIfNeeded()
         }
-        .onChange(of: viewModel.verifiedAccounts) { _ in
+        .onChange(of: viewModel.selectableAccounts) { _ in
             selectDefaultAccount()
         }
+        .onChange(of: photoPickerItem) { newValue in
+            guard let newValue else { return }
+            Task {
+                if let data = try? await newValue.loadTransferable(type: Data.self),
+                   UIImage(data: data) != nil {
+                    selectedIconData = data
+                }
+            }
+        }
         .sheet(isPresented: $isBundleIDEditorPresented) {
-            if BundleIDPolicy.isEditable(app) {
-                BundleIDEditorSheet(app: app, targetBundleID: $targetBundleID)
-                    .presentationDetents([.height(260)])
+            BundleIDEditorSheet(targetBundleID: $targetBundleID)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $isNameEditorPresented) {
+            AppNameEditorSheet(
+                originalName: app.name,
+                displayName: $displayName
+            )
+            .presentationDetents([.medium])
+        }
+        .fileImporter(
+            isPresented: $isIconFileImporterPresented,
+            allowedContentTypes: [.image]
+        ) { result in
+            guard case .success(let url) = result else { return }
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            if let data = try? Data(contentsOf: url), UIImage(data: data) != nil {
+                selectedIconData = data
             }
         }
         .alert(item: $viewModel.alertFailure) { failure in
@@ -43,61 +74,110 @@ struct AppSigningSheet: View {
 
     private var configuration: some View {
         let presentation = AppOperationPresentation(app: app)
-        return VStack(spacing: 14) {
-            SealSheetGrabber()
-            appIdentity(presentation: presentation)
-            operationSummaryCard
-            if viewModel.hasCycleRenewalCompanions(for: app) {
-                Button("一起续签本周期到期 App") {
-                    dismiss()
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 350_000_000)
-                        viewModel.refreshSealCycle(for: app)
+        return SealDrawer(
+            title: presentation.sheetTitle,
+            subtitle: isRenewal ? "续签将沿用上次的 Apple ID、Team、Serial 和 Bundle ID" : nil
+        ) {
+            VStack(spacing: 16) {
+                appIdentity(presentation: presentation)
+                operationSummaryCard
+
+                if viewModel.hasCycleRenewalCompanions(for: app) {
+                    Button("一起续签本周期到期 App") {
+                        dismiss()
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(350))
+                            viewModel.refreshSealCycle(for: app)
+                        }
                     }
-                }
-                .sealOutlineAction(cornerRadius: 14)
-            }
-            Button(primaryActionTitle(for: presentation)) {
-                if let selectedAccountID {
-                    Task {
-                        await viewModel.beginSigning(
-                            for: app,
-                            accountID: selectedAccountID,
-                            requestedBundleIdentifier: requestedBundleIDForSigning
-                        )
-                    }
-                } else {
-                    viewModel.openSettings(route: .account)
-                    dismiss()
+                    .sealOutlineAction(cornerRadius: 14)
                 }
             }
-            .sealPrimaryAction(cornerRadius: 14)
-            .disabled(bundleIDValidationError != nil)
-            .opacity(bundleIDValidationError == nil ? 1 : 0.48)
+        } footer: {
+            VStack(spacing: 12) {
+                Button(primaryActionTitle(for: presentation)) {
+                    startSigning(disposition: .signAndInstall)
+                }
+                .sealPrimaryAction(cornerRadius: 14)
+                .disabled(actionDisabled)
+                .opacity(actionDisabled ? 0.48 : 1)
+
+                if isRenewal == false {
+                    Button("仅签名") {
+                        startSigning(disposition: .signOnly)
+                    }
+                    .sealOutlineAction(cornerRadius: 14)
+                    .disabled(actionDisabled)
+                    .opacity(actionDisabled ? 0.48 : 1)
+                }
+            }
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 10)
-        .padding(.bottom, 22)
-        .sealSheetBackground()
+    }
+
+    private func startSigning(disposition: AppSigningDisposition) {
+        guard let selectedAccountID else {
+            viewModel.openSettings(route: .account)
+            dismiss()
+            return
+        }
+        Task {
+            await viewModel.beginSigning(
+                for: app,
+                accountID: selectedAccountID,
+                requestedBundleIdentifier: requestedBundleIDForSigning,
+                displayName: isRenewal ? nil : displayName,
+                iconData: isRenewal ? nil : selectedIconData,
+                disposition: disposition
+            )
+        }
     }
 
     private func appIdentity(presentation: AppOperationPresentation) -> some View {
         HStack(spacing: 14) {
-            appIcon(size: 56)
+            if isRenewal {
+                appIcon(size: 58)
+            } else {
+                Menu {
+                    PhotosPicker(selection: $photoPickerItem, matching: .images) {
+                        Label("从照片选择", systemImage: "photo")
+                    }
+                    Button {
+                        isIconFileImporterPresented = true
+                    } label: {
+                        Label("从文件选择", systemImage: "folder")
+                    }
+                    Button {
+                        selectedIconData = nil
+                    } label: {
+                        Label("使用原图", systemImage: "arrow.uturn.backward")
+                    }
+                } label: {
+                    appIcon(size: 58)
+                        .overlay(alignment: .bottomTrailing) {
+                            Image(systemName: "pencil.circle.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(Color.sealAccent)
+                                .background(.background, in: Circle())
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("修改 App 图标")
+            }
+
             VStack(alignment: .leading, spacing: 5) {
-                Text(app.name)
-                    .font(.system(size: 19, weight: .semibold))
+                Text(displayNameValue)
+                    .font(.headline)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text("v\(app.version) · \(Self.fileSizeFormatter.string(fromByteCount: app.size))")
-                    .font(.system(size: 13, weight: .regular))
+                    .font(.subheadline)
                     .foregroundStyle(Color.sealTextSecondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
             if let validity = presentation.validity {
-                Text(validity.detailText)
-                    .font(.system(size: 15, weight: .semibold))
+                Text(validity.text)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(validityColor(validity.tone))
                     .lineLimit(1)
             }
@@ -107,23 +187,26 @@ struct AppSigningSheet: View {
     private var operationSummaryCard: some View {
         VStack(spacing: 0) {
             if isRenewal == false {
-                summaryRow(title: "状态", value: statusText)
+                Button { isNameEditorPresented = true } label: {
+                    summaryRow(title: "App 名称", value: displayNameValue, showsDisclosure: true)
+                }
+                .buttonStyle(.plain)
                 Divider().padding(.leading, 14)
             }
 
             if BundleIDPolicy.isEditable(app) {
                 Button { isBundleIDEditorPresented = true } label: {
-                    summaryRow(title: "Bundle ID", value: displayBundleIdentifier, monospaced: true, showsDisclosure: true)
+                    bundleIDSummaryRow(showsDisclosure: true)
                 }
                 .buttonStyle(.plain)
             } else {
-                summaryRow(title: "Bundle ID", value: displayBundleIdentifier, monospaced: true)
+                bundleIDSummaryRow(showsDisclosure: false)
             }
             Divider().padding(.leading, 14)
 
             if isRenewal {
                 summaryRow(title: "Apple ID", value: selectedAccountCompactSummary)
-            } else if viewModel.verifiedAccounts.isEmpty {
+            } else if viewModel.selectableAccounts.isEmpty {
                 Button {
                     viewModel.openSettings(route: .account)
                     dismiss()
@@ -133,7 +216,7 @@ struct AppSigningSheet: View {
                 .buttonStyle(.plain)
             } else {
                 Menu {
-                    ForEach(viewModel.verifiedAccounts) { account in
+                    ForEach(viewModel.selectableAccounts) { account in
                         Button(accountPickerTitle(account)) {
                             selectedAccountID = account.id
                             Task { await viewModel.selectActiveAccount(id: account.id) }
@@ -145,11 +228,13 @@ struct AppSigningSheet: View {
             }
             Divider().padding(.leading, 14)
 
-            summaryRow(title: "签名证书", value: certificateSummary, monospaced: true)
+            summaryRow(title: "Team", value: selectedAccount?.teamID ?? "—", monospaced: true)
+            Divider().padding(.leading, 14)
+            summaryRow(title: "Serial", value: certificateSummary, monospaced: true)
             Divider().padding(.leading, 14)
             summaryRow(title: "有效期", value: expectedValiditySummary)
             Divider().padding(.leading, 14)
-            summaryRow(title: "安装通道", value: installChannelSummary)
+            summaryRow(title: "LocalDevVPN", value: installChannelSummary)
             Divider().padding(.leading, 14)
             summaryRow(title: "扩展", value: extensionSummary)
         }
@@ -161,6 +246,30 @@ struct AppSigningSheet: View {
         }
     }
 
+    private func bundleIDSummaryRow(showsDisclosure: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text("Bundle ID")
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .frame(width: 72, alignment: .leading)
+            Spacer(minLength: 8)
+            BundleIdentifierText(displayBundleIdentifier)
+                .font(.caption.monospaced())
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            if showsDisclosure {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.sealTextSecondary.opacity(0.75))
+            }
+        }
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Bundle ID，\(displayBundleIdentifier)")
+    }
+
     private func summaryRow(
         title: String,
         value: String,
@@ -169,30 +278,32 @@ struct AppSigningSheet: View {
     ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(title)
-                .font(.system(size: 14, weight: .regular))
+                .font(.subheadline)
                 .foregroundStyle(.primary)
                 .frame(width: 72, alignment: .leading)
             Text(value)
-                .font(.system(size: 13, weight: .regular, design: monospaced ? .monospaced : .default))
+                .font(monospaced ? .caption.monospaced() : .caption)
                 .foregroundStyle(Color.sealTextSecondary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.middle)
+                .multilineTextAlignment(.trailing)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .trailing)
             if showsDisclosure {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.sealTextSecondary.opacity(0.75))
             }
         }
-        .frame(minHeight: 42)
+        .frame(minHeight: 44)
         .contentShape(Rectangle())
     }
 
     @ViewBuilder
     private func appIcon(size: CGFloat) -> some View {
         Group {
-            if let data = viewModel.iconData[app.id], let image = UIImage(data: data) {
+            if let data = selectedIconData ?? viewModel.displayIconData(for: app),
+               let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: "app.fill")
@@ -205,6 +316,11 @@ struct AppSigningSheet: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+    }
+
+    private var displayNameValue: String {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? app.name : trimmed
     }
 
     private var displayBundleIdentifier: String {
@@ -221,36 +337,44 @@ struct AppSigningSheet: View {
 
     private var bundleIDValidationError: String? {
         guard isRenewal == false else { return nil }
-        let trimmed = targetBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.isEmpty == false else { return nil }
-        return BundleIDPolicy.validationError(for: trimmed)
+        return BundleIDPolicy.validationError(for: targetBundleID)
     }
 
-    private func resetBundleIDDraftIfNeeded() {
-        guard targetBundleID.isEmpty else { return }
-        targetBundleID = (try? BundleIDPolicy.targetBundleIdentifier(for: app)) ?? app.originalBundleIdentifier
+    private var actionDisabled: Bool {
+        selectedAccountID == nil || bundleIDValidationError != nil
+    }
+
+    private func resetDraftsIfNeeded() {
+        if targetBundleID.isEmpty {
+            targetBundleID = viewModel.rememberedBundleIdentifier(for: app)
+                ?? ((try? BundleIDPolicy.targetBundleIdentifier(for: app)) ?? app.originalBundleIdentifier)
+        }
+        if displayName.isEmpty {
+            displayName = viewModel.displayName(for: app)
+        }
+        if selectedIconData == nil {
+            selectedIconData = viewModel.customization(for: app)?.iconData
+        }
     }
 
     private var selectedAccount: AppleAccountRecord? {
         if isRenewal, let accountID = app.accountID {
             return viewModel.accounts.first { $0.id == accountID }
         }
-        return viewModel.verifiedAccounts.first { $0.id == selectedAccountID }
+        return viewModel.selectableAccounts.first { $0.id == selectedAccountID }
     }
 
     private var selectedAccountCompactSummary: String {
         guard let selectedAccount else { return "请选择" }
         let kind = selectedAccount.isFreeTeam == true ? "Free" : "Developer"
-        return "\(viewModelFullEmail(for: selectedAccount)) · \(kind)"
-    }
-
-    private func viewModelFullEmail(for account: AppleAccountRecord) -> String {
-        account.maskedEmail
+        let status = selectedAccount.status == .verified ? "" : " · 需验证"
+        return "\(selectedAccount.maskedEmail) · \(kind)\(status)"
     }
 
     private func accountPickerTitle(_ account: AppleAccountRecord) -> String {
         let kind = account.isFreeTeam == true ? "Free" : "Developer"
-        return "\(viewModelFullEmail(for: account)) · \(kind)"
+        let status = account.status == .verified ? "" : " · 需验证"
+        return "\(account.maskedEmail) · \(kind)\(status)"
     }
 
     private var certificateSummary: String {
@@ -261,10 +385,6 @@ struct AppSigningSheet: View {
         )
         guard let serial, serial.isEmpty == false else { return "签名时创建" }
         return "Seal-\(serial.suffix(8))"
-    }
-
-    private var statusText: String {
-        AppOperationPresentation(app: app).validity?.detailText ?? "待签名"
     }
 
     private var expectedValiditySummary: String {
@@ -301,17 +421,17 @@ struct AppSigningSheet: View {
     }
 
     private func selectDefaultAccount() {
-        let verifiedAccounts = viewModel.verifiedAccounts.sorted { $0.lastVerifiedAt > $1.lastVerifiedAt }
+        let accounts = viewModel.selectableAccounts
         if isRenewal {
             selectedAccountID = app.accountID
             return
         }
         guard selectedAccountID == nil else { return }
         if let activeAccountID = viewModel.activeAccountID,
-           verifiedAccounts.contains(where: { $0.id == activeAccountID }) {
+           accounts.contains(where: { $0.id == activeAccountID }) {
             selectedAccountID = activeAccountID
         } else {
-            selectedAccountID = verifiedAccounts.first?.id
+            selectedAccountID = accounts.first?.id
         }
     }
 
@@ -349,46 +469,114 @@ struct AppSigningSheet: View {
 }
 
 private struct BundleIDEditorSheet: View {
-    let app: AppRecord
     @Binding var targetBundleID: String
     @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SealSheetGrabber()
-                .frame(maxWidth: .infinity, alignment: .center)
-            Text("修改 Bundle ID")
-                .font(.system(size: 20, weight: .bold))
-            TextField("Bundle ID", text: $targetBundleID)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.system(size: 15, weight: .regular, design: .monospaced))
-                .padding(.horizontal, 12)
-                .frame(minHeight: 46)
-                .background(Color.sealSurfaceElevated, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            if let error = BundleIDPolicy.validationError(for: targetBundleID) {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(Color.sealDanger)
+        SealDrawer(title: "修改 Bundle ID") {
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("Bundle ID", text: $draft)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.body.monospaced())
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 50)
+                    .background(
+                        Color.sealSurfaceElevated,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+                    .textSelection(.enabled)
+
+                if let error = validationError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(Color.sealDanger)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+        } footer: {
             HStack(spacing: 12) {
-                Button("恢复默认") { targetBundleID = app.originalBundleIdentifier }
-                    .buttonStyle(.bordered)
-                Button("完成") { dismiss() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(BundleIDPolicy.validationError(for: targetBundleID) != nil)
+                Button("取消") { dismiss() }
+                    .sealOutlineAction(cornerRadius: 14)
+                Button("保存") {
+                    targetBundleID = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    dismiss()
+                }
+                .sealPrimaryAction(cornerRadius: 14)
+                .disabled(validationError != nil)
             }
         }
-        .padding(22)
-        .sealSheetBackground()
+        .onAppear { draft = targetBundleID }
+    }
+
+    private var validationError: String? {
+        BundleIDPolicy.validationError(for: draft)
     }
 }
 
-struct SealSheetGrabber: View {
+private struct AppNameEditorSheet: View {
+    let originalName: String
+    @Binding var displayName: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
+
     var body: some View {
-        Capsule()
-            .fill(Color.sealHairline.opacity(0.95))
-            .frame(width: 40, height: 5)
-            .padding(.top, 2)
+        SealDrawer(title: "修改 App 名称") {
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("App 名称", text: $draft)
+                    .textInputAutocapitalization(.never)
+                    .font(.body)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 50)
+                    .background(
+                        Color.sealSurfaceElevated,
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+                Text("主屏幕可能会截断过长的名称")
+                    .font(.caption)
+                    .foregroundStyle(Color.sealTextSecondary)
+            }
+        } footer: {
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    Button("取消") { dismiss() }
+                        .sealOutlineAction(cornerRadius: 14)
+                    Button("保存") {
+                        displayName = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        dismiss()
+                    }
+                    .sealPrimaryAction(cornerRadius: 14)
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                Button("使用原名称") {
+                    displayName = originalName
+                    dismiss()
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.sealAccent)
+            }
+        }
+        .onAppear { draft = displayName }
+    }
+}
+
+struct BundleIdentifierText: View {
+    let value: String
+
+    init(_ value: String) {
+        self.value = value
+    }
+
+    var body: some View {
+        if value.lowercased().hasSuffix(".seal") {
+            let base = String(value.dropLast(5))
+            HStack(spacing: 0) {
+                Text(base).foregroundStyle(Color.sealTextSecondary)
+                Text(".seal").foregroundStyle(Color.sealAccent)
+            }
+        } else {
+            Text(value).foregroundStyle(Color.sealTextSecondary)
+        }
     }
 }

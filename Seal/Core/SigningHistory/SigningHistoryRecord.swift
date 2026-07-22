@@ -203,9 +203,11 @@ struct SigningHistoryRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     var attemptedDisplayBundleIdentifier: String {
-        attemptedBundleIdentifier?.isEmpty == false
-            ? attemptedBundleIdentifier!
-            : displayBundleIdentifier
+        guard let attemptedBundleIdentifier,
+              attemptedBundleIdentifier.isEmpty == false else {
+            return displayBundleIdentifier
+        }
+        return attemptedBundleIdentifier
     }
 
     var versionDisplay: String {
@@ -218,10 +220,7 @@ struct SigningHistoryRecord: Codable, Equatable, Identifiable, Sendable {
         }
         if lifecycleStatus == .deleted { return "已删除" }
         guard let expiryDate else { return "已签名" }
-        let interval = expiryDate.timeIntervalSince(now)
-        guard interval > 0 else { return "已过期" }
-        let days = max(1, Int(ceil(interval / 86_400)))
-        return "剩余 \(days) 天"
+        return AppValidityFormatter.text(expiryDate: expiryDate, now: now, fallback: "已签名")
     }
 }
 
@@ -254,10 +253,12 @@ struct SigningHistorySummary: Equatable, Sendable {
                 && (record.expiryDate ?? .distantPast) > now
         }.count
         expired = records.filter { record in
-            record.result == .success
-                && record.lifecycleStatus != .deleted
-                && record.expiryDate != nil
-                && record.expiryDate! <= now
+            guard record.result == .success,
+                  record.lifecycleStatus != .deleted,
+                  let expiryDate = record.expiryDate else {
+                return false
+            }
+            return expiryDate <= now
         }.count
         latestSignedAt = records.map(\.signedAt).max()
         deleted = records.filter { $0.lifecycleStatus == .deleted }.count

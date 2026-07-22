@@ -1,7 +1,14 @@
 import Foundation
 import Security
 
-actor KeychainVault {
+protocol AccountSecretStoring: Actor {
+    func save(_ secret: AccountSecret, for accountID: UUID) throws
+    func load(accountID: UUID) throws -> AccountSecret?
+    func delete(accountID: UUID) throws
+    func clearSigningMaterial(accountID: UUID) throws
+}
+
+actor KeychainVault: AccountSecretStoring {
     private let service = "com.mjorb.seal.account"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()

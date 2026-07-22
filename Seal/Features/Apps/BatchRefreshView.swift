@@ -5,19 +5,22 @@ struct BatchRefreshView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 14) {
-            SealSheetGrabber()
-            Text(isRunning ? "批量续签" : "续签结果")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(.primary)
+        SealDrawer(title: isRunning ? "批量续签" : "续签结果") {
             statusCard
-            if isRunning == false { action }
+        } footer: {
+            if isRunning {
+                Button("续签中…") {}
+                    .sealSecondaryDisabledAction(cornerRadius: 14)
+                    .disabled(true)
+            } else {
+                Button("完成") {
+                    viewModel.dismissBatchRefresh()
+                    dismiss()
+                }
+                .sealPrimaryAction(cornerRadius: 14)
+            }
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 12)
-        .padding(.bottom, 22)
         .interactiveDismissDisabled(isRunning)
-        .sealSheetBackground()
     }
 
     @ViewBuilder private var statusCard: some View {
@@ -26,14 +29,15 @@ struct BatchRefreshView: View {
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
                 Text("正在续签")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.headline)
                 Spacer()
                 Text(progressText)
-                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                    .font(.subheadline.monospaced().weight(.semibold))
                     .foregroundStyle(Color.sealTextSecondary)
             }
             .padding(16)
             .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
         case .completed(let result):
             VStack(spacing: 0) {
                 resultRow("checkmark.circle.fill", "成功", "\(result.succeeded)", .sealSuccess)
@@ -42,21 +46,24 @@ struct BatchRefreshView: View {
             }
             .padding(.horizontal, 14)
             .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
         case .failed(let failure):
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(Color.sealDanger)
                     Text(failure.title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.headline)
                 }
                 Text(failure.userReason)
-                    .font(.system(size: 13))
+                    .font(.subheadline)
                     .foregroundStyle(Color.sealTextSecondary)
-                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
             .padding(14)
             .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
         case nil:
             EmptyView()
         }
@@ -69,18 +76,8 @@ struct BatchRefreshView: View {
             Spacer()
             Text(value).foregroundStyle(color)
         }
-        .font(.system(size: 15, weight: .semibold))
+        .font(.body.weight(.semibold))
         .frame(minHeight: 46)
-    }
-
-    @ViewBuilder private var action: some View {
-        switch viewModel.batchRefreshSession?.status {
-        case .completed, .failed:
-            Button("完成") { viewModel.dismissBatchRefresh(); dismiss() }
-                .sealPrimaryAction(cornerRadius: 14)
-        default:
-            EmptyView()
-        }
     }
 
     private var progressText: String {

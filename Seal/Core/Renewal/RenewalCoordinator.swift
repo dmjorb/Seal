@@ -15,13 +15,13 @@ enum BatchRefreshEvent: Sendable {
 
 actor RenewalCoordinator {
     private let appStore: any AppStore
-    private let signingCoordinator: SigningCoordinator
+    private let signingCoordinator: any SigningCoordinating
     private let queueStore: RefreshQueueStore
     private let planner: RefreshPlanner
 
     init(
         appStore: any AppStore,
-        signingCoordinator: SigningCoordinator,
+        signingCoordinator: any SigningCoordinating,
         queueStore: RefreshQueueStore,
         planner: RefreshPlanner = RefreshPlanner()
     ) {
@@ -35,13 +35,27 @@ actor RenewalCoordinator {
         try await queueStore.load().filter { $0.state != .completed }.count
     }
 
+    func reconcilePendingSelfRenewal(
+        _ reconciliation: DailyAutoRenewSelfReconciliation
+    ) async throws -> Bool {
+        try await queueStore.reconcileCompleted(
+            appID: reconciliation.appID,
+            sessionID: reconciliation.dayKey
+        )
+    }
+
+    func isBatchCompleted(sessionID: String) async throws -> Bool {
+        try await queueStore.isBatchCompleted(sessionID: sessionID)
+    }
+
     func refreshAll(
+        sessionID: String? = nil,
         progress: @Sendable (BatchRefreshEvent) async -> Void
     ) async throws -> BatchRefreshResult {
         let apps = try await appStore.fetchAll()
         let queue = planner.makeQueue(apps: apps)
-        try await queueStore.replace(with: queue)
-        return try await process(queue: queue, progress: progress)
+        let work = try await queueStore.prepare(with: queue, sessionID: sessionID)
+        return try await process(queue: work, progress: progress)
     }
 
     func resume(
@@ -129,6 +143,7 @@ actor RenewalCoordinator {
         var failed = 0
 
         for (offset, item) in queue.enumerated() {
+            var currentApp: AppRecord?
             do {
                 try Task.checkCancellation()
                 let apps = try await appStore.fetchAll()
@@ -140,12 +155,14 @@ actor RenewalCoordinator {
                         code: "SEAL-RENEW-404"
                     )
                 }
+                currentApp = app
                 try await queueStore.markRunning(appID: item.appID)
                 let updated = try await signingCoordinator.signAndInstall(
                     appID: item.appID,
                     accountID: item.accountID,
                     requestedBundleIdentifier: app.mappedBundleIdentifier ?? app.preferredBundleIdentifier,
                     selectedCertificateSerialNumber: nil,
+                    allowDroppingExtensions: false,
                     progress: { stage in
                         await progress(
                             .appProgress(
@@ -167,19 +184,26 @@ actor RenewalCoordinator {
                     )
                 )
             } catch is CancellationError {
-                try? await queueStore.markPending(appID: item.appID)
+                do {
+                    try await queueStore.markPending(appID: item.appID)
+                } catch {
+                    throw Self.queuePersistenceFailure(error)
+                }
                 throw CancellationError()
             } catch let failure as ImportFailure {
                 if isAutomaticRenewal {
                     markAutomaticRenewalFailure(appID: item.appID, at: Date())
                 }
-                try? await queueStore.markFailed(
-                    appID: item.appID,
-                    errorCode: failure.code
-                )
+                do {
+                    try await queueStore.markFailed(
+                        appID: item.appID,
+                        errorCode: failure.code
+                    )
+                } catch {
+                    throw Self.queuePersistenceFailure(error)
+                }
                 failed += 1
-                let currentApps = try? await appStore.fetchAll()
-                if let app = currentApps?.first(where: { $0.id == item.appID }) {
+                if let app = currentApp {
                     await progress(
                         .appFailed(
                             index: offset + 1,
@@ -199,13 +223,16 @@ actor RenewalCoordinator {
                     recovery: "重试",
                     code: "SEAL-RENEW-500"
                 )
-                try? await queueStore.markFailed(
-                    appID: item.appID,
-                    errorCode: failure.code
-                )
+                do {
+                    try await queueStore.markFailed(
+                        appID: item.appID,
+                        errorCode: failure.code
+                    )
+                } catch {
+                    throw Self.queuePersistenceFailure(error)
+                }
                 failed += 1
-                let currentApps = try? await appStore.fetchAll()
-                if let app = currentApps?.first(where: { $0.id == item.appID }) {
+                if let app = currentApp {
                     await progress(
                         .appFailed(
                             index: offset + 1,
@@ -218,11 +245,20 @@ actor RenewalCoordinator {
             }
         }
 
-        try? await queueStore.removeCompleted()
         return BatchRefreshResult(
             total: queue.count,
             succeeded: succeeded,
             failed: failed
+        )
+    }
+
+    private static func queuePersistenceFailure(_ error: Error) -> ImportFailure {
+        let nsError = error as NSError
+        return ImportFailure(
+            title: "续签队列保存失败",
+            reason: "续签状态无法写入本机。来源：\(nsError.domain) \(nsError.code)",
+            recovery: "重试",
+            code: "SEAL-RENEW-503"
         )
     }
 

@@ -4,42 +4,72 @@ struct AccountSelectionView: View {
     let app: AppRecord
     let accounts: [AppleAccountRecord]
     let onSelect: (AppleAccountRecord) -> Void
+
     @Environment(\.dismiss) private var dismiss
     @State private var selection: UUID?
 
     var body: some View {
-        VStack(spacing: 18) {
-            Capsule().fill(.secondary.opacity(0.25)).frame(width: 38, height: 5).padding(.top, 10)
-            Text("选择签名账号").font(.title3.weight(.semibold))
-            Text(app.name).font(.subheadline).foregroundStyle(.secondary)
+        SealDrawer(title: "选择签名账号", subtitle: app.name) {
             VStack(spacing: 0) {
                 ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
                     Button { selection = account.id } label: {
                         HStack(spacing: 12) {
-                            Image(systemName: "person.crop.circle.fill").font(.title2).foregroundStyle(.green)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(account.maskedEmail).foregroundStyle(.primary)
-                                Text(account.teamName).font(.caption).foregroundStyle(.secondary)
+                            Image(systemName: "person.crop.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(account.status == .verified ? Color.sealSuccess : Color.sealWarning)
+                                .accessibilityHidden(true)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(account.maskedEmail)
+                                    .font(.body)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Text(accountSubtitle(account))
+                                    .font(.caption)
+                                    .foregroundStyle(Color.sealTextSecondary)
+                                    .lineLimit(2)
                             }
-                            Spacer()
-                            Image(systemName: selection == account.id ? "checkmark.circle.fill" : "circle").foregroundStyle(selection == account.id ? Color.sealAccent : .secondary)
-                        }.padding(.vertical, 14)
-                    }.buttonStyle(.plain)
-                    if index < accounts.count - 1 { Divider().padding(.leading, 44) }
+
+                            Spacer(minLength: 8)
+
+                            Image(systemName: selection == account.id ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(selection == account.id ? Color.sealAccent : Color.sealTextSecondary)
+                                .accessibilityHidden(true)
+                        }
+                        .padding(.vertical, 14)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(account.maskedEmail)，\(accountSubtitle(account))")
+                    .accessibilityAddTraits(selection == account.id ? .isSelected : [])
+
+                    if index < accounts.count - 1 {
+                        Divider().padding(.leading, 44)
+                    }
                 }
             }
             .padding(.horizontal, 16)
             .glassSurface(cornerRadius: 16)
-            Button("使用此账号") {
-                if let account = accounts.first(where: { $0.id == selection }) { onSelect(account); dismiss() }
+        } footer: {
+            HStack(spacing: 12) {
+                Button("取消") { dismiss() }
+                    .sealOutlineAction(cornerRadius: 14)
+
+                Button("使用此账号") {
+                    guard let account = accounts.first(where: { $0.id == selection }) else { return }
+                    onSelect(account)
+                    dismiss()
+                }
+                .sealPrimaryAction(cornerRadius: 14)
+                .disabled(selection == nil)
             }
-            .sealPrimaryAction(cornerRadius: 14)
-            .disabled(selection == nil)
-            Button("取消") { dismiss() }.sealOutlineAction(cornerRadius: 14)
         }
-        .padding(.horizontal, 20)
-        .presentationDetents([.height(520), .large])
-        .sealSheetBackground()
         .onAppear { selection = accounts.first?.id }
+    }
+
+    private func accountSubtitle(_ account: AppleAccountRecord) -> String {
+        let team = account.teamName.isEmpty ? account.teamID : account.teamName
+        let status = account.status == .verified ? "已验证" : "需验证"
+        return "\(team) · \(status)"
     }
 }

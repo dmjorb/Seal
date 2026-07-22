@@ -1,6 +1,6 @@
 import Foundation
 
-struct StoredAppFiles: Equatable, Sendable {
+struct StoredAppFiles: Codable, Equatable, Sendable {
     let ipaRelativePath: String
     let iconRelativePath: String?
 }

@@ -19,16 +19,10 @@ public class Install {
     public static var provider: InstallProvider?;
     
     private static func getProvider() throws -> any InstallProvider {
-        if let provider {
-            return provider
-        } else {
-            if Muxer.isrppairing {
-                provider = RPInstall()
-            } else {
-                provider = LockDownInstall()
-            }
-        }
-        return provider!
+        if let provider { return provider }
+        let resolved: any InstallProvider = Muxer.isrppairing ? RPInstall() : LockDownInstall()
+        provider = resolved
+        return resolved
     }
 
     public static func yeetAppAfc(bundleId: String, ipaBytes: Data) throws {

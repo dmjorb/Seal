@@ -8,14 +8,31 @@ struct FullIdentifierRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Color.sealTextSecondary)
+            HStack(spacing: 10) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.sealTextSecondary)
+                Spacer(minLength: 8)
+                if showsCopyButton {
+                    Button("复制") {
+                        SealPasteboard.copy(value, announcement: "\(title)已复制")
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.sealAccent)
+                }
+            }
             Text(value)
-                .font(.system(size: 13, weight: .regular, design: .monospaced))
+                .font(.caption.monospaced())
                 .foregroundStyle(valueColor)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .contextMenu {
+                    Button("复制") {
+                        SealPasteboard.copy(value, announcement: "\(title)已复制")
+                    }
+                }
         }
         .padding(.vertical, 8)
     }

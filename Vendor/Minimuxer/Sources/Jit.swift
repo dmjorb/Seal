@@ -18,17 +18,10 @@ public class JIT {
     private static var provider: JITProvider?;
     
     private static func getProvider() -> any JITProvider {
-        if let provider {
-            return provider
-        } else {
-            if Muxer.isrppairing {
-                provider = RPJit()
-            } else {
-                provider = LockDownJIT()
-            }
-        }
-        
-        return provider!
+        if let provider { return provider }
+        let resolved: any JITProvider = Muxer.isrppairing ? RPJit() : LockDownJIT()
+        provider = resolved
+        return resolved
     }
 
     public static func debugApp(appId: String) throws {

@@ -13,7 +13,8 @@ struct BundleIDMapper: Sendable {
         teamID: String,
         requested: String? = nil
     ) -> String {
-        if let requested, requested.isEmpty == false {
+        if let requested = requested?.trimmingCharacters(in: .whitespacesAndNewlines),
+           requested.isEmpty == false {
             return requested
         }
         return BundleIDPolicy.recommendedBundleIdentifier(for: original)
@@ -21,9 +22,20 @@ struct BundleIDMapper: Sendable {
 
     func extensionBundleID(
         original: String,
+        originalMainBundleID: String,
         mappedMainBundleID: String
     ) -> String {
-        "\(mappedMainBundleID).e\(digest(original, length: 10))"
+        let normalizedOriginal = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedMain = originalMainBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedOriginal.caseInsensitiveCompare(normalizedMain) == .orderedSame {
+            return mappedMainBundleID
+        }
+        let prefix = normalizedMain + "."
+        if normalizedOriginal.lowercased().hasPrefix(prefix.lowercased()) {
+            let suffix = String(normalizedOriginal.dropFirst(normalizedMain.count))
+            return mappedMainBundleID + suffix
+        }
+        return "\(mappedMainBundleID).e\(digest(normalizedOriginal, length: 10))"
     }
 
     func appGroupID(original: String, teamID: String) -> String {

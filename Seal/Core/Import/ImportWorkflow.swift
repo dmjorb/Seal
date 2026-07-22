@@ -9,6 +9,10 @@ actor ImportWorkflow {
     private let now: @Sendable () -> Date
     private let makeID: @Sendable () -> UUID
     private var retryDraft: ImportDraft?
+    private var pendingFinalization: PendingFinalization?
+    private var pendingRecovery: PendingRecovery?
+    private var operationGeneration = 0
+    private var operationTask: Task<Void, Never>?
 
     init(
         parser: IPAParserService,
@@ -26,12 +30,41 @@ actor ImportWorkflow {
 
     func prepare(sourceURL: URL) async {
         guard canPrepare else { return }
+        let generation = beginOperation()
+        let task = Task {
+            await self.prepareOperation(sourceURL: sourceURL, generation: generation)
+        }
+        operationTask = task
+        await task.value
+        if isCurrent(generation) {
+            operationTask = nil
+        }
+    }
+
+    private func prepareOperation(sourceURL: URL, generation: Int) async {
+        do {
+            let records = try await appStore.fetchAll()
+            guard isCurrent(generation) else { return }
+            try await fileStore.recoverTransactions(appRecords: records)
+            guard isCurrent(generation) else { return }
+            pendingFinalization = nil
+            pendingRecovery = nil
+        } catch {
+            guard isCurrent(generation) else { return }
+            state = .failed(Self.cleanupFailure)
+            return
+        }
         await discardRetryDraft()
+        guard isCurrent(generation) else { return }
         state = .preparing
 
         var stagedIPA: StagedIPA?
         do {
             let staged = try await fileStore.stage(sourceURL: sourceURL)
+            guard isCurrent(generation) else {
+                try await fileStore.cancel(staged)
+                return
+            }
             stagedIPA = staged
             try Task.checkCancellation()
             let parsed = try parser.parse(url: staged.url)
@@ -40,36 +73,63 @@ actor ImportWorkflow {
                 parsedIPA: parsed,
                 stagedIPA: staged
             )
+            guard isCurrent(generation) else { return }
             state = .awaitingConfirmation(draft)
         } catch is CancellationError {
             if let stagedIPA {
-                try? await fileStore.cancel(stagedIPA)
+                do { try await fileStore.cancel(stagedIPA) } catch {}
             }
+            guard isCurrent(generation) else { return }
             state = .idle
         } catch {
             if let stagedIPA {
-                try? await fileStore.cancel(stagedIPA)
+                do { try await fileStore.cancel(stagedIPA) } catch {}
             }
+            guard isCurrent(generation) else { return }
             state = .failed(Self.importFailure(from: error))
         }
     }
 
     func confirm(preferredDraft: ImportDraft? = nil) async {
+        let draft: ImportDraft
         switch state {
-        case .awaitingConfirmation(let draft):
-            await commit(draft)
+        case .awaitingConfirmation(let current):
+            draft = current
         case .failed, .idle, .completed:
             guard let preferredDraft else { return }
-            await commit(preferredDraft)
+            draft = preferredDraft
         case .preparing, .committing:
             return
+        }
+        let generation = beginOperation()
+        let task = Task {
+            await self.commit(draft, generation: generation)
+        }
+        operationTask = task
+        await task.value
+        if isCurrent(generation) {
+            operationTask = nil
         }
     }
 
     func retry() async {
+        if pendingFinalization != nil {
+            let generation = beginOperation()
+            let task = Task { await self.retryPendingFinalization(generation: generation) }
+            operationTask = task
+            await task.value
+            return
+        }
+        if pendingRecovery != nil {
+            let generation = beginOperation()
+            let task = Task { await self.retryPendingRecovery(generation: generation) }
+            operationTask = task
+            await task.value
+            return
+        }
         guard case .failed = state, let draft = retryDraft else { return }
         state = .awaitingConfirmation(draft)
-        await commit(draft)
+        await confirm()
     }
 
     func cancel() async {
@@ -83,11 +143,14 @@ actor ImportWorkflow {
             draft = nil
         }
 
-        if let draft {
-            try? await fileStore.cancel(draft.stagedIPA)
-        }
+        operationGeneration &+= 1
+        operationTask?.cancel()
+        operationTask = nil
         retryDraft = nil
         state = .idle
+        if let draft {
+            do { try await fileStore.cancel(draft.stagedIPA) } catch {}
+        }
     }
 
     private var canPrepare: Bool {
@@ -99,58 +162,138 @@ actor ImportWorkflow {
         }
     }
 
-    private func commit(_ draft: ImportDraft) async {
+    private func commit(_ draft: ImportDraft, generation: Int) async {
+        guard isCurrent(generation) else { return }
         state = .committing(draft)
-        var committedFiles: StoredAppFiles?
+        var transaction: AppFileTransaction?
+        var databaseCommitted = false
 
         do {
             let records = try await appStore.fetchAll()
+            guard isCurrent(generation) else { return }
             let existing = Self.existingPendingImportRecord(
                 for: draft.parsedIPA,
                 in: records
             )
             let commitAppID = existing?.id ?? draft.appID
-            let files = try await fileStore.commit(
+            let preparedTransaction = try await fileStore.prepareCommit(
                 staged: draft.stagedIPA,
                 appID: commitAppID,
                 iconData: draft.parsedIPA.iconData
             )
-            committedFiles = files
+            guard isCurrent(generation) else {
+                try await fileStore.rollback(preparedTransaction)
+                return
+            }
+            transaction = preparedTransaction
             let record = Self.makeRecord(
                 draft: draft,
-                files: files,
+                files: preparedTransaction.files,
                 importedAt: now(),
                 replacing: existing
             )
+            try await fileStore.setExpectedRecord(record, for: preparedTransaction)
+            guard isCurrent(generation) else {
+                try await fileStore.rollback(preparedTransaction)
+                return
+            }
+            try Task.checkCancellation()
             let replaced = try await appStore.replaceImportedApp(record)
+            databaseCommitted = true
+            guard isCurrent(generation) else { return }
 
-            try? await fileStore.cancel(draft.stagedIPA)
+            do { try await fileStore.cancel(draft.stagedIPA) } catch {}
+            guard isCurrent(generation) else { return }
             for oldRecord in replaced where oldRecord.id != record.id {
-                try? await fileStore.rollback(
+                try? await fileStore.removeStoredFiles(
                     StoredAppFiles(
                         ipaRelativePath: oldRecord.ipaRelativePath,
                         iconRelativePath: oldRecord.iconRelativePath
                     )
                 )
+                guard isCurrent(generation) else { return }
+            }
+            do {
+                try await fileStore.finalize(preparedTransaction)
+                guard isCurrent(generation) else { return }
+                transaction = nil
+            } catch {
+                guard isCurrent(generation) else { return }
+                pendingFinalization = PendingFinalization(
+                    transaction: preparedTransaction,
+                    record: record
+                )
+                retryDraft = nil
+                state = .failed(Self.cleanupFailure)
+                return
             }
             retryDraft = nil
             state = .completed(record)
         } catch is CancellationError {
-            if let committedFiles {
-                try? await fileStore.rollback(committedFiles)
+            if let transaction, databaseCommitted == false {
+                do {
+                    try await fileStore.rollback(transaction)
+                } catch {
+                    guard isCurrent(generation) else { return }
+                    pendingRecovery = PendingRecovery(transaction: transaction, draft: nil)
+                    state = .failed(Self.recoveryFailure)
+                    return
+                }
             }
+            guard isCurrent(generation) else { return }
             retryDraft = nil
             state = .awaitingConfirmation(draft)
         } catch {
-            if let committedFiles {
-                try? await fileStore.rollback(committedFiles)
+            if let transaction, databaseCommitted == false {
+                do {
+                    try await fileStore.rollback(transaction)
+                } catch {
+                    guard isCurrent(generation) else { return }
+                    pendingRecovery = PendingRecovery(transaction: transaction, draft: draft)
+                    retryDraft = nil
+                    state = .failed(Self.recoveryFailure)
+                    return
+                }
             }
+            guard isCurrent(generation) else { return }
             retryDraft = draft
             state = .failed(
-                committedFiles == nil
+                transaction == nil
                     ? Self.importFailure(from: error)
                     : Self.persistenceFailure
             )
+        }
+    }
+
+    private func retryPendingFinalization(generation: Int) async {
+        guard let pendingFinalization else { return }
+        do {
+            try await fileStore.finalize(pendingFinalization.transaction)
+            guard isCurrent(generation) else { return }
+            self.pendingFinalization = nil
+            retryDraft = nil
+            state = .completed(pendingFinalization.record)
+        } catch {
+            guard isCurrent(generation) else { return }
+            state = .failed(Self.cleanupFailure)
+        }
+    }
+
+    private func retryPendingRecovery(generation: Int) async {
+        guard let pendingRecovery else { return }
+        do {
+            try await fileStore.rollback(pendingRecovery.transaction)
+            guard isCurrent(generation) else { return }
+            self.pendingRecovery = nil
+            if let draft = pendingRecovery.draft {
+                retryDraft = draft
+                state = .awaitingConfirmation(draft)
+            } else {
+                state = .idle
+            }
+        } catch {
+            guard isCurrent(generation) else { return }
+            state = .failed(Self.recoveryFailure)
         }
     }
 
@@ -159,6 +302,16 @@ actor ImportWorkflow {
             try? await fileStore.cancel(retryDraft.stagedIPA)
         }
         retryDraft = nil
+    }
+
+    private func beginOperation() -> Int {
+        operationGeneration &+= 1
+        operationTask?.cancel()
+        return operationGeneration
+    }
+
+    private func isCurrent(_ generation: Int) -> Bool {
+        generation == operationGeneration && Task.isCancelled == false
     }
 
     private static func makeRecord(
@@ -198,7 +351,9 @@ actor ImportWorkflow {
         records.first(where: { record in
             record.isSeal == false
                 && record.state != .installed
-                && record.originalBundleIdentifier == parsed.bundleIdentifier
+                && record.originalBundleIdentifier.caseInsensitiveCompare(
+                    parsed.bundleIdentifier
+                ) == .orderedSame
         })
     }
 
@@ -220,4 +375,28 @@ actor ImportWorkflow {
         recovery: "重试",
         code: "SEAL-IPA-205"
     )
+
+    private static let cleanupFailure = ImportFailure(
+        title: "IPA 已保存，但备份清理失败",
+        reason: "应用记录和新 IPA 已提交；旧备份仍等待清理。",
+        recovery: "重试清理",
+        code: "SEAL-IPA-206"
+    )
+
+    private static let recoveryFailure = ImportFailure(
+        title: "IPA 文件恢复未完成",
+        reason: "文件事务已安全记录，但仍需重试恢复。",
+        recovery: "重试恢复",
+        code: "SEAL-IPA-206"
+    )
+
+    private struct PendingFinalization: Sendable {
+        let transaction: AppFileTransaction
+        let record: AppRecord
+    }
+
+    private struct PendingRecovery: Sendable {
+        let transaction: AppFileTransaction
+        let draft: ImportDraft?
+    }
 }

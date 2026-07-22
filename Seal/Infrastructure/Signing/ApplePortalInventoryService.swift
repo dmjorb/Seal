@@ -32,7 +32,7 @@ struct ApplePortalAppIDSnapshot: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct ApplePortalCertificateSnapshot: Codable, Equatable, Identifiable, Sendable {
-    var id: String { serialNumber }
+    var id: String { CertificateSerial.canonical(serialNumber) ?? serialNumber }
     let serialNumber: String
     let machineName: String
     let machineIdentifier: String?
@@ -123,12 +123,14 @@ actor ApplePortalInventoryService {
         }()
 
         let certificateSnapshots = certificates.map { certificate in
-            let matchesStoredSerial = secret.certificateSerialNumber?.caseInsensitiveCompare(
+            let matchesStoredSerial = CertificateSerial.matches(
+                secret.certificateSerialNumber,
                 certificate.serialNumber
-            ) == .orderedSame
-            let matchesP12Serial = localP12SerialNumber?.caseInsensitiveCompare(
+            )
+            let matchesP12Serial = CertificateSerial.matches(
+                localP12SerialNumber,
                 certificate.serialNumber
-            ) == .orderedSame
+            )
             return ApplePortalCertificateSnapshot(
                 serialNumber: certificate.serialNumber,
                 machineName: certificate.machineName ?? "Apple Development",

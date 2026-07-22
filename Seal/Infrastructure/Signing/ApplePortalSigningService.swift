@@ -12,12 +12,120 @@ enum ApplePortalSigningStage {
     case packaging
 }
 
+protocol SigningPortal: Actor {
+    func sign(
+        app: AppRecord,
+        account: AppleAccountRecord,
+        secret: AccountSecret,
+        deviceIdentifier: String,
+        originalIPAURL: URL,
+        workspaceRoot: URL,
+        targetBundleIdentifier: String?,
+        customization: AppSigningCustomization,
+        selectedCertificateSerialNumber: String?,
+        allowDroppingExtensions: Bool,
+        persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
+        progress: @Sendable (SigningStage) async -> Void
+    ) async throws -> PortalSigningResult
+}
+
 enum ApplePortalAppIDResolver {
     static func matches(
         existingBundleIdentifier: String,
         requestedBundleIdentifier: String
     ) -> Bool {
         existingBundleIdentifier.caseInsensitiveCompare(requestedBundleIdentifier) == .orderedSame
+    }
+
+    static func mergePreservingRemoteValues<Key: Hashable, Value>(
+        remote: [Key: Value],
+        requested: [Key: Value]
+    ) -> [Key: Value] {
+        remote.merging(requested) { existing, _ in existing }
+    }
+}
+
+enum CertificateCapacityDecision: Equatable, Sendable {
+    case cleanUpAndRetry
+}
+
+enum ApplePortalCertificateCapacityPolicy {
+    static func decision(error: Error) -> CertificateCapacityDecision? {
+        if let apiError = error as? ALTAppleAPIError,
+           case .invalidCertificateRequest = apiError {
+            return failureDecision
+        }
+        let nsError = error as NSError
+        let normalized = "\(nsError.domain) \(nsError.code) \(nsError.localizedDescription) \(String(describing: error))".lowercased()
+        guard nsError.code == 3022
+            || normalized.contains("3022")
+            || normalized.contains("maximum number of certificates")
+            || normalized.contains("maximum") && normalized.contains("certificate")
+            || normalized.contains("too many") && normalized.contains("certificate")
+            || normalized.contains("invalidcertificaterequest") else {
+            return nil
+        }
+        return failureDecision
+    }
+
+    private static var failureDecision: CertificateCapacityDecision {
+        .cleanUpAndRetry
+    }
+
+    static var exhaustedFailure: ImportFailure {
+        ImportFailure(
+            title: "证书数量已达上限",
+            reason: "Seal 已自动检查本机没有私钥的旧开发证书并尝试释放名额，但 Apple 仍未提供可用名额。",
+            recovery: "重新同步证书后重试",
+            code: "SEAL-CERT-211"
+        )
+    }
+}
+
+struct CertificatePortalOperations<Certificate: Sendable>: Sendable {
+    let addCertificate: @Sendable () async throws -> Certificate
+    let cleanupCandidates: @Sendable () async throws -> [Certificate]
+    let revokeCertificate: @Sendable (Certificate) async throws -> Void
+}
+
+enum ApplePortalCertificateCapacityOrchestrator {
+    static func create<Certificate: Sendable>(
+        using operations: CertificatePortalOperations<Certificate>
+    ) async throws -> Certificate {
+        do {
+            return try await operations.addCertificate()
+        } catch {
+            guard ApplePortalCertificateCapacityPolicy.decision(error: error) != nil else {
+                throw error
+            }
+        }
+
+        let candidates = try await operations.cleanupCandidates()
+        guard candidates.isEmpty == false else {
+            throw ApplePortalCertificateCapacityPolicy.exhaustedFailure
+        }
+
+        for candidate in candidates {
+            try Task.checkCancellation()
+            do {
+                try await operations.revokeCertificate(candidate)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Continue with the next clearly unusable remote certificate.
+                continue
+            }
+
+            do {
+                return try await operations.addCertificate()
+            } catch {
+                guard ApplePortalCertificateCapacityPolicy.decision(error: error) != nil else {
+                    throw error
+                }
+            }
+        }
+
+        throw ApplePortalCertificateCapacityPolicy.exhaustedFailure
     }
 }
 
@@ -80,16 +188,8 @@ enum ApplePortalSigningFailure {
         let rawMessage = nsError.localizedDescription
         let normalized = rawMessage.lowercased()
 
-        if normalized.contains("maximum")
-            || normalized.contains("limit")
-            || normalized.contains("too many")
-            || normalized.contains("invalidcertificaterequest") {
-            return ImportFailure(
-                title: "签名失败",
-                reason: "Apple 返回：无法创建签名证书",
-                recovery: "重试",
-                code: "SEAL-CERT-204"
-            )
+        if ApplePortalCertificateCapacityPolicy.decision(error: error) != nil {
+            return ApplePortalCertificateCapacityPolicy.exhaustedFailure
         }
 
         if normalized.contains("network")
@@ -126,7 +226,7 @@ enum ApplePortalSigningFailure {
 
 }
 
-actor ApplePortalSigningService {
+actor ApplePortalSigningService: SigningPortal {
     private let anisetteProvider: any AnisetteProvider
     private let signingWorkspace: SigningWorkspace
 
@@ -146,6 +246,7 @@ actor ApplePortalSigningService {
         originalIPAURL: URL,
         workspaceRoot: URL,
         targetBundleIdentifier: String? = nil,
+        customization: AppSigningCustomization = .none,
         selectedCertificateSerialNumber: String? = nil,
         allowDroppingExtensions: Bool,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
@@ -167,6 +268,7 @@ actor ApplePortalSigningService {
                 originalIPAURL: originalIPAURL,
                 workspaceRoot: workspaceRoot,
                 targetBundleIdentifier: targetBundleIdentifier,
+                customization: customization,
                 selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
                 persistSigningMaterial: persistence,
@@ -183,11 +285,14 @@ actor ApplePortalSigningService {
                     originalIPAURL: originalIPAURL,
                     workspaceRoot: workspaceRoot,
                     targetBundleIdentifier: targetBundleIdentifier,
+                    customization: customization,
                     selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                     allowDroppingExtensions: allowDroppingExtensions,
                     persistSigningMaterial: persistence,
                     progress: progress
                 )
+            } catch is CancellationError {
+                throw CancellationError()
             } catch let failure as ImportFailure {
                 throw failure
             } catch {
@@ -210,6 +315,7 @@ actor ApplePortalSigningService {
         originalIPAURL: URL,
         workspaceRoot: URL,
         targetBundleIdentifier: String?,
+        customization: AppSigningCustomization,
         selectedCertificateSerialNumber: String?,
         allowDroppingExtensions: Bool,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
@@ -267,7 +373,8 @@ actor ApplePortalSigningService {
                 workspaceRoot: workspaceRoot,
                 originalBundleID: app.originalBundleIdentifier,
                 teamID: team.identifier,
-                targetMainBundleID: targetBundleIdentifier
+                targetMainBundleID: targetBundleIdentifier,
+                customization: customization
             )
             try Task.checkCancellation()
 
@@ -434,10 +541,10 @@ actor ApplePortalSigningService {
         if let selectedCertificateSerialNumber,
            let data = secret.certificateP12,
            let remote = certificates.first(where: {
-               $0.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame
+               CertificateSerial.matches($0.serialNumber, selectedCertificateSerialNumber)
            }),
            let local = try? ALTCertificate(p12Data: data, password: nil),
-           local.serialNumber.caseInsensitiveCompare(selectedCertificateSerialNumber) == .orderedSame {
+           CertificateSerial.matches(local.serialNumber, selectedCertificateSerialNumber) {
             local.machineIdentifier = remote.machineIdentifier
             return SigningIdentity(certificate: local, secret: secret)
         }
@@ -445,17 +552,16 @@ actor ApplePortalSigningService {
         if let serial = secret.certificateSerialNumber,
            let data = secret.certificateP12,
            let remote = certificates.first(where: {
-               $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
+               CertificateSerial.matches($0.serialNumber, serial)
            }),
            let local = try? ALTCertificate(p12Data: data, password: nil),
-           local.serialNumber.caseInsensitiveCompare(serial) == .orderedSame {
+           CertificateSerial.matches(local.serialNumber, serial) {
             local.machineIdentifier = remote.machineIdentifier
             return SigningIdentity(certificate: local, secret: secret)
         }
 
         return try await createSigningIdentity(
             secret: secret,
-            certificates: certificates,
             team: team,
             session: session,
             deviceName: deviceName,
@@ -465,38 +571,52 @@ actor ApplePortalSigningService {
 
     private func createSigningIdentity(
         secret: AccountSecret,
-        certificates: [ALTCertificate],
         team: ALTTeam,
         session: ALTAppleAPISession,
         deviceName: String,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void
     ) async throws -> SigningIdentity {
-        let requested: ALTCertificate
-        do {
-            let created = try await addCertificate(
-                team: team,
-                session: session,
-                deviceName: deviceName
-            )
-            try Task.checkCancellation()
-            requested = created
-        } catch {
-            guard Self.isCertificateLimitError(error) else { throw error }
-            requested = try await recoverCertificateCapacityAndCreate(
-                initialCertificates: certificates,
-                protectedSerialNumber: secret.certificateSerialNumber,
-                team: team,
-                session: session,
-                deviceName: deviceName
-            )
-        }
+        let localP12Serial: String? = {
+            guard let p12 = secret.certificateP12,
+                  let certificate = try? ALTCertificate(p12Data: p12, password: nil) else {
+                return nil
+            }
+            return certificate.serialNumber
+        }()
+        let operations = CertificatePortalOperations<LegacyBox<ALTCertificate>>(
+            addCertificate: { [self] in
+                LegacyBox(
+                    try await addCertificate(
+                        team: team,
+                        session: session,
+                        deviceName: deviceName
+                    )
+                )
+            },
+            cleanupCandidates: { [self] in
+                try await fetchCertificates(team: team, session: session)
+                    .filter { CertificateSerial.matches($0.serialNumber, localP12Serial) == false }
+                    .map(LegacyBox.init)
+            },
+            revokeCertificate: { [self] certificate in
+                try await revokeCertificate(
+                    certificate.value,
+                    team: team,
+                    session: session
+                )
+            }
+        )
+        let requested = try await ApplePortalCertificateCapacityOrchestrator.create(
+            using: operations
+        ).value
+        try Task.checkCancellation()
 
         var wasPersisted = false
         do {
             let refreshed = try await fetchCertificates(team: team, session: session)
             try Task.checkCancellation()
             guard let certificate = refreshed.first(where: {
-                $0.serialNumber.caseInsensitiveCompare(requested.serialNumber) == .orderedSame
+                CertificateSerial.matches($0.serialNumber, requested.serialNumber)
             }) else {
                 throw Self.failure(
                     title: "证书创建结果不一致",
@@ -545,47 +665,6 @@ actor ApplePortalSigningService {
         }
     }
 
-    private func recoverCertificateCapacityAndCreate(
-        initialCertificates: [ALTCertificate],
-        protectedSerialNumber: String?,
-        team: ALTTeam,
-        session: ALTAppleAPISession,
-        deviceName: String
-    ) async throws -> ALTCertificate {
-        let latest = (try? await fetchCertificates(team: team, session: session))
-            ?? initialCertificates
-        let protected = protectedSerialNumber?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let candidates = latest.filter { certificate in
-            guard let protected, protected.isEmpty == false else { return true }
-            return certificate.serialNumber.caseInsensitiveCompare(protected) != .orderedSame
-        }
-
-        for certificate in candidates {
-            try Task.checkCancellation()
-            guard (try? await revokeCertificate(certificate, team: team, session: session)) != nil else {
-                continue
-            }
-            do {
-                let created = try await addCertificate(
-                    team: team,
-                    session: session,
-                    deviceName: deviceName
-                )
-                try Task.checkCancellation()
-                return created
-            } catch {
-                guard Self.isCertificateLimitError(error) else { throw error }
-            }
-        }
-
-        throw Self.failure(
-            title: "签名失败",
-            reason: "Apple 返回：无法创建签名证书",
-            recovery: "重试",
-            code: "SEAL-CERT-204"
-        )
-    }
-
     private func cleanUpNewCertificate(
         serialNumber: String,
         certificate: ALTCertificate,
@@ -611,7 +690,7 @@ actor ApplePortalSigningService {
             return false
         }
         guard let exactCertificate = certificates.first(where: {
-            $0.serialNumber.caseInsensitiveCompare(serialNumber) == .orderedSame
+            CertificateSerial.matches($0.serialNumber, serialNumber)
         }) else {
             return true
         }
@@ -620,21 +699,6 @@ actor ApplePortalSigningService {
             team: team,
             session: refreshedSession
         )) != nil
-    }
-
-    private static func isCertificateLimitError(_ error: Error) -> Bool {
-        if let apiError = error as? ALTAppleAPIError,
-           case .invalidCertificateRequest = apiError {
-            return true
-        }
-        let nsError = error as NSError
-        let normalized = "\(nsError.domain) \(nsError.code) \(nsError.localizedDescription) \(String(describing: error))".lowercased()
-        return nsError.code == 3022
-            || normalized.contains("3022")
-            || normalized.contains("maximum number of certificates")
-            || normalized.contains("maximum") && normalized.contains("certificate")
-            || normalized.contains("too many") && normalized.contains("certificate")
-            || normalized.contains("invalidcertificaterequest")
     }
 
     private func fetchCertificates(
@@ -948,19 +1012,22 @@ actor ApplePortalSigningService {
                 code: "SEAL-PROFILE-304"
             )
         }
-        updated.features = features
-        updated.entitlements = filteredEntitlements
+        updated.features = ApplePortalAppIDResolver.mergePreservingRemoteValues(
+            remote: appID.features,
+            requested: features
+        )
+        updated.entitlements = ApplePortalAppIDResolver.mergePreservingRemoteValues(
+            remote: appID.entitlements,
+            requested: filteredEntitlements
+        )
         do {
             return try await submitUpdatedAppID(updated, team: team, session: session)
         } catch {
             guard Self.isInvalidAppIDParameterError(error),
-                  team.type == .free,
-                  let fallback = appID.copy() as? ALTAppID else {
+                  team.type == .free else {
                 throw error
             }
-            fallback.features = [:]
-            fallback.entitlements = [:]
-            return try await submitUpdatedAppID(fallback, team: team, session: session)
+            return appID
         }
     }
 

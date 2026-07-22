@@ -45,11 +45,15 @@ enum BundleIDPolicy {
         if let mapped = normalized(app.mappedBundleIdentifier), mapped.isEmpty == false {
             return try validated(mapped)
         }
-        return try validated(app.originalBundleIdentifier)
+        return try validated(recommendedBundleIdentifier(for: app.originalBundleIdentifier))
     }
 
     static func recommendedBundleIdentifier(for original: String) -> String {
-        normalized(original) ?? original
+        let identifier = normalized(original) ?? original
+        guard identifier.lowercased().hasSuffix(".seal") == false else {
+            return identifier
+        }
+        return "\(identifier).seal"
     }
 
     static func isEditable(_ app: AppRecord) -> Bool { app.state != .installed && app.isSeal == false }

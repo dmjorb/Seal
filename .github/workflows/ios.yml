@@ -15,10 +15,17 @@ permissions:
 
 jobs:
   build-package:
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
+
+      - name: Select pinned Xcode 16.4
+        run: |
+          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_16.4*.app' | sort | head -n 1)"
+          test -n "$XCODE_PATH"
+          sudo xcode-select --switch "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
 
       - name: Install pinned XcodeGen
         run: |
@@ -32,6 +39,18 @@ jobs:
 
       - name: Generate Xcode project
         run: xcodegen generate
+
+      - name: Run Swift tests
+        run: bash Scripts/ci-test.sh
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Seal-TestResults-${{ github.run_number }}
+          if-no-files-found: warn
+          path: build/TestResults.xcresult
+          retention-days: 14
 
       - name: Build unsigned IPA
         run: bash Scripts/build-unsigned-ipa.sh

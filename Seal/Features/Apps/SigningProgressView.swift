@@ -7,28 +7,21 @@ struct SigningProgressView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 14) {
-            SealSheetGrabber()
+        SealDrawer(title: title) {
+            VStack(spacing: 16) {
+                if let app = session?.app {
+                    appIdentity(app)
+                }
 
-            Text(title)
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(.primary)
+                if let session {
+                    signingRuntimeCard(session)
+                }
 
-            if let app = session?.app {
-                appIdentity(app)
+                statusContent
             }
-
-            if let session {
-                signingRuntimeCard(session)
-            }
-
-            statusContent
+        } footer: {
             actions
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 12)
-        .padding(.bottom, 22)
-        .sealSheetBackground()
         .interactiveDismissDisabled(isRunning)
     }
 
@@ -52,17 +45,17 @@ struct SigningProgressView: View {
                 ProgressView()
                     .controlSize(.small)
                 Text(runningStatusTitle(for: stage))
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.headline)
                     .foregroundStyle(.primary)
                 Spacer()
                 Text("\(Int(progress(for: stage) * 100))%")
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .font(.caption.monospaced().weight(.semibold))
                     .foregroundStyle(Color.sealTextSecondary)
             }
             ProgressView(value: progress(for: stage))
                 .tint(Color.sealAccent)
             Text(stage.userVisibleTitle(isRenewal: isRenewal))
-                .font(.system(size: 13, weight: .regular))
+                .font(.footnote)
                 .foregroundStyle(Color.sealTextSecondary)
         }
         .padding(14)
@@ -79,10 +72,10 @@ struct SigningProgressView: View {
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(Color.sealSuccess)
             VStack(alignment: .leading, spacing: 3) {
-                Text(isRenewal ? "续签并安装成功" : "签名并安装成功")
-                    .font(.system(size: 16, weight: .semibold))
+                Text(successTitle)
+                    .font(.headline)
                 Text(expiryText(for: installed))
-                    .font(.system(size: 13, weight: .regular))
+                    .font(.footnote)
                     .foregroundStyle(Color.sealTextSecondary)
             }
             Spacer()
@@ -97,19 +90,19 @@ struct SigningProgressView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(Color.sealDanger)
                 Text(failure.title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.headline)
                 Spacer()
             }
             Text(userFacingReason(failure))
-                .font(.system(size: 13, weight: .regular))
+                .font(.footnote)
                 .foregroundStyle(Color.sealTextSecondary)
-                .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
             if recoveryText(failure).isEmpty == false {
                 Text(recoveryText(failure))
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(Color.sealAccent)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(14)
@@ -166,11 +159,11 @@ struct SigningProgressView: View {
     private func runtimeRow(_ title: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(title)
-                .font(.system(size: 14, weight: .regular))
+                .font(.subheadline)
                 .foregroundStyle(.primary)
             Spacer(minLength: 12)
             Text(value)
-                .font(.system(size: 12, weight: .regular, design: title.contains("Bundle") || title.contains("证书") ? .monospaced : .default))
+                .font(title.contains("Bundle") || title.contains("证书") ? .caption.monospaced() : .caption)
                 .foregroundStyle(Color.sealTextSecondary)
                 .multilineTextAlignment(.trailing)
                 .lineLimit(2)
@@ -198,18 +191,17 @@ struct SigningProgressView: View {
             appIcon(app, size: 52)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(app.name)
-                        .font(.system(size: 18, weight: .semibold))
+                    Text(sessionDisplayName(app))
+                        .font(.headline)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Text("v\(app.version)")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(Color.sealTextSecondary)
                         .lineLimit(1)
                 }
-                Text(displayBundleIdentifier(app))
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                    .foregroundStyle(Color.sealTextSecondary)
+                BundleIdentifierText(displayBundleIdentifier(app))
+                    .font(.caption.monospaced())
                     .lineLimit(1)
                     .textSelection(.enabled)
             }
@@ -219,15 +211,29 @@ struct SigningProgressView: View {
     }
 
     private func displayBundleIdentifier(_ app: AppRecord) -> String {
-        if app.isSeal { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
-        if app.state == .installed { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
-        return app.preferredBundleIdentifier ?? app.originalBundleIdentifier
+        if case .succeeded(let result) = session?.status {
+            return result.mappedBundleIdentifier
+                ?? result.preferredBundleIdentifier
+                ?? result.originalBundleIdentifier
+        }
+        if let requested = session?.requestedBundleIdentifier,
+           requested.isEmpty == false {
+            return requested
+        }
+        if app.isSeal || app.state == .installed {
+            return app.mappedBundleIdentifier
+                ?? app.preferredBundleIdentifier
+                ?? app.originalBundleIdentifier
+        }
+        return app.preferredBundleIdentifier
+            ?? BundleIDPolicy.recommendedBundleIdentifier(for: app.originalBundleIdentifier)
     }
 
     @ViewBuilder
     private func appIcon(_ app: AppRecord, size: CGFloat) -> some View {
         Group {
-            if let data = viewModel.iconData[app.id], let image = UIImage(data: data) {
+            if let data = session?.options.customization.iconData ?? viewModel.displayIconData(for: app),
+               let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: "app.fill")
@@ -286,6 +292,17 @@ struct SigningProgressView: View {
         return stage.title
     }
 
+    private var successTitle: String {
+        guard let session else { return "签名完成" }
+        if isRenewal { return "续签并安装成功" }
+        return session.options.disposition == .signOnly ? "签名完成" : "签名并安装成功"
+    }
+
+    private func sessionDisplayName(_ app: AppRecord) -> String {
+        session?.options.customization.normalizedDisplayName
+            ?? viewModel.displayName(for: app)
+    }
+
     private func expiryText(for installed: AppRecord) -> String {
         guard let expiryDate = installed.expiryDate else { return "应用已安装" }
         return "到期：\(SealSettingsDateFormatter.string(from: expiryDate))"
@@ -296,7 +313,8 @@ struct SigningProgressView: View {
         if isCertificateFailure(failure) { return "重试" }
         if isAppIDFailure(failure) { return "更换 Bundle ID" }
         if isPairingFailure(failure) { return "配对文件" }
-        if isInstallChannelFailure(failure) { return "知道了" }
+        if isLocalDevVPNFailure(failure) { return "检查 LocalDevVPN" }
+        if isInstallChannelFailure(failure) { return "重新安装" }
         if failure.code == "SEAL-EXT-401" { return "移除扩展并重试" }
         return "重试"
     }
@@ -311,9 +329,10 @@ struct SigningProgressView: View {
             dismiss()
         } else if isPairingFailure(failure) {
             openSettings(.pairing)
+        } else if isLocalDevVPNFailure(failure) {
+            openSettings(.localDevVPN)
         } else if isInstallChannelFailure(failure) {
-            viewModel.dismissSigningResult()
-            dismiss()
+            viewModel.retrySigning()
         } else if failure.code == "SEAL-EXT-401" {
             viewModel.retryWithoutExtensions()
         } else {
@@ -322,7 +341,16 @@ struct SigningProgressView: View {
     }
 
     private func shouldOfferRetry(_ failure: ImportFailure) -> Bool {
-        if isAuthFailure(failure) || isAppIDFailure(failure) || isPairingFailure(failure) { return false }
+        // The primary action already retries certificate and generic failures.
+        // Never render a second button with the same title/action.
+        if primaryRecoveryTitle(failure) == "重试" { return false }
+        if isAuthFailure(failure)
+            || isAppIDFailure(failure)
+            || isPairingFailure(failure)
+            || isLocalDevVPNFailure(failure)
+            || isInstallChannelFailure(failure) {
+            return false
+        }
         return true
     }
 
@@ -349,7 +377,12 @@ struct SigningProgressView: View {
     }
 
     private func isPairingFailure(_ failure: ImportFailure) -> Bool {
-        failure.code.hasPrefix("SEAL-PAIR-")
+        failure.code.hasPrefix("SEAL-PAIR-") || failure.code == "SEAL-INSTALL-703"
+    }
+
+    private func isLocalDevVPNFailure(_ failure: ImportFailure) -> Bool {
+        ["SEAL-INSTALL-701", "SEAL-INSTALL-705", "SEAL-INSTALL-706", "SEAL-INSTALL-708"]
+            .contains(failure.code)
     }
 
     private func isInstallChannelFailure(_ failure: ImportFailure) -> Bool {
@@ -363,8 +396,8 @@ struct SigningProgressView: View {
     }
 
     private func finish() {
-        viewModel.dismissSigningResult()
         onFinish()
+        viewModel.dismissSigningResult()
         dismiss()
     }
 }

@@ -39,7 +39,7 @@ struct AppDetailView: View {
         HStack(spacing: 16) {
             icon(app, size: 72)
             VStack(alignment: .leading, spacing: 5) {
-                Text("\(app.name) \(app.version)")
+                Text("\(viewModel.displayName(for: app)) \(app.version)")
                     .font(.title2.weight(.semibold))
                     .lineLimit(1)
                 Text(displayBundleIdentifier(app))
@@ -97,6 +97,12 @@ struct AppDetailView: View {
                 .foregroundStyle(Color.sealTextSecondary)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .contextMenu {
+                    Button("复制") {
+                        SealPasteboard.copy(value, announcement: "\(title)已复制")
+                    }
+                }
         }
         .padding(.vertical, 15)
     }
@@ -115,7 +121,7 @@ struct AppDetailView: View {
     @ViewBuilder
     private func icon(_ app: AppRecord, size: CGFloat) -> some View {
         Group {
-            if let data = viewModel.iconData[app.id], let image = UIImage(data: data) {
+            if let data = viewModel.displayIconData(for: app), let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: "app.fill")
@@ -170,11 +176,7 @@ struct AppDetailView: View {
     }
 
     private func expiryText(_ app: AppRecord) -> String {
-        guard let date = app.expiryDate else { return "尚未签名" }
-        let interval = date.timeIntervalSinceNow
-        if interval <= 0 { return "已过期" }
-        if interval < 86_400 { return "剩余 \(max(1, Int(ceil(interval / 3_600)))) 小时" }
-        return "剩余 \(max(1, Int(ceil(interval / 86_400)))) 天"
+        AppValidityFormatter.text(expiryDate: app.expiryDate, fallback: "尚未签名")
     }
 
     private func expiryIcon(_ app: AppRecord) -> String {

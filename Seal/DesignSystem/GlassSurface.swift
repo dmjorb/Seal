@@ -43,8 +43,8 @@ struct SealSheetBackground: ViewModifier {
         content
             .background(SealBackdrop(level: level).ignoresSafeArea())
             .presentationDragIndicator(.hidden)
-            .compatibleClearPresentationBackground()
-            .compatiblePresentationCornerRadius(28)
+            .compatibleSealPresentationBackground(level)
+            .compatiblePresentationCornerRadius(30)
     }
 }
 
@@ -57,6 +57,16 @@ extension View {
     func compatibleClearPresentationBackground() -> some View {
         if #available(iOS 16.4, *) {
             presentationBackground(.clear)
+        } else {
+            self
+        }
+    }
+
+
+    @ViewBuilder
+    func compatibleSealPresentationBackground(_ level: SealScreenLevel) -> some View {
+        if #available(iOS 16.4, *) {
+            presentationBackground(level == .primary ? Color.sealBackground : Color.sealSurface)
         } else {
             self
         }
@@ -98,7 +108,7 @@ struct SealPrimaryActionStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 19, weight: .semibold))
+            .font(.headline)
             .frame(maxWidth: .infinity, minHeight: 54)
             .foregroundStyle(.white)
             .background(
@@ -120,7 +130,7 @@ struct SealOutlineActionStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 18, weight: .semibold))
+            .font(.headline)
             .frame(maxWidth: .infinity, minHeight: 54)
             .foregroundStyle(Color.sealAccent)
             .background(Color.clear, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -138,7 +148,7 @@ struct SealSecondaryDisabledActionStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 19, weight: .semibold))
+            .font(.headline)
             .frame(maxWidth: .infinity, minHeight: 54)
             .foregroundStyle(Color.sealTextSecondary.opacity(0.75))
             .background(

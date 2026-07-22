@@ -13,6 +13,34 @@ struct AppValidityPresentation: Equatable, Sendable {
     let tone: AppValidityTone
 }
 
+enum AppValidityFormatter {
+    static func presentation(expiryDate: Date?, now: Date = Date()) -> AppValidityPresentation? {
+        guard let expiryDate else { return nil }
+        let interval = expiryDate.timeIntervalSince(now)
+        guard interval > 0 else {
+            return AppValidityPresentation(text: "已过期", detailText: "已过期", tone: .danger)
+        }
+
+        if interval < 86_400 {
+            let hours = max(1, Int(interval / 3_600))
+            let text = "\(hours)小时"
+            return AppValidityPresentation(text: text, detailText: text, tone: .danger)
+        }
+
+        let days = max(1, Int(interval / 86_400))
+        let text = "\(days)天"
+        return AppValidityPresentation(
+            text: text,
+            detailText: text,
+            tone: days <= 3 ? .warning : .neutral
+        )
+    }
+
+    static func text(expiryDate: Date?, now: Date = Date(), fallback: String = "—") -> String {
+        presentation(expiryDate: expiryDate, now: now)?.text ?? fallback
+    }
+}
+
 enum AppOperationKind: Equatable, Sendable {
     case signing
     case renewal
@@ -31,32 +59,19 @@ struct AppOperationPresentation: Equatable, Sendable {
             return
         }
 
-        let interval = expiryDate.timeIntervalSince(now)
-        guard interval > 0 else {
-            kind = .expiredRenewal
-            validity = AppValidityPresentation(
-                text: "已到期",
-                detailText: "已到期",
-                tone: .danger
-            )
+        validity = AppValidityFormatter.presentation(expiryDate: expiryDate, now: now)
+        guard let validity else {
+            kind = .renewal
             return
         }
 
-        let days = max(1, Int(ceil(interval / 86_400)))
-        if days == 1 {
+        switch validity.tone {
+        case .danger:
+            kind = expiryDate <= now ? .expiredRenewal : .urgentRenewal
+        case .warning:
             kind = .urgentRenewal
-            validity = AppValidityPresentation(
-                text: "1天",
-                detailText: "剩余 1 天",
-                tone: .warning
-            )
-        } else {
+        case .success, .neutral:
             kind = .renewal
-            validity = AppValidityPresentation(
-                text: "\(days)天",
-                detailText: "剩余 \(days) 天",
-                tone: .success
-            )
         }
     }
 

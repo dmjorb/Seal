@@ -69,7 +69,7 @@ struct AboutView: View {
                 .textSelection(.enabled)
                 .foregroundStyle(.primary)
         }
-        .font(.system(size: 16, weight: .regular))
+        .font(.body)
         .frame(minHeight: 54)
     }
 }

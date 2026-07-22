@@ -116,7 +116,7 @@ struct CertificatesRootView: View {
         guard let account = viewModel.activeAccount else {
             return "选择一个已验证账号用于新的 IPA 签名"
         }
-        return viewModel.fullEmail(for: account)
+        return account.maskedEmail
     }
 
     private var emptyState: some View {
@@ -168,7 +168,7 @@ struct CertificatesRootView: View {
                         )
                         .frame(width: 24)
 
-                    Text(viewModel.fullEmail(for: account))
+                    Text(account.maskedEmail)
                         .font(.body.weight(.semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)

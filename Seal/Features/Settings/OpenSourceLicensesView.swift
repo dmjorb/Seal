@@ -32,7 +32,7 @@ struct OpenSourceLicensesView: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Seal 使用的开源组件仅用于本机 IPA 解析、签名、安装与设备连接。请以各上游仓库中的 LICENSE 文件为准。")
-                    .font(.system(size: 15, weight: .regular))
+                    .font(.subheadline)
                     .foregroundStyle(Color.sealTextSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -42,19 +42,19 @@ struct OpenSourceLicensesView: View {
                             HStack(alignment: .center, spacing: 14) {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(dependency.name)
-                                        .font(.system(size: 17, weight: .semibold))
+                                        .font(.headline)
                                         .foregroundStyle(.primary)
                                     Text(dependency.purpose)
-                                        .font(.system(size: 14, weight: .regular))
+                                        .font(.subheadline)
                                         .foregroundStyle(Color.sealTextSecondary)
                                         .fixedSize(horizontal: false, vertical: true)
                                     Text(dependency.license)
-                                        .font(.system(size: 13, weight: .medium))
+                                        .font(.caption.weight(.medium))
                                         .foregroundStyle(Color.sealAccent)
                                 }
                                 Spacer(minLength: 12)
                                 Image(systemName: "arrow.up.right")
-                                    .font(.system(size: 14, weight: .semibold))
+                                    .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(Color.sealTextSecondary)
                             }
                             .padding(.vertical, 15)

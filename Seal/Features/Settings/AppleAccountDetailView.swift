@@ -82,7 +82,7 @@ struct AppleAccountDetailView: View {
 
     private var accountCard: some View {
         VStack(spacing: 0) {
-            detailRow("Apple ID", viewModel.fullEmail(for: currentAccount))
+            detailRow("Apple ID", currentAccount.maskedEmail)
             Divider()
             detailRow("Team", currentAccount.teamName)
             Divider()
@@ -112,11 +112,16 @@ struct AppleAccountDetailView: View {
                     .foregroundStyle(Color.sealTextSecondary)
                     .lineLimit(1)
                 Text("Serial：\(serial)")
-                    .font(.system(size: 13, weight: .regular, design: .monospaced))
+                    .font(.caption.monospaced())
                     .foregroundStyle(Color.sealTextSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+                    .contextMenu {
+                        Button("复制 Serial") {
+                            SealPasteboard.copy(serial, announcement: "Serial 已复制")
+                        }
+                    }
                 Text("本机可用")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.sealSuccess)
@@ -173,7 +178,7 @@ struct AppleAccountDetailView: View {
                     .foregroundStyle(Color.sealTextSecondary)
                 Spacer(minLength: 12)
                 Text(item.bundleIdentifier)
-                    .font(.system(size: 13, weight: .regular, design: .monospaced))
+                    .font(.caption.monospaced())
                     .foregroundStyle(Color.sealTextSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
