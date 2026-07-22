@@ -30,6 +30,9 @@ jobs:
           echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
 
+      - name: Install Rust bridge native dependencies
+        run: brew install libimobiledevice
+
       - name: Rebuild Rust bridge
         run: bash Scripts/build-rust-bridge.sh
 

@@ -7,6 +7,12 @@ bridge_root="$repo_root/Vendor/Minimuxer/RustBridge"
 command -v rustup >/dev/null
 command -v cargo >/dev/null
 command -v xcodebuild >/dev/null
+command -v brew >/dev/null
+
+brew_prefix="$(brew --prefix)"
+openssl_prefix="$(brew --prefix openssl@3)"
+export LIBRARY_PATH="$brew_prefix/lib:$openssl_prefix/lib:${LIBRARY_PATH:-}"
+export PKG_CONFIG_PATH="$brew_prefix/lib/pkgconfig:$openssl_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 rustup target add \
   aarch64-apple-ios \
