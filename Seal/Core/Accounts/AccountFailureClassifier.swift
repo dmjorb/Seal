@@ -29,8 +29,7 @@ enum AccountFailureClassifier {
 
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain,
-           let code = URLError.Code(rawValue: nsError.code),
-           transientURLCodes.contains(code) {
+           transientURLCodes.contains(URLError.Code(rawValue: nsError.code)) {
             return .transient
         }
 
