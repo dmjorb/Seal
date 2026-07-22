@@ -34,7 +34,7 @@ public class Muxer {
         unsetenv(MuxerConstants.usbmuxdEnvKey)
         print("[minimuxer] setenv(USBMUXD_SOCKET_ADDRESS, \(MuxerConstants.usbmuxdSocket))")
         setenv(MuxerConstants.usbmuxdEnvKey, MuxerConstants.usbmuxdSocket, 1)
-        let value = getenv(MuxerConstants.usbmuxdEnvKey).map(String.init(cString:)) ?? "<unset>"
+        let value = { let pointer: UnsafeMutablePointer<CChar>? = getenv(MuxerConstants.usbmuxdEnvKey); return pointer.map { String(cString: $0) } ?? "<unset>" }()
         print("[minimuxer] getenv(USBMUXD_SOCKET_ADDRESS) =", value)
     }
 
@@ -107,7 +107,7 @@ public class Muxer {
                 }
             }
 
-            let value = getenv(MuxerConstants.usbmuxdEnvKey).map(String.init(cString:)) ?? "<unset>"
+            let value = { let pointer: UnsafeMutablePointer<CChar>? = getenv(MuxerConstants.usbmuxdEnvKey); return pointer.map { String(cString: $0) } ?? "<unset>" }()
             print("[minimuxer] muxer: (ENV) USBMUXD_SOCKET_ADDRESS =", value)
 
             guard bindResult == 0, listen(fd, 16) == 0 else {
