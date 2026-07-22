@@ -51,6 +51,15 @@ pub async fn remove_app_rppairing(bundle_id: String) -> Result<(), IdeviceError>
     inst_client.uninstall(bundle_id, None).await
 }
 
+/// Returns whether the exact bundle identifier is currently installed.
+pub async fn lookup_app_rppairing(bundle_id: String) -> Result<bool, IdeviceError> {
+    let mut inst_client = connect_to_rsd_services::<InstallationProxyClient>().await?;
+    let apps = inst_client
+        .get_apps(Some("Any"), Some(vec![bundle_id.clone()]))
+        .await?;
+    Ok(apps.contains_key(&bundle_id))
+}
+
 async fn ensure_afc_directory(afc: &mut AfcClient, path: &str) -> Result<(), IdeviceError> {
     if afc.get_file_info(path).await.is_err() {
         afc.mk_dir(path).await?;

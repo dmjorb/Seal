@@ -2,7 +2,7 @@ name: iOS
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main, "feature/**", "repair/**"]
   pull_request:
   workflow_dispatch:
 
@@ -16,32 +16,58 @@ permissions:
 jobs:
   build-package:
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
 
       - name: Select pinned Xcode 16.4
         run: |
+          set -euo pipefail
           XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_16.4*.app' | sort | head -n 1)"
           test -n "$XCODE_PATH"
           sudo xcode-select --switch "$XCODE_PATH/Contents/Developer"
           xcodebuild -version
 
+      - name: Prepare diagnostics directory
+        run: mkdir -p build/diagnostics
+
       - name: Install pinned XcodeGen
         run: |
-          curl --fail --location --silent --show-error \
-            --output "$RUNNER_TEMP/xcodegen.zip" \
-            https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip
-          echo "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 --check
-          ditto -x -k "$RUNNER_TEMP/xcodegen.zip" "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
+          set -euo pipefail
+          set -o pipefail
+          {
+            curl --fail --location --silent --show-error \
+              --output "$RUNNER_TEMP/xcodegen.zip" \
+              https://github.com/yonaskolb/XcodeGen/releases/download/2.45.4/xcodegen.zip
+            echo "090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 --check
+            ditto -x -k "$RUNNER_TEMP/xcodegen.zip" "$RUNNER_TEMP"
+            echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+            "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
+          } 2>&1 | tee build/diagnostics/xcodegen.log
+
+      - name: Validate closed-loop source contract
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          bash Scripts/validate-closed-loop-source.sh 2>&1 | tee build/diagnostics/source-contract.log
+
+      - name: Rebuild Rust bridge
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          bash Scripts/build-rust-bridge.sh 2>&1 | tee build/diagnostics/rust-bridge.log
 
       - name: Generate Xcode project
-        run: xcodegen generate
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          xcodegen generate 2>&1 | tee build/diagnostics/xcodegen-project.log
 
       - name: Run Swift tests
-        run: bash Scripts/ci-test.sh
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          bash Scripts/ci-test.sh 2>&1 | tee build/diagnostics/tests.log
 
       - name: Upload test results
         if: failure()
@@ -53,10 +79,16 @@ jobs:
           retention-days: 14
 
       - name: Build unsigned IPA
-        run: bash Scripts/build-unsigned-ipa.sh
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          bash Scripts/build-unsigned-ipa.sh 2>&1 | tee build/diagnostics/build-ipa.log
 
       - name: Verify unsigned IPA
-        run: bash Scripts/verify-ipa.sh build/Seal.ipa
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          bash Scripts/verify-ipa.sh build/Seal.ipa 2>&1 | tee build/diagnostics/verify-ipa.log
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v7
@@ -69,13 +101,11 @@ jobs:
             build/Seal-Info.plist
           retention-days: 30
 
-      - name: Upload build metadata
+      - name: Upload CI diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: Seal-Build-Metadata-${{ github.run_number }}
+          name: Seal-CI-Diagnostics-${{ github.run_number }}
+          path: build/diagnostics
           if-no-files-found: warn
-          path: |
-            build/Seal.ipa.sha256
-            build/Seal-Info.plist
           retention-days: 14
