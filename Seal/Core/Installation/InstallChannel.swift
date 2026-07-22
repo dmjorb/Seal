@@ -10,7 +10,8 @@ protocol InstallChannel: Actor {
 }
 
 extension InstallChannel {
-    nonisolated func withStartedChannel<Value: Sendable>(
+    func withStartedChannel<Value: Sendable>(
+        isolation: isolated (any Actor)? = #isolation,
         _ operation: (String) async throws -> Value
     ) async throws -> Value {
         do {
