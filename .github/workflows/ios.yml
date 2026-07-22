@@ -37,11 +37,6 @@ jobs:
             "$RUNNER_TEMP/xcodegen/bin/xcodegen" --version
           } 2>&1 | tee build/diagnostics/xcodegen.log
 
-      - name: Install Rust bridge native dependencies
-        run: |
-          set -o pipefail
-          brew install libimobiledevice 2>&1 | tee build/diagnostics/native-dependencies.log
-
       - name: Rebuild Rust bridge
         run: |
           set -o pipefail
@@ -97,6 +92,12 @@ jobs:
             build/Seal-Info.plist
           retention-days: 14
 
+      - name: Publish failure diagnostics
+        if: failure() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash Scripts/publish-ci-diagnostics.sh build/diagnostics
+
       - name: Upload CI diagnostics
         if: always()
         uses: actions/upload-artifact@v7
@@ -105,12 +106,6 @@ jobs:
           path: build/diagnostics
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Publish failure diagnostics
-        if: failure() && github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash Scripts/publish-ci-diagnostics.sh build/diagnostics
 
       - name: Close resolved diagnostics issue
         if: success() && github.event_name != 'pull_request'

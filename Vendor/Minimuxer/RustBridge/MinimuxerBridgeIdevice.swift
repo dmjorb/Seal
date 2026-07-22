@@ -45,6 +45,12 @@ internal func _rust_bridge_idevice_remove_app(
 	_ bundleId: UnsafePointer<Int8>?
 ) -> UnsafeMutablePointer<RustIdeviceFfiError>?
 
+@_silgen_name("rust_bridge_idevice_lookup_app")
+internal func _rust_bridge_idevice_lookup_app(
+    _ bundleId: UnsafePointer<Int8>?,
+    _ installedOut: UnsafeMutablePointer<UInt8>?
+) -> UnsafeMutablePointer<RustIdeviceFfiError>?
+
 @_silgen_name("rust_bridge_idevice_debug_app")
 internal func _rust_bridge_idevice_debug_app(
 	_ appId: UnsafePointer<Int8>?
@@ -157,6 +163,15 @@ public class RustIdevice {
 	public static func removeApp(bundleId: String) throws {
 		try rustIdeviceThrowIfNeeded(_rust_bridge_idevice_remove_app(bundleId))
 	}
+
+    public static func lookupApp(bundleId: String) throws -> Bool {
+        var installed: UInt8 = 0
+        let error = withUnsafeMutablePointer(to: &installed) {
+            _rust_bridge_idevice_lookup_app(bundleId, $0)
+        }
+        try rustIdeviceThrowIfNeeded(error)
+        return installed != 0
+    }
 
 	public static func debugApp(appId: String) throws {
 		try rustIdeviceThrowIfNeeded(_rust_bridge_idevice_debug_app(appId))

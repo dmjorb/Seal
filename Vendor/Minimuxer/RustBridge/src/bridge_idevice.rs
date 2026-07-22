@@ -8,7 +8,10 @@ use crate::idevice_support::rsd::{
 };
 use crate::idevice_support::{
     device::{fetch_udid_rppairing, test_device_connection},
-    install::{install_ipa_rppairing, remove_app_rppairing, yeet_app_afc_rppairing},
+    install::{
+        install_ipa_rppairing, lookup_app_rppairing, remove_app_rppairing,
+        yeet_app_afc_rppairing,
+    },
     jit::{debug_app_rppairing, debug_process_rppairing},
     provision::{
         dump_provisioning_profile_rppairing, install_provisioning_profile_rppairing,
@@ -18,8 +21,10 @@ use crate::idevice_support::{
 use crate::IdeviceFfiError;
 use crate::post17::RUNTIME;
 
-fn to_char(value: String) -> *mut c_char {
-    CString::new(value).unwrap().into_raw()
+fn to_char(value: String) -> Result<*mut c_char, idevice::IdeviceError> {
+    CString::new(value)
+        .map(CString::into_raw)
+        .map_err(|_| idevice::IdeviceError::InvalidArgument)
 }
 
 fn ffi_bytes<'a>(ptr: *const u8, len: u32) -> Result<&'a [u8], idevice::IdeviceError> {
@@ -69,12 +74,15 @@ pub extern "C" fn rust_bridge_idevice_fetch_udid(
     }
 
     match RUNTIME.block_on(fetch_udid_rppairing()) {
-        Ok(udid) => {
-            unsafe {
-                *udid_out = to_char(udid);
+        Ok(udid) => match to_char(udid) {
+            Ok(pointer) => {
+                unsafe {
+                    *udid_out = pointer;
+                }
+                std::ptr::null_mut()
             }
-            std::ptr::null_mut()
-        }
+            Err(err) => crate::ffi_err!(err),
+        },
         Err(err) => crate::ffi_err!(err),
     }
 }
@@ -130,6 +138,33 @@ pub extern "C" fn rust_bridge_idevice_remove_app(bundle_id: *const c_char) -> *m
             Err(err) => crate::ffi_err!(err),
         }
     })
+}
+
+#[no_mangle]
+pub extern "C" fn rust_bridge_idevice_lookup_app(
+    bundle_id: *const c_char,
+    installed_out: *mut u8,
+) -> *mut IdeviceFfiError {
+    if installed_out.is_null() {
+        return crate::ffi_err!(idevice::IdeviceError::InvalidArgument);
+    }
+    let bundle_id = match ffi_string(bundle_id) {
+        Ok(value) => value,
+        Err(err) => return crate::ffi_err!(err),
+    };
+    unsafe {
+        *installed_out = 0;
+    }
+
+    match RUNTIME.block_on(lookup_app_rppairing(bundle_id)) {
+        Ok(installed) => {
+            unsafe {
+                *installed_out = u8::from(installed);
+            }
+            std::ptr::null_mut()
+        }
+        Err(err) => crate::ffi_err!(err),
+    }
 }
 
 #[no_mangle]

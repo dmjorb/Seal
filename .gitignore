@@ -17,3 +17,6 @@ Auth.json
 PairingFile.plist
 *.pairing
 *.log
+
+# Generated Rust bridge binary; CI rebuilds it before XcodeGen.
+Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework/

@@ -8,7 +8,7 @@
 
 import Foundation
 
-final class DeviceEndpoint {
+final class DeviceEndpoint: @unchecked Sendable {
 
     static let shared = DeviceEndpoint()
 

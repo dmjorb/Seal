@@ -9,10 +9,9 @@ use log::{error, info};
 use once_cell::sync::Lazy;
 
 use std::{
-    net::SocketAddrV4,
+    net::{Ipv4Addr, SocketAddrV4},
     ops::{Deref, DerefMut},
-    str::FromStr,
-    sync::Mutex,
+    sync::{Mutex, MutexGuard},
 };
 
 type RsdAdapter = idevice::tcp::handle::AdapterHandle;
@@ -86,6 +85,12 @@ impl PairingState {
 static RPPAIRING_STATE: Lazy<Mutex<PairingState>> =
     Lazy::new(|| Mutex::new(PairingState::new()));
 
+fn pairing_state() -> MutexGuard<'static, PairingState> {
+    RPPAIRING_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub struct OwnedRsdConnection(GenerationOwner<CachedRsdConnection>);
 
 impl Deref for OwnedRsdConnection {
@@ -106,7 +111,7 @@ pub fn set_rppairing_file(pairing_file_string: String) -> Result<(), IdeviceErro
     let pairing_file =
         idevice::remote_pairing::RpPairingFile::from_bytes(pairing_file_string.as_bytes())?;
 
-    let mut state = RPPAIRING_STATE.lock().unwrap();
+    let mut state = pairing_state();
     state.pairing_file = Some(pairing_file);
     state.connections.invalidate();
 
@@ -114,26 +119,23 @@ pub fn set_rppairing_file(pairing_file_string: String) -> Result<(), IdeviceErro
 }
 
 pub fn clear_rppairing_state() {
-    let mut state = RPPAIRING_STATE.lock().unwrap();
+    let mut state = pairing_state();
     state.pairing_file.take();
     state.connections.invalidate();
 }
 
 pub fn has_rppairing_file() -> bool {
-    RPPAIRING_STATE.lock().unwrap().pairing_file.is_some()
+    pairing_state().pairing_file.is_some()
 }
 
 pub fn has_cached_rsd_connection() -> bool {
-    RPPAIRING_STATE
-        .lock()
-        .unwrap()
-        .connections
+    pairing_state().connections
         .value
         .is_some()
 }
 
 pub fn rppairing_generation() -> u64 {
-    RPPAIRING_STATE.lock().unwrap().connections.generation
+    pairing_state().connections.generation
 }
 
 fn checkout_connection(
@@ -142,7 +144,7 @@ fn checkout_connection(
     Option<idevice::remote_pairing::RpPairingFile>,
     u64,
 ) {
-    let mut state = RPPAIRING_STATE.lock().unwrap();
+    let mut state = pairing_state();
     let generation = state.connections.generation;
     let pairing_file = state.pairing_file.clone();
     let connection = state.connections.checkout().map(OwnedRsdConnection);
@@ -150,10 +152,7 @@ fn checkout_connection(
 }
 
 pub fn store_rppairing_rsd_connection(connection: OwnedRsdConnection) -> bool {
-    RPPAIRING_STATE
-        .lock()
-        .unwrap()
-        .connections
+    pairing_state().connections
         .store_if_current(connection.0)
 }
 
@@ -240,7 +239,7 @@ pub async fn get_or_create_rppairing_rsd_connection(
 async fn create_rppairing_rsd_connection(
     mut pairing_file: idevice::remote_pairing::RpPairingFile,
 ) -> Result<CachedRsdConnection, IdeviceError> {
-    let socket_addr = SocketAddrV4::from_str("10.7.0.1:49152").unwrap();
+    let socket_addr = SocketAddrV4::new(Ipv4Addr::new(10, 7, 0, 1), 49152);
     let stream = match tokio::net::TcpStream::connect(socket_addr).await {
         Ok(s) => s,
         Err(e) => {

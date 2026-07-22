@@ -9,7 +9,7 @@
 import Network
 import Foundation
 
-public final class NetworkObserver {
+public final class NetworkObserver: @unchecked Sendable {
 
     public static let shared = NetworkObserver()   // keep alive
 

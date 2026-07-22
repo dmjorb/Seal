@@ -2,17 +2,11 @@
 //  Minimuxer.swift
 //  Minimuxer
 //
-//  Original Rust Implementation by @jkcoxson
-//  Swift Port created by Magesh K on 02/03/26.
+//  Seal supports the modern remote-pairing transport only.
 //
 
 import Foundation
 import RustBridge
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
 
 public struct MinimuxerSecuritySnapshot: Equatable, Sendable {
     public let isListenerActive: Bool
@@ -24,70 +18,41 @@ public struct MinimuxerSecuritySnapshot: Equatable, Sendable {
 
 public struct Minimuxer {
     public static func describeError(_ error: MinimuxerError) -> String {
-        return error.description
+        error.description
     }
-    
+
     public static func bindTunnelConfig(_ binding: TunnelConfigBinding) {
         IfaceScanner.shared.bindTunnelConfig(binding)
     }
-    
-    public static func ready() -> Bool {
-        
-        let deviceIP: String
-        do {
-            if Muxer.isrppairing {
-                deviceIP = "10.7.0.1"
-            } else {
-                deviceIP = try DeviceEndpoint.shared.ip()
-            }
 
-        } catch {
-            print("[minimuxer] minimuxer not ready: device endpoint not initialized")
+    public static func ready() -> Bool {
+        guard Muxer.started, RustIdevice.hasRpPairingFile() else {
             return false
         }
-        
-        let deviceConnection = testDeviceConnection(ifaddr: deviceIP)
-        if Muxer.isrppairing {
-            return true
-        }
-        
-        let deviceExists: Bool
-        do {
-            _ = try Device.getFirstDevice()
-            deviceExists = true
-        } catch {
-            deviceExists = false
-        }
-        guard deviceConnection, deviceExists, Heartbeat.lastBeatSuccessful, Muxer.started, Muxer.usbmuxdReady else {
-            print(
-                "minimuxer not ready: " +
-                "conn=\(deviceConnection) " +
-                "dev=\(deviceExists) " +
-                "hb=\(Heartbeat.lastBeatSuccessful) " +
-                "dmg=\(Mounter.dmgMounted) " +
-                "started=\(Muxer.started) " +
-                "ready=\(Muxer.usbmuxdReady)"
-            )
-            return false
-        }
-        
-        if #available(iOS 26.4, *) {
-            if !IfaceScanner.shared.vpnPatched() {
-                print("[minimuxer] WARN: VPN subnet not patched")
-            }
-        }
-        return true
+        return RustIdevice.testDeviceConnection()
     }
 
+    /// Kept for source compatibility. The pure-Rust transport uses Swift/Rust
+    /// logging and has no libimobiledevice global debug level.
     public static func setDebug(_ debug: Bool) {
-        rustBridgeSetDebug(debug)
+        _ = debug
     }
 
     public static func start(pairingFile: String, logPath: String) throws {
-        try startWithLogger(pairingFile: pairingFile, logPath: logPath, isConsoleLoggingEnabled: true)
+        try startWithLogger(
+            pairingFile: pairingFile,
+            logPath: logPath,
+            isConsoleLoggingEnabled: true
+        )
     }
 
-    public static func startWithLogger(pairingFile: String, logPath: String, isConsoleLoggingEnabled: Bool) throws {
+    public static func startWithLogger(
+        pairingFile: String,
+        logPath: String,
+        isConsoleLoggingEnabled: Bool
+    ) throws {
+        _ = logPath
+        _ = isConsoleLoggingEnabled
         try Muxer.start(pairingFile: pairingFile, logPath: logPath)
     }
 
@@ -111,54 +76,19 @@ public struct Minimuxer {
     }
 
     public static func retargetUsbmuxdAddr() {
-        Muxer.retargetUsbmuxdAddr()
+        // Remote pairing communicates directly with the LocalDevVPN endpoint.
     }
 
     public static func fetchUDID() -> String? {
-        print("[minimuxer] Getting UDID for first device")
-        guard Muxer.started else {
-            print("[minimuxer] ERROR: minimuxer has not started!")
+        guard Muxer.started, RustIdevice.hasRpPairingFile() else {
             return nil
         }
-        let udid: String?
-        if Muxer.isrppairing {
-            udid = RustIdevice.fetchUDID()
-        } else {
-            udid = (try? Device.getFirstDevice())?.getUDID()
-        }
-
-        if let udid = udid {
-            print("[minimuxer] UDID: \(udid)")
-        } else {
-            print("[minimuxer] ERROR: Failed to get UDID")
-        }
-        return udid
+        return RustIdevice.fetchUDID()
     }
 
     public static func testDeviceConnection(ifaddr: String?) -> Bool {
-        guard let ip = ifaddr else { return false }
-        
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = Muxer.isrppairing ? MuxerConstants.rsdPort.bigEndian : MuxerConstants.lockdowndPort.bigEndian
-        inet_pton(AF_INET, ip, &addr.sin_addr)
-
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
-        defer { close(fd) }
-
-        let flags = fcntl(fd, F_GETFL, 0)
-        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
-
-        _ = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-
-        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-        let result = poll(&pfd, 1, 100)
-        return result > 0 && (pfd.revents & Int16(POLLOUT)) != 0
+        guard ifaddr?.isEmpty == false else { return false }
+        return RustIdevice.testDeviceConnection()
     }
 
     public static func yeetAppAfc(bundleId: String, ipaBytes: Data) throws {
@@ -174,15 +104,11 @@ public struct Minimuxer {
     }
 
     public static func lookupApp(bundleId: String) -> String? {
-        if Muxer.isrppairing { return bundleId }
-        guard let device = try? Device.getFirstDevice(),
-              let inst = RustInstProxy.connect(
-                device: device.internalInstance,
-                label: "minimuxer-lookup-app"
-              ) else {
+        guard Muxer.started else { return nil }
+        guard (try? RustIdevice.lookupApp(bundleId: bundleId)) == true else {
             return nil
         }
-        return inst.lookup(appId: bundleId)
+        return bundleId
     }
 
     public static func debugApp(appId: String) throws {
@@ -206,6 +132,6 @@ public struct Minimuxer {
     }
 
     public static func dumpProfiles(docsPath: String) throws -> String {
-        return try Provision.dumpProfiles(docsPath: docsPath)
+        try Provision.dumpProfiles(docsPath: docsPath)
     }
 }
