@@ -23,10 +23,13 @@ features = [
   "installation_proxy",
   "misagent",
   "mobile_image_mounter",
+  "pair",
   "remote_pairing",
+  "ring",
   "rsd",
   "tcp",
   "tunnel_tcp_stack",
+  "usbmuxd",
 ]
 
 [lib]
