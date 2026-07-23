@@ -7,10 +7,11 @@ enum AppleServiceFailurePolicy {
         }
 
         let nsError = error as NSError
-        if nsError.domain == NSURLErrorDomain,
-           let code = URLError.Code(rawValue: nsError.code),
-           networkCodes.contains(code) {
-            return true
+        if nsError.domain == NSURLErrorDomain {
+            let code = URLError.Code(rawValue: nsError.code)
+            if networkCodes.contains(code) {
+                return true
+            }
         }
         if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error,
            isNetworkError(underlying) {
@@ -22,6 +23,7 @@ enum AppleServiceFailurePolicy {
     }
 
     static func networkFailure(
+        underlying _: Error? = nil,
         title: String = "网络不可用",
         reason: String = "当前无法连接 Apple 服务。已保存的 Apple ID 不会受到影响。",
         recovery: String = "网络恢复后重试",
