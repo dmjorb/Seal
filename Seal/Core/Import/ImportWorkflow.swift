@@ -279,8 +279,21 @@ actor ImportWorkflow {
         preferenceSource: AppRecord?
     ) -> AppRecord {
         let parsed = draft.parsedIPA
+        let recordID = existing?.id ?? draft.appID
+        let preferredBundleIdentifier = existing?.preferredBundleIdentifier
+            ?? preferenceSource?.mappedBundleIdentifier
+            ?? preferenceSource?.preferredBundleIdentifier
+        let preferredDisplayName = existing?.preferredDisplayName
+            ?? preferenceSource?.preferredDisplayName
+        let preferredIconRelativePath = existing?.preferredIconRelativePath
+            ?? files.preferredIconRelativePath
+        let removedExtensionBundleIdentifiers = existing?.removedExtensionBundleIdentifiers
+            ?? preferenceSource?.removedExtensionBundleIdentifiers
+            ?? []
+        let isPinned = existing?.isPinned ?? false
+
         return AppRecord(
-            id: existing?.id ?? draft.appID,
+            id: recordID,
             originalBundleIdentifier: parsed.bundleIdentifier,
             mappedBundleIdentifier: nil,
             name: parsed.name,
@@ -294,16 +307,12 @@ actor ImportWorkflow {
             certificateSerialNumber: nil,
             ipaRelativePath: files.ipaRelativePath,
             signedIPARelativePath: nil,
-            preferredBundleIdentifier: existing?.preferredBundleIdentifier
-                ?? preferenceSource?.mappedBundleIdentifier
-                ?? preferenceSource?.preferredBundleIdentifier,
-            preferredDisplayName: existing?.preferredDisplayName ?? preferenceSource?.preferredDisplayName,
-            preferredIconRelativePath: existing?.preferredIconRelativePath ?? files.preferredIconRelativePath,
-            removedExtensionBundleIdentifiers: existing?.removedExtensionBundleIdentifiers
-                ?? preferenceSource?.removedExtensionBundleIdentifiers
-                ?? [],
+            preferredBundleIdentifier: preferredBundleIdentifier,
+            preferredDisplayName: preferredDisplayName,
+            preferredIconRelativePath: preferredIconRelativePath,
+            removedExtensionBundleIdentifiers: removedExtensionBundleIdentifiers,
             isSeal: false,
-            isPinned: existing?.isPinned ?? false,
+            isPinned: isPinned,
             importedAt: importedAt,
             extensions: parsed.extensions
         )

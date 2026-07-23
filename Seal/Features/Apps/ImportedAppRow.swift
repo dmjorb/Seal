@@ -46,7 +46,7 @@ struct ImportedAppRow: View {
         if app.state == .installed || app.state == .signed || app.hasSignedArtifact || app.isSeal {
             return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier
         }
-        return app.preferredBundleIdentifier ?? BundleIDPolicy.recommendedBundleIdentifier(for: app)
+        return app.preferredBundleIdentifier ?? BundleIDPolicy.recommendedBundleIdentifier(for: app.originalBundleIdentifier)
     }
 
     @ViewBuilder
@@ -54,8 +54,8 @@ struct ImportedAppRow: View {
         let identifier = displayBundleIdentifier
         if identifier.lowercased().hasSuffix(".seal"), identifier.count > 5 {
             let prefix = String(identifier.dropLast(5))
-            Text(prefix).foregroundStyle(Color.sealTextSecondary)
-                + Text(".seal").foregroundStyle(Color.sealAccent)
+            Text(prefix).foregroundColor(Color.sealTextSecondary)
+                + Text(".seal").foregroundColor(Color.sealAccent)
         } else {
             Text(identifier).foregroundStyle(Color.sealTextSecondary)
         }
