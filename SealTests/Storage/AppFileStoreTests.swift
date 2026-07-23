@@ -127,6 +127,79 @@ struct AppFileStoreTests {
         #expect(FileManager.default.fileExists(atPath: stale.path) == false)
     }
 
+    @Test
+    func importTransactionCanFinalizeIdempotentlyAndClearJournal() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let store = AppFileStore(
+            documentsDirectory: fixture.documents,
+            cacheDirectory: fixture.cache,
+            fileProtector: MarkerFileProtector()
+        )
+        let staged = try await store.stage(sourceURL: fixture.source)
+        let appID = UUID()
+
+        var transaction = try await store.prepareImportCommit(
+            staged: staged,
+            appID: appID,
+            iconData: nil
+        )
+        #expect(try await store.pendingImportTransactions().count == 1)
+        transaction = try await store.markDatabaseCommitPending(transaction)
+        transaction = try await store.finalizeImportCommit(transaction)
+        let finalizedAgain = try await store.finalizeImportCommit(transaction)
+
+        #expect(finalizedAgain.phase == .finalized)
+        #expect(FileManager.default.fileExists(
+            atPath: fixture.documents.appending(path: "Apps/\(appID.uuidString)/Original.ipa").path
+        ))
+
+        try await store.completeImportCommit(finalizedAgain)
+        #expect(try await store.pendingImportTransactions().isEmpty)
+    }
+
+    @Test
+    func corruptedImportTransactionJournalIsNotSilentlyIgnored() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let store = AppFileStore(
+            documentsDirectory: fixture.documents,
+            cacheDirectory: fixture.cache,
+            fileProtector: MarkerFileProtector()
+        )
+        let transactions = fixture.documents.appending(path: "Transactions", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: transactions, withIntermediateDirectories: true)
+        try Data("not-json".utf8).write(
+            to: transactions.appending(path: "import-corrupt.json"),
+            options: .atomic
+        )
+
+        do {
+            _ = try await store.pendingImportTransactions()
+            Issue.record("Expected corrupt transaction journal to fail explicitly")
+        } catch let failure as ImportFailure {
+            #expect(failure.code == "SEAL-IPA-RECOVERY-003")
+        }
+    }
+
+    @Test
+    func clearingTemporaryFilesNeverDeletesFormalSignedIPA() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let store = AppFileStore(
+            documentsDirectory: fixture.documents,
+            cacheDirectory: fixture.cache,
+            fileProtector: MarkerFileProtector()
+        )
+        let appID = UUID()
+        let signedPath = try await store.storeSignedIPA(sourceURL: fixture.source, appID: appID)
+
+        try await store.clearTemporaryFiles()
+
+        #expect(try await store.exists(relativePath: signedPath))
+    }
+
+
     private func makeFixture() throws -> (
         root: URL,
         documents: URL,

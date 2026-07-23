@@ -24,19 +24,19 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
     ) throws -> ProvisioningProfileBinding {
         guard teamIdentifier.caseInsensitiveCompare(expectedTeamID) == .orderedSame else {
             throw Self.failure(
-                reason: "描述文件 Team ID 与当前签名 Team 不一致。实际：\(teamIdentifier)，期望：\(expectedTeamID)。",
+                reason: "描述文件 Team 与当前签名 Team 不一致。",
                 code: "SEAL-PROFILE-310"
             )
         }
         guard bundleIdentifier.caseInsensitiveCompare(expectedBundleID) == .orderedSame else {
             throw Self.failure(
-                reason: "描述文件 Bundle ID 与签名目标不一致。实际：\(bundleIdentifier)，期望：\(expectedBundleID)。",
+                reason: "描述文件 Bundle ID 与当前签名目标不一致。",
                 code: "SEAL-PROFILE-311"
             )
         }
         guard expirationDate > now else {
             throw Self.failure(
-                reason: "Apple 返回的描述文件已经过期：\(expirationDate.formatted(date: .numeric, time: .shortened))。",
+                reason: "Apple 返回的描述文件已经过期。",
                 code: "SEAL-PROFILE-312"
             )
         }
@@ -44,7 +44,7 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
         let normalizedSerials = Set(certificateSerialNumbers.map(Self.normalizedSerial))
         guard normalizedSerials.contains(normalizedExpectedSerial) else {
             throw Self.failure(
-                reason: "描述文件不包含当前签名证书。当前 Serial：\(expectedCertificateSerialNumber)。",
+                reason: "描述文件不包含当前签名证书。",
                 code: "SEAL-PROFILE-313"
             )
         }
@@ -52,7 +52,7 @@ struct ProvisioningProfileBinding: Codable, Equatable, Sendable {
             $0.caseInsensitiveCompare(expectedDeviceIdentifier) == .orderedSame
         }) else {
             throw Self.failure(
-                reason: "描述文件不包含当前设备 UDID：\(expectedDeviceIdentifier)。",
+                reason: "描述文件不包含当前设备。",
                 code: "SEAL-PROFILE-314"
             )
         }

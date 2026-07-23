@@ -42,7 +42,12 @@ struct SigningCertificateSettingsView: View {
                 dismissButton: .default(Text(failure.recovery))
             )
         }
-        .task { await viewModel.load(force: true) }
+        .task {
+            await viewModel.load(force: true)
+            if let account = activeAccount {
+                await viewModel.refreshCertificateInventory(for: account, force: true)
+            }
+        }
         .sealScreenBackground()
     }
 
@@ -56,7 +61,7 @@ struct SigningCertificateSettingsView: View {
                 Divider()
                 detailRow("Team", account.teamName)
                 Divider()
-                detailRow("Team ID", account.teamID)
+                FullIdentifierRow(title: "Team ID", value: account.teamID, showsCopyButton: true)
             } else {
                 Text("请先选择已验证的 Apple ID")
                     .foregroundStyle(Color.sealTextSecondary)
@@ -83,23 +88,75 @@ struct SigningCertificateSettingsView: View {
     }
 
     private func localCertificateCard(account: AppleAccountRecord, serial: String) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let health = viewModel.certificateHealthStatus(for: account.id)
+        return VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 7) {
                 Text("Seal-\(serial.suffix(8))")
                     .font(.title3.weight(.semibold))
                 Text(account.teamName)
                     .font(.subheadline)
                     .foregroundStyle(Color.sealTextSecondary)
-                Text("Serial：\(serial)")
-                    .font(.system(size: 13, weight: .regular, design: .monospaced))
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("本机可用")
+                FullIdentifierRow(title: "Serial", value: serial, showsCopyButton: true)
+                Text(certificateSummary(health))
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.sealSuccess)
+                    .foregroundStyle(certificateSummaryColor(health))
             }
 
             Divider()
+
+            VStack(spacing: 0) {
+                certificateHealthRow(
+                    "Apple Portal",
+                    value: stateText(
+                        health?.portalPresence,
+                        valid: "存在",
+                        invalid: "未找到（已撤销或失效）"
+                    ),
+                    state: health?.portalPresence
+                )
+                Divider()
+                certificateHealthRow(
+                    "证书有效期",
+                    value: expirationText(health),
+                    state: health?.expirationState
+                )
+                Divider()
+                certificateHealthRow(
+                    "本地私钥",
+                    value: stateText(health?.localPrivateKey, valid: "可用", invalid: "缺失"),
+                    state: health?.localPrivateKey
+                )
+                Divider()
+                certificateHealthRow(
+                    "P12",
+                    value: stateText(health?.p12Readable, valid: "可读取", invalid: "不可读取"),
+                    state: health?.p12Readable
+                )
+                Divider()
+                certificateHealthRow(
+                    "Keychain",
+                    value: stateText(health?.keychainReadable, valid: "可读取", invalid: "不可读取"),
+                    state: health?.keychainReadable
+                )
+                Divider()
+                certificateHealthRow(
+                    "Apple ID",
+                    value: stateText(health?.appleIDMatch, valid: "匹配", invalid: "不匹配"),
+                    state: health?.appleIDMatch
+                )
+                Divider()
+                certificateHealthRow(
+                    "Team",
+                    value: stateText(health?.teamMatch, valid: "匹配", invalid: "不匹配"),
+                    state: health?.teamMatch
+                )
+                Divider()
+                certificateHealthRow(
+                    "上次签名",
+                    value: lastSignedText(health),
+                    state: nil
+                )
+            }
 
             Button("刷新证书状态") {
                 Task {
@@ -118,6 +175,87 @@ struct SigningCertificateSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .glassSurface(cornerRadius: 24)
+    }
+
+    private func certificateHealthRow(
+        _ title: String,
+        value: String,
+        state: CertificateHealthStatus.CheckState?
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .foregroundStyle(Color.sealTextSecondary)
+            Spacer(minLength: 12)
+            HStack(spacing: 7) {
+                if let state {
+                    Image(systemName: stateIcon(state))
+                        .foregroundStyle(stateColor(state))
+                        .accessibilityHidden(true)
+                }
+                Text(value)
+                    .foregroundStyle(state.map { stateColor($0) } ?? Color.primary)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title)，\(value)")
+    }
+
+    private func certificateSummary(_ health: CertificateHealthStatus?) -> String {
+        guard let health else { return "状态待检查" }
+        return health.isUsable ? "可用于签名" : "需要处理"
+    }
+
+    private func certificateSummaryColor(_ health: CertificateHealthStatus?) -> Color {
+        guard let health else { return Color.sealTextSecondary }
+        return health.isUsable ? Color.sealSuccess : Color.sealWarning
+    }
+
+    private func stateText(
+        _ state: CertificateHealthStatus.CheckState?,
+        valid: String,
+        invalid: String
+    ) -> String {
+        switch state {
+        case .valid: valid
+        case .invalid: invalid
+        case .unknown, .none: "无法确认"
+        }
+    }
+
+    private func stateIcon(_ state: CertificateHealthStatus.CheckState) -> String {
+        switch state {
+        case .valid: "checkmark.circle.fill"
+        case .invalid: "exclamationmark.triangle.fill"
+        case .unknown: "questionmark.circle"
+        }
+    }
+
+    private func stateColor(_ state: CertificateHealthStatus.CheckState) -> Color {
+        switch state {
+        case .valid: Color.sealSuccess
+        case .invalid: Color.sealDanger
+        case .unknown: Color.sealTextSecondary
+        }
+    }
+
+    private func expirationText(_ health: CertificateHealthStatus?) -> String {
+        guard let health, let expirationDate = health.expirationDate else {
+            return "无法确认"
+        }
+        let formatted = expirationDate.formatted(
+            date: .abbreviated,
+            time: .shortened
+        )
+        return health.expirationState == .invalid ? "已过期 · \(formatted)" : formatted
+    }
+
+    private func lastSignedText(_ health: CertificateHealthStatus?) -> String {
+        guard let health else { return "无法确认" }
+        guard let lastSignedAt = health.lastSignedAt else { return "未使用" }
+        let apps = health.relatedAppCount == 1 ? "1 个 App" : "\(health.relatedAppCount) 个 App"
+        return "\(lastSignedAt.formatted(date: .abbreviated, time: .shortened)) · \(apps)"
     }
 
     private func missingCertificateCard(_ account: AppleAccountRecord) -> some View {

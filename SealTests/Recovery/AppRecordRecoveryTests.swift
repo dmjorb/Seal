@@ -4,7 +4,7 @@ import Testing
 
 struct AppRecordRecoveryTests {
     @Test
-    func restoresAnInstalledRecordFromAPreservedOriginalIPA() async throws {
+    func restoresPendingRecordFromAPreservedOriginalIPA() async throws {
         let environment = try makeEnvironment()
         defer { try? FileManager.default.removeItem(at: environment.root) }
         let source = try IPAArchiveFixture.make()
@@ -26,7 +26,30 @@ struct AppRecordRecoveryTests {
         let restored = try #require(records.first)
         #expect(restored.id == appID)
         #expect(restored.originalBundleIdentifier == "com.example.demo")
-        #expect(restored.state == .installed)
+        #expect(restored.state == .imported)
+        #expect(restored.accountID == nil)
+    }
+
+    @Test
+    func orphanWithSignedIPAIsRecoveredAsSignedAwaitingVerification() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let source = try IPAArchiveFixture.make()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let appID = UUID()
+        let staged = try await environment.fileStore.stage(sourceURL: source)
+        _ = try await environment.fileStore.commit(staged: staged, appID: appID, iconData: nil)
+        _ = try await environment.fileStore.storeSignedIPA(sourceURL: source, appID: appID)
+
+        try await AppRecordRecovery(
+            appStore: environment.appStore,
+            fileStore: environment.fileStore
+        ).restoreMissingRecords()
+
+        let restored = try #require(try await environment.appStore.fetchAll().first)
+        #expect(restored.state == .signed)
+        #expect(restored.signedArtifactStatus == .awaitingVerification)
+        #expect(restored.signedIPASHA256?.isEmpty == false)
         #expect(restored.accountID == nil)
     }
 

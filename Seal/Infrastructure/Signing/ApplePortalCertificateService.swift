@@ -83,7 +83,7 @@ actor ApplePortalCertificateService {
             }) else {
                 throw Self.failure(
                     title: "证书创建结果不一致",
-                    reason: "Apple 已返回新证书，但重新同步后找不到完整 Serial：\(requested.serialNumber)。",
+                    reason: "Apple 已返回新证书，但重新同步后无法确认该证书。",
                     recovery: "重新同步证书",
                     code: "SEAL-CERT-209"
                 )
@@ -200,8 +200,8 @@ actor ApplePortalCertificateService {
         guard let team = teams.first(where: { $0.identifier == account.teamID }) else {
             throw Self.failure(
                 title: "账号 Team 不一致",
-                reason: "Apple 当前返回的 Team 中没有已保存的 Team ID：\(account.teamID)。",
-                recovery: "重新验证 Apple ID",
+                reason: "Apple 当前返回的 Team 中没有已保存的 Team。",
+                recovery: "选择 Team",
                 code: "SEAL-AUTH-112"
             )
         }

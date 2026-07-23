@@ -3,32 +3,26 @@ import UIKit
 
 struct SigningProgressView: View {
     @ObservedObject var viewModel: AppsViewModel
-    let onFinish: () -> Void
+    let onFinish: (SigningCompletionMode) -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 14) {
-            SealSheetGrabber()
+        SealDrawer(title: title) {
+            VStack(spacing: 14) {
+                if let app = session?.app {
+                    appIdentity(app)
+                }
 
-            Text(title)
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(.primary)
+                if let session {
+                    signingRuntimeCard(session)
+                }
 
-            if let app = session?.app {
-                appIdentity(app)
+                statusContent
             }
-
-            if let session {
-                signingRuntimeCard(session)
-            }
-
-            statusContent
+            .padding(.bottom, 12)
+        } footer: {
             actions
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 12)
-        .padding(.bottom, 22)
-        .sealSheetBackground()
         .interactiveDismissDisabled(isRunning)
     }
 
@@ -79,7 +73,7 @@ struct SigningProgressView: View {
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(Color.sealSuccess)
             VStack(alignment: .leading, spacing: 3) {
-                Text(isRenewal ? "续签并安装成功" : "签名并安装成功")
+                Text(successTitle)
                     .font(.system(size: 16, weight: .semibold))
                 Text(expiryText(for: installed))
                     .font(.system(size: 13, weight: .regular))
@@ -137,11 +131,6 @@ struct SigningProgressView: View {
                 performPrimaryRecovery(failure)
             }
             .sealPrimaryAction(cornerRadius: 14)
-
-            if shouldOfferRetry(failure) {
-                Button("重试") { viewModel.retrySigning() }
-                    .sealOutlineAction(cornerRadius: 14)
-            }
         case nil:
             EmptyView()
         }
@@ -198,7 +187,7 @@ struct SigningProgressView: View {
             appIcon(app, size: 52)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(app.name)
+                    Text(app.displayName)
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -220,7 +209,7 @@ struct SigningProgressView: View {
 
     private func displayBundleIdentifier(_ app: AppRecord) -> String {
         if app.isSeal { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
-        if app.state == .installed { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
+        if app.state == .installed || app.state == .signed || app.hasSignedArtifact { return app.mappedBundleIdentifier ?? app.preferredBundleIdentifier ?? app.originalBundleIdentifier }
         return app.preferredBundleIdentifier ?? app.originalBundleIdentifier
     }
 
@@ -286,44 +275,55 @@ struct SigningProgressView: View {
         return stage.title
     }
 
+    private var successTitle: String {
+        guard let session else { return "签名完成" }
+        if session.completionMode == .signOnly { return "签名成功" }
+        return isRenewal ? "续签并安装成功" : "签名并安装成功"
+    }
+
     private func expiryText(for installed: AppRecord) -> String {
-        guard let expiryDate = installed.expiryDate else { return "应用已安装" }
+        guard let expiryDate = installed.provisioningProfileExpirationDate ?? installed.expiryDate else {
+            return session?.completionMode == .signOnly ? "已保存本机签名包" : "应用已安装"
+        }
         return "到期：\(SealSettingsDateFormatter.string(from: expiryDate))"
     }
 
     private func primaryRecoveryTitle(_ failure: ImportFailure) -> String {
+        if failure.code.hasPrefix("SEAL-NET-") { return "重试" }
+        if isInstallChannelFailure(failure) { return "重新安装" }
+        if isTeamFailure(failure) { return "选择 Team" }
         if isAuthFailure(failure) { return "重新验证 Apple ID" }
-        if isCertificateFailure(failure) { return "重试" }
-        if isAppIDFailure(failure) { return "更换 Bundle ID" }
-        if isPairingFailure(failure) { return "配对文件" }
-        if isInstallChannelFailure(failure) { return "知道了" }
+        if isCertificateFailure(failure) { return "选择证书" }
+        if isAppIDFailure(failure) || failure.code.hasPrefix("SEAL-BUNDLE-") { return "修改 Bundle ID" }
+        if isPairingFailure(failure) { return "重新导入配对文件" }
+        if failure.code.hasPrefix("SEAL-VPN-") { return "检查 LocalDevVPN" }
         if failure.code == "SEAL-EXT-401" { return "移除扩展并重试" }
         return "重试"
     }
 
     private func performPrimaryRecovery(_ failure: ImportFailure) {
-        if isAuthFailure(failure) {
+        if failure.code.hasPrefix("SEAL-NET-") {
+            viewModel.retrySigning()
+        } else if isInstallChannelFailure(failure) {
+            Task { await viewModel.retryInstallationForCurrentSigningSession() }
+        } else if isTeamFailure(failure) {
+            openSettings(.account)
+        } else if isAuthFailure(failure) {
             openSettings(.account)
         } else if isCertificateFailure(failure) {
-            viewModel.retrySigning()
-        } else if isAppIDFailure(failure) {
+            openSettings(.certificates)
+        } else if isAppIDFailure(failure) || failure.code.hasPrefix("SEAL-BUNDLE-") {
             viewModel.dismissSigningResult()
             dismiss()
         } else if isPairingFailure(failure) {
             openSettings(.pairing)
-        } else if isInstallChannelFailure(failure) {
-            viewModel.dismissSigningResult()
-            dismiss()
+        } else if failure.code.hasPrefix("SEAL-VPN-") {
+            openSettings(.localDevVPN)
         } else if failure.code == "SEAL-EXT-401" {
             viewModel.retryWithoutExtensions()
         } else {
             viewModel.retrySigning()
         }
-    }
-
-    private func shouldOfferRetry(_ failure: ImportFailure) -> Bool {
-        if isAuthFailure(failure) || isAppIDFailure(failure) || isPairingFailure(failure) { return false }
-        return true
     }
 
     private func userFacingReason(_ failure: ImportFailure) -> String {
@@ -334,6 +334,10 @@ struct SigningProgressView: View {
         let recovery = failure.recovery.trimmingCharacters(in: .whitespacesAndNewlines)
         if recovery.isEmpty || recovery == "知道了" { return "" }
         return recovery
+    }
+
+    private func isTeamFailure(_ failure: ImportFailure) -> Bool {
+        failure.code == "SEAL-AUTH-112" || failure.title.localizedCaseInsensitiveContains("Team 不匹配")
     }
 
     private func isAuthFailure(_ failure: ImportFailure) -> Bool {
@@ -363,8 +367,9 @@ struct SigningProgressView: View {
     }
 
     private func finish() {
+        let completionMode = session?.completionMode ?? .signAndInstall
         viewModel.dismissSigningResult()
-        onFinish()
+        onFinish(completionMode)
         dismiss()
     }
 }

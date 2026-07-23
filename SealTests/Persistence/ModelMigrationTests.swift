@@ -104,6 +104,61 @@ struct ModelMigrationTests {
     }
 
     @Test
+    func previousCurrentCoreDataStoreMigratesNewSignedArtifactAndTransactionFields() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(
+            path: "SealLegacyV2Migration-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appending(path: "Seal.sqlite")
+        let legacyModel = CoreDataModel.makeLegacyV2()
+        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: legacyModel)
+        _ = try coordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType,
+            configurationName: nil,
+            at: storeURL,
+            options: nil
+        )
+        let context = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+        context.persistentStoreCoordinator = coordinator
+        try context.performAndWait {
+            let object = NSEntityDescription.insertNewObject(
+                forEntityName: CoreDataModel.appEntityName,
+                into: context
+            )
+            object.setValue(UUID(), forKey: "id")
+            object.setValue("com.example.v2", forKey: "originalBundleIdentifier")
+            object.setValue("com.example.v2.seal", forKey: "mappedBundleIdentifier")
+            object.setValue("V2", forKey: "name")
+            object.setValue("1.0", forKey: "version")
+            object.setValue("1", forKey: "buildNumber")
+            object.setValue(Int64(2_048), forKey: "size")
+            object.setValue(AppState.installed.rawValue, forKey: "stateRaw")
+            object.setValue("Apps/v2/Original.ipa", forKey: "ipaRelativePath")
+            object.setValue("Apps/v2/Signed.ipa", forKey: "signedIPARelativePath")
+            object.setValue(false, forKey: "isSeal")
+            object.setValue(false, forKey: "isPinned")
+            object.setValue(Date(timeIntervalSince1970: 200), forKey: "importedAt")
+            try context.save()
+        }
+        if let store = coordinator.persistentStores.first {
+            try coordinator.remove(store)
+        }
+
+        let migratedStore = try CoreDataAppStore(storeURL: storeURL)
+        let record = try #require(try await migratedStore.fetchAll().first)
+        #expect(record.originalBundleIdentifier == "com.example.v2")
+        #expect(record.mappedBundleIdentifier == "com.example.v2.seal")
+        #expect(record.signedIPARelativePath == "Apps/v2/Signed.ipa")
+        #expect(record.signedIPASHA256 == nil)
+        #expect(record.signedArtifactStatus == nil)
+        #expect(record.pendingFileTransactionID == nil)
+        #expect(record.preferredDisplayName == nil)
+        #expect(record.preferredIconRelativePath == nil)
+    }
+
+    @Test
     func legacyAppJSONDefaultsNewCollections() throws {
         let app = AppRecord(
             originalBundleIdentifier: "com.example.legacy-json",

@@ -5,19 +5,13 @@ struct BatchRefreshView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 14) {
-            SealSheetGrabber()
-            Text(isRunning ? "批量续签" : "续签结果")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(.primary)
+        SealDrawer(title: isRunning ? "批量续签" : "续签结果") {
             statusCard
-            if isRunning == false { action }
+                .padding(.bottom, 12)
+        } footer: {
+            action
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 12)
-        .padding(.bottom, 22)
         .interactiveDismissDisabled(isRunning)
-        .sealSheetBackground()
     }
 
     @ViewBuilder private var statusCard: some View {
@@ -25,8 +19,7 @@ struct BatchRefreshView: View {
         case .running:
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
-                Text("正在续签")
-                    .font(.system(size: 16, weight: .semibold))
+                Text("正在续签").font(.system(size: 16, weight: .semibold))
                 Spacer()
                 Text(progressText)
                     .font(.system(size: 14, weight: .semibold, design: .monospaced))
@@ -45,15 +38,13 @@ struct BatchRefreshView: View {
         case .failed(let failure):
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(Color.sealDanger)
-                    Text(failure.title)
-                        .font(.system(size: 16, weight: .semibold))
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color.sealDanger)
+                    Text(failure.title).font(.system(size: 16, weight: .semibold))
                 }
                 Text(failure.userReason)
                     .font(.system(size: 13))
                     .foregroundStyle(Color.sealTextSecondary)
-                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(14)
             .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -78,7 +69,11 @@ struct BatchRefreshView: View {
         case .completed, .failed:
             Button("完成") { viewModel.dismissBatchRefresh(); dismiss() }
                 .sealPrimaryAction(cornerRadius: 14)
-        default:
+        case .running:
+            Button("续签中…") {}
+                .sealSecondaryDisabledAction(cornerRadius: 14)
+                .disabled(true)
+        case nil:
             EmptyView()
         }
     }

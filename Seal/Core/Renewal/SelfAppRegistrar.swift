@@ -21,7 +21,7 @@ actor SelfAppRegistrar {
 
     func ensureRegistered() async throws {
         let records = try await appStore.fetchAll()
-        let accounts = (try? await accountRepository.fetchAll()) ?? []
+        let accounts = try await accountRepository.fetchAll()
         let existing = SelfAppRecordSelection.preferredExistingSealRecord(
             in: records,
             currentBundleIdentifier: metadata.bundleIdentifier
@@ -60,7 +60,16 @@ actor SelfAppRegistrar {
                 appID: id,
                 iconData: metadata.iconData
             )
-            try? await fileStore.cancel(staged)
+            do {
+                try await fileStore.cancel(staged)
+            } catch {
+                throw ImportFailure(
+                    title: "Seal 临时文件清理失败",
+                    reason: "Seal 自身注册已写入文件，但暂存文件未能清理。",
+                    recovery: "重新打开 Seal 后在存储维护中重试",
+                    code: "SEAL-STORAGE-SELF-001"
+                )
+            }
 
             let record = AppRecord(
                 id: id,
@@ -96,8 +105,18 @@ actor SelfAppRegistrar {
                 appStore: appStore
             )
         } catch {
-            try? await fileStore.cancel(staged)
-            throw error
+            let originalError = error
+            do {
+                try await fileStore.cancel(staged)
+            } catch {
+                throw ImportFailure(
+                    title: "Seal 自身注册恢复未完成",
+                    reason: "注册流程失败，且暂存文件未能清理。",
+                    recovery: "重新打开 Seal 后检查存储",
+                    code: "SEAL-STORAGE-SELF-002"
+                )
+            }
+            throw originalError
         }
     }
     private static func removeDuplicateSealRecords(

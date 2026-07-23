@@ -179,8 +179,11 @@ public class Muxer {
                 let response = try handlePacket(packet, fd: fd)
                 let responsePacket = RawPacket(plist: response, version: 1, message: 8, tag: packet.tag)
                 let responseData = responsePacket.data
-                responseData.withUnsafeBytes { ptr in
-                    _ = send(fd, ptr.baseAddress!, responseData.count, 0)
+                if responseData.isEmpty == false {
+                    responseData.withUnsafeBytes { ptr in
+                        guard let baseAddress = ptr.baseAddress else { return }
+                        _ = send(fd, baseAddress, responseData.count, 0)
+                    }
                 }
             } catch {}
         }
@@ -238,7 +241,12 @@ public class Muxer {
                          if let payload = try? buildPayload(deviceIP: deviceIP, event: currentEvent){
                              let pkt = RawPacket(plist: payload, version: 1, message: 8, tag: 0)
                              let data = pkt.data
-                             data.withUnsafeBytes { _ = send(fd, $0.baseAddress!, data.count, 0) }
+                             if data.isEmpty == false {
+                                 data.withUnsafeBytes { bytes in
+                                     guard let baseAddress = bytes.baseAddress else { return }
+                                     _ = send(fd, baseAddress, data.count, 0)
+                                 }
+                             }
                          }
                      }
                 }
@@ -269,15 +277,18 @@ public class Muxer {
 
 
     private static func emitDeviceEvent(fd: Int32, type: String, payload: [String: Any]) {
+        guard let deviceID = payload["DeviceID"] else { return }
         let plist: [String: Any] = [
             "MessageType": type,
-            "DeviceID": payload["DeviceID"]!
+            "DeviceID": deviceID
         ]
 
         let pkt = RawPacket(plist: plist, version: 1, message: 8, tag: 0)
         let data = pkt.data
-        data.withUnsafeBytes {
-            _ = send(fd, $0.baseAddress!, data.count, 0)
+        guard data.isEmpty == false else { return }
+        data.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            _ = send(fd, baseAddress, data.count, 0)
         }
     }
     

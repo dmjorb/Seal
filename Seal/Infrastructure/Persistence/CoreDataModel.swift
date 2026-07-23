@@ -36,6 +36,72 @@ enum CoreDataModel {
             attribute("signingTargetsData", type: .binaryDataAttributeType, optional: true),
             attribute("ipaRelativePath", type: .stringAttributeType),
             attribute("signedIPARelativePath", type: .stringAttributeType, optional: true),
+            attribute("signedIPASHA256", type: .stringAttributeType, optional: true),
+            attribute("signedArtifactStatusRaw", type: .stringAttributeType, optional: true),
+            attribute("preferredBundleIdentifier", type: .stringAttributeType, optional: true),
+            attribute("preferredDisplayName", type: .stringAttributeType, optional: true),
+            attribute("preferredIconRelativePath", type: .stringAttributeType, optional: true),
+            attribute("lastInstallFailureCode", type: .stringAttributeType, optional: true),
+            attribute("lastInstallFailureReason", type: .stringAttributeType, optional: true),
+            attribute("pendingFileTransactionID", type: .UUIDAttributeType, optional: true),
+            attribute("isSeal", type: .booleanAttributeType, defaultValue: false),
+            attribute("isPinned", type: .booleanAttributeType, defaultValue: false),
+            attribute("importedAt", type: .dateAttributeType)
+        ]
+
+        let appExtension = NSEntityDescription()
+        appExtension.name = extensionEntityName
+        appExtension.managedObjectClassName = NSStringFromClass(NSManagedObject.self)
+        appExtension.properties = [
+            attribute("id", type: .UUIDAttributeType),
+            attribute("name", type: .stringAttributeType),
+            attribute("originalBundleIdentifier", type: .stringAttributeType),
+            attribute("mappedBundleIdentifier", type: .stringAttributeType, optional: true),
+            attribute("kindRaw", type: .stringAttributeType),
+            attribute("provisioningProfileUUID", type: .stringAttributeType, optional: true),
+            attribute("provisioningProfileName", type: .stringAttributeType, optional: true),
+            attribute("provisioningProfileExpirationDate", type: .dateAttributeType, optional: true),
+            attribute("certificateSerialNumber", type: .stringAttributeType, optional: true)
+        ]
+
+        addRelationships(app: app, appExtension: appExtension)
+        model.entities = [app, appExtension]
+        return model
+    }
+
+
+    static func makeLegacyV2() -> NSManagedObjectModel {
+        let model = NSManagedObjectModel()
+        let app = NSEntityDescription()
+        app.name = appEntityName
+        app.managedObjectClassName = NSStringFromClass(NSManagedObject.self)
+        app.properties = [
+            attribute("id", type: .UUIDAttributeType),
+            attribute("originalBundleIdentifier", type: .stringAttributeType),
+            attribute("mappedBundleIdentifier", type: .stringAttributeType, optional: true),
+            attribute("name", type: .stringAttributeType),
+            attribute("version", type: .stringAttributeType),
+            attribute("buildNumber", type: .stringAttributeType),
+            attribute("size", type: .integer64AttributeType),
+            attribute("iconRelativePath", type: .stringAttributeType, optional: true),
+            attribute("stateRaw", type: .stringAttributeType),
+            attribute("expiryDate", type: .dateAttributeType, optional: true),
+            attribute("accountID", type: .UUIDAttributeType, optional: true),
+            attribute("signingTeamID", type: .stringAttributeType, optional: true),
+            attribute("certificateSerialNumber", type: .stringAttributeType, optional: true),
+            attribute("signedDeviceIdentifier", type: .stringAttributeType, optional: true),
+            attribute("provisioningProfileUUID", type: .stringAttributeType, optional: true),
+            attribute("provisioningProfileName", type: .stringAttributeType, optional: true),
+            attribute("provisioningProfileCreationDate", type: .dateAttributeType, optional: true),
+            attribute("provisioningProfileExpirationDate", type: .dateAttributeType, optional: true),
+            attribute("entitlementValidationStatus", type: .stringAttributeType, optional: true),
+            attribute("capabilityValidationStatus", type: .stringAttributeType, optional: true),
+            attribute("lastSignedAt", type: .dateAttributeType, optional: true),
+            attribute("lastInstalledAt", type: .dateAttributeType, optional: true),
+            attribute("removedExtensionBundleIdentifiersData", type: .binaryDataAttributeType, optional: true),
+            attribute("signingTargetsData", type: .binaryDataAttributeType, optional: true),
+            attribute("ipaRelativePath", type: .stringAttributeType),
+            attribute("signedIPARelativePath", type: .stringAttributeType, optional: true),
             attribute("preferredBundleIdentifier", type: .stringAttributeType, optional: true),
             attribute("isSeal", type: .booleanAttributeType, defaultValue: false),
             attribute("isPinned", type: .booleanAttributeType, defaultValue: false),

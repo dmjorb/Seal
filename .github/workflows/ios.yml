@@ -15,10 +15,17 @@ permissions:
 
 jobs:
   build-package:
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
+
+      - name: Select pinned Xcode 26.5
+        run: |
+          test -d /Applications/Xcode_26.5.app
+          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+          xcodebuild -version
+          test "$(xcodebuild -version | head -n 1)" = "Xcode 26.5"
 
       - name: Install pinned XcodeGen
         run: |
@@ -32,6 +39,18 @@ jobs:
 
       - name: Generate Xcode project
         run: xcodegen generate
+
+      - name: Run Swift unit and UI regression tests
+        run: |
+          SIMULATOR_UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(device["udid"] for runtime, devices in d.items() if "iOS-26-5" in runtime for device in devices if device.get("isAvailable") and device.get("name", "").startswith("iPhone")))')"
+          xcrun simctl boot "$SIMULATOR_UDID" || true
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+          xcodebuild test \
+            -project Seal.xcodeproj \
+            -scheme Seal \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Build unsigned IPA
         run: bash Scripts/build-unsigned-ipa.sh

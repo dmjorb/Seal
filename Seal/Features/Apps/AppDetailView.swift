@@ -9,30 +9,39 @@ struct AppDetailView: View {
     var body: some View {
         Group {
             if let app = viewModel.apps.first(where: { $0.id == appID }) {
-                ScrollView {
+                SealDrawer(title: app.state == .installed ? "应用详情" : "应用详情") {
                     VStack(alignment: .leading, spacing: 20) {
                         header(app)
                         if app.state == .installed { expiryCard(app) }
                         infoCard(app)
                     }
-                    .padding(20)
-                    .padding(.bottom, 106)
+                    .padding(.bottom, 8)
+                } footer: {
+                    detailAction(app)
                 }
-                .safeAreaInset(edge: .bottom) { actionBar(app) }
-                .navigationTitle(app.state == .installed ? "应用详情" : "签名安装")
-                .navigationBarTitleDisplayMode(.inline)
             } else {
-                VStack(spacing: 12) {
-                    Image(systemName: "app.dashed")
-                        .font(.system(size: 40))
-                        .foregroundStyle(.secondary)
-                    Text("应用不存在")
-                        .font(.headline)
+                SealDrawer(title: "应用详情") {
+                    VStack(spacing: 12) {
+                        Image(systemName: "app.dashed")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.secondary)
+                        Text("应用不存在")
+                            .font(.headline)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 180)
+                } footer: {
+                    Button("关闭") { dismiss() }
+                        .sealOutlineAction(cornerRadius: 14)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .sealScreenBackground()
+        .alert(item: $viewModel.alertFailure) { failure in
+            Alert(
+                title: Text(failure.title),
+                message: Text(failure.userMessage),
+                dismissButton: .default(Text(failure.recovery))
+            )
+        }
     }
 
     private func header(_ app: AppRecord) -> some View {
@@ -75,9 +84,9 @@ struct AppDetailView: View {
             Divider()
             detailRow("签名证书", certificateName(app))
             Divider()
-            detailRow("签名 Bundle ID", signedBundleIdentifier(app))
+            FullIdentifierRow(title: "Bundle ID", value: signedBundleIdentifier(app), showsCopyButton: true)
             Divider()
-            detailRow("原始 Bundle ID", app.originalBundleIdentifier)
+            FullIdentifierRow(title: "原始 Bundle ID", value: app.originalBundleIdentifier, showsCopyButton: true)
             Divider()
             detailRow("描述文件", profileSummary(app))
             Divider()
@@ -101,15 +110,29 @@ struct AppDetailView: View {
         .padding(.vertical, 15)
     }
 
-    private func actionBar(_ app: AppRecord) -> some View {
-        Button(app.state == .installed ? "续签并安装" : "签名并安装") {
-            dismiss()
-            viewModel.presentOperation(for: app)
+    @ViewBuilder
+    private func detailAction(_ app: AppRecord) -> some View {
+        if app.state == .signed || app.hasSignedArtifact && app.state != .installed {
+            Button {
+                Task {
+                    if await viewModel.installSignedArtifact(app) { dismiss() }
+                }
+            } label: {
+                if viewModel.installingSignedAppID == app.id {
+                    ProgressView().frame(maxWidth: .infinity)
+                } else {
+                    Text("安装")
+                }
+            }
+            .sealPrimaryAction(cornerRadius: 14)
+            .disabled(viewModel.installingSignedAppID == app.id)
+        } else {
+            Button(app.state == .installed ? "立即续签" : "签名并安装") {
+                dismiss()
+                viewModel.presentOperation(for: app)
+            }
+            .sealPrimaryAction(cornerRadius: 14)
         }
-        .sealPrimaryAction()
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
-        .background(Color.sealSurface)
     }
 
     @ViewBuilder
@@ -173,8 +196,8 @@ struct AppDetailView: View {
         guard let date = app.expiryDate else { return "尚未签名" }
         let interval = date.timeIntervalSinceNow
         if interval <= 0 { return "已过期" }
-        if interval < 86_400 { return "剩余 \(max(1, Int(ceil(interval / 3_600)))) 小时" }
-        return "剩余 \(max(1, Int(ceil(interval / 86_400)))) 天"
+        if interval < 86_400 { return "\(max(1, Int(interval / 3_600)))小时" }
+        return "\(max(1, Int(interval / 86_400)))天"
     }
 
     private func expiryIcon(_ app: AppRecord) -> String {
@@ -184,6 +207,9 @@ struct AppDetailView: View {
 
     private func expiryColor(_ app: AppRecord) -> Color {
         guard let date = app.expiryDate else { return .sealTextSecondary }
-        return date.timeIntervalSinceNow > 86_400 ? .sealSuccess : .sealWarning
+        let interval = date.timeIntervalSinceNow
+        if interval <= 0 || interval < 86_400 { return .sealDanger }
+        if interval < 4 * 86_400 { return .sealWarning }
+        return .sealTextSecondary
     }
 }

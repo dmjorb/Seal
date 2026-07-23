@@ -15,49 +15,41 @@ struct ImportConfirmationView: View {
     }
 
     var body: some View {
-        VStack(spacing: 18) {
-            SealSheetGrabber()
-            Text(failure == nil ? "导入 IPA" : "导入失败")
-                .font(.system(size: 21, weight: .bold))
-                .foregroundStyle(.primary)
-
-            header
-
-            if let failure {
-                failureCard(failure)
-            } else {
-                summaryCard
-            }
-
-            Spacer(minLength: 0)
-
-            Button {
-                guard showsProgress == false else { return }
-                didTapPrimaryAction = true
-                onPrimaryAction()
-            } label: {
-                if showsProgress {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                        Text("正在导入")
-                    }
-                    .frame(maxWidth: .infinity)
+        SealDrawer(title: failure == nil ? "导入 IPA" : "导入失败") {
+            VStack(spacing: 18) {
+                header
+                if let failure {
+                    failureCard(failure)
                 } else {
-                    Text(failure?.recovery ?? "导入")
+                    summaryCard
                 }
             }
-            .sealPrimaryAction(cornerRadius: 14)
-            .disabled(showsProgress)
+            .padding(.bottom, 12)
+        } footer: {
+            VStack(spacing: 10) {
+                Button {
+                    guard showsProgress == false else { return }
+                    didTapPrimaryAction = true
+                    onPrimaryAction()
+                } label: {
+                    if showsProgress {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("正在导入")
+                        }
+                        .frame(maxWidth: .infinity)
+                    } else {
+                        Text(failure?.recovery ?? "导入")
+                    }
+                }
+                .sealPrimaryAction(cornerRadius: 14)
+                .disabled(showsProgress)
 
-            Button("取消", action: onCancel)
-                .sealOutlineAction(cornerRadius: 14)
-                .disabled(isCommitting)
+                Button("取消", action: onCancel)
+                    .sealOutlineAction(cornerRadius: 14)
+                    .disabled(isCommitting)
+            }
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 12)
-        .padding(.bottom, 26)
-        .presentationDetents([.height(520), .large])
-        .sealSheetBackground()
         .interactiveDismissDisabled(showsProgress)
         .accessibilityIdentifier("import-confirmation")
         .onChange(of: isCommitting) { newValue in

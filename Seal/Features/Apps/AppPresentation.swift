@@ -25,7 +25,7 @@ struct AppOperationPresentation: Equatable, Sendable {
     let validity: AppValidityPresentation?
 
     init(app: AppRecord, now: Date = Date()) {
-        guard app.state == .installed, let expiryDate = app.expiryDate else {
+        guard (app.state == .installed || app.isSeal), let expiryDate = app.expiryDate else {
             kind = .signing
             validity = nil
             return
@@ -34,30 +34,24 @@ struct AppOperationPresentation: Equatable, Sendable {
         let interval = expiryDate.timeIntervalSince(now)
         guard interval > 0 else {
             kind = .expiredRenewal
-            validity = AppValidityPresentation(
-                text: "已到期",
-                detailText: "已到期",
-                tone: .danger
-            )
+            validity = AppValidityPresentation(text: "已过期", detailText: "已过期", tone: .danger)
             return
         }
 
-        let days = max(1, Int(ceil(interval / 86_400)))
-        if days == 1 {
+        if interval < 86_400 {
             kind = .urgentRenewal
-            validity = AppValidityPresentation(
-                text: "1天",
-                detailText: "剩余 1 天",
-                tone: .warning
-            )
-        } else {
-            kind = .renewal
-            validity = AppValidityPresentation(
-                text: "\(days)天",
-                detailText: "剩余 \(days) 天",
-                tone: .success
-            )
+            let hours = max(1, Int(interval / 3_600))
+            validity = AppValidityPresentation(text: "\(hours)小时", detailText: "\(hours)小时", tone: .danger)
+            return
         }
+
+        let days = max(1, Int(interval / 86_400))
+        kind = days <= 3 ? .urgentRenewal : .renewal
+        validity = AppValidityPresentation(
+            text: "\(days)天",
+            detailText: "\(days)天",
+            tone: days <= 3 ? .warning : .neutral
+        )
     }
 
     var sheetTitle: String {

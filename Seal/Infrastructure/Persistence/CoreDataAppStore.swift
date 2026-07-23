@@ -55,9 +55,9 @@ actor CoreDataAppStore: AppStore {
                 // Importing an IPA must never replace a real installed record.
                 // Keep installed / self records separate even when the original Bundle ID matches.
                 request.predicate = NSPredicate(
-                    format: "originalBundleIdentifier == %@ AND stateRaw != %@ AND isSeal == NO",
+                    format: "originalBundleIdentifier == %@ AND stateRaw IN %@ AND signedIPARelativePath == nil AND isSeal == NO",
                     record.originalBundleIdentifier,
-                    AppState.installed.rawValue
+                    [AppState.imported.rawValue, AppState.failedRecoverable.rawValue, AppState.failedFinal.rawValue]
                 )
                 let existing = try context.fetch(request)
                 let replaced = try existing.map(Self.decode)
@@ -135,11 +135,13 @@ actor CoreDataAppStore: AppStore {
             return
         }
 
-        let legacyModel = CoreDataModel.makeLegacyV1()
-        guard legacyModel.isConfiguration(
-            withName: nil,
-            compatibleWithStoreMetadata: metadata
-        ) else {
+        let candidateLegacyModels = [
+            CoreDataModel.makeLegacyV2(),
+            CoreDataModel.makeLegacyV1()
+        ]
+        guard let legacyModel = candidateLegacyModels.first(where: {
+            $0.isConfiguration(withName: nil, compatibleWithStoreMetadata: metadata)
+        }) else {
             throw AppStoreError.invalidConfiguration
         }
 
@@ -234,7 +236,14 @@ actor CoreDataAppStore: AppStore {
         )
         object.setValue(record.ipaRelativePath, forKey: "ipaRelativePath")
         object.setValue(record.signedIPARelativePath, forKey: "signedIPARelativePath")
+        object.setValue(record.signedIPASHA256, forKey: "signedIPASHA256")
+        object.setValue(record.signedArtifactStatus?.rawValue, forKey: "signedArtifactStatusRaw")
         object.setValue(record.preferredBundleIdentifier, forKey: "preferredBundleIdentifier")
+        object.setValue(record.preferredDisplayName, forKey: "preferredDisplayName")
+        object.setValue(record.preferredIconRelativePath, forKey: "preferredIconRelativePath")
+        object.setValue(record.lastInstallFailureCode, forKey: "lastInstallFailureCode")
+        object.setValue(record.lastInstallFailureReason, forKey: "lastInstallFailureReason")
+        object.setValue(record.pendingFileTransactionID, forKey: "pendingFileTransactionID")
         object.setValue(record.isSeal, forKey: "isSeal")
         object.setValue(record.isPinned, forKey: "isPinned")
         object.setValue(record.importedAt, forKey: "importedAt")
@@ -332,7 +341,15 @@ actor CoreDataAppStore: AppStore {
             ),
             ipaRelativePath: ipaRelativePath,
             signedIPARelativePath: object.value(forKey: "signedIPARelativePath") as? String,
+            signedIPASHA256: object.value(forKey: "signedIPASHA256") as? String,
+            signedArtifactStatus: (object.value(forKey: "signedArtifactStatusRaw") as? String)
+                .flatMap(SignedArtifactStatus.init(rawValue:)),
             preferredBundleIdentifier: object.value(forKey: "preferredBundleIdentifier") as? String,
+            preferredDisplayName: object.value(forKey: "preferredDisplayName") as? String,
+            preferredIconRelativePath: object.value(forKey: "preferredIconRelativePath") as? String,
+            lastInstallFailureCode: object.value(forKey: "lastInstallFailureCode") as? String,
+            lastInstallFailureReason: object.value(forKey: "lastInstallFailureReason") as? String,
+            pendingFileTransactionID: object.value(forKey: "pendingFileTransactionID") as? UUID,
             isSeal: (object.value(forKey: "isSeal") as? NSNumber)?.boolValue ?? false,
             isPinned: (object.value(forKey: "isPinned") as? NSNumber)?.boolValue ?? false,
             importedAt: importedAt,

@@ -70,6 +70,8 @@ struct AppRecordTests {
     @Test(arguments: [
         (AppState.imported, "imported"),
         (AppState.preflightPassed, "preflightPassed"),
+        (AppState.signed, "signed"),
+        (AppState.installed, "installed"),
         (AppState.failedRecoverable, "failedRecoverable"),
         (AppState.failedFinal, "failedFinal")
     ])

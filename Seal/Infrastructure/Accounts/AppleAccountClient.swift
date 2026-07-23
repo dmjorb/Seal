@@ -8,11 +8,17 @@ enum AppleAuthenticationStage: Sendable {
 
 enum AppleAuthenticationFailure {
     static func make(stage: AppleAuthenticationStage, error: Error) -> ImportFailure {
+        if AppleServiceFailurePolicy.isNetworkError(error) {
+            return AppleServiceFailurePolicy.networkFailure(
+                title: "无法连接 Apple",
+                reason: "当前网络或 Apple 服务不可用。账号状态不会被修改。"
+            )
+        }
         switch stage {
         case .signIn:
             return ImportFailure(
                 title: "无法添加账号",
-                reason: "Apple ID 验证失败。",
+                reason: "Apple ID 验证失败。Apple 返回的技术信息已隐藏，可在日志中心查看脱敏诊断。",
                 recovery: "重试",
                 code: "SEAL-AUTH-107"
             )
@@ -84,9 +90,20 @@ final class AppleAccountClient {
                 session: auth.session
             )
             try Task.checkCancellation()
-            guard let team = teams.first(where: {
-                $0.type != .free && $0.type != .unknown
-            }) ?? teams.first(where: { $0.type == .free }) else {
+            let availableTeams = teams
+                .filter { $0.type != .unknown }
+                .map {
+                    AppleTeamRecord(
+                        id: $0.identifier,
+                        name: $0.name,
+                        isFreeTeam: $0.type == .free
+                    )
+                }
+                .sorted { lhs, rhs in
+                    if lhs.isFreeTeam != rhs.isFreeTeam { return lhs.isFreeTeam == false }
+                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
+            guard availableTeams.isEmpty == false else {
                 throw ImportFailure(
                     title: "无法添加账号",
                     reason: "未找到开发团队",
@@ -95,23 +112,19 @@ final class AppleAccountClient {
                 )
             }
 
-            let id = UUID()
-            let record = AppleAccountRecord(
-                id: id,
-                maskedEmail: Self.mask(email),
-                accountIdentifier: auth.account.identifier,
-                teamID: team.identifier,
-                teamName: team.name,
-                isFreeTeam: team.type == .free,
-                lastVerifiedAt: Date()
-            )
             let secret = AccountSecret(
                 email: email,
                 accountIdentifier: auth.account.identifier,
                 dsid: auth.session.dsid,
                 authToken: auth.session.authToken
             )
-            return AuthenticatedAppleAccount(record: record, secret: secret)
+            return AuthenticatedAppleAccount(
+                maskedEmail: Self.mask(email),
+                accountIdentifier: auth.account.identifier,
+                teams: availableTeams,
+                secret: secret,
+                verifiedAt: Date()
+            )
         } catch is CancellationError {
             throw CancellationError()
         } catch ALTAppleAPIError.incorrectVerificationCode {
@@ -159,22 +172,35 @@ final class AppleAccountClient {
             try Task.checkCancellation()
             guard teams.contains(where: { $0.identifier == account.teamID }) else {
                 throw ImportFailure(
-                    title: "账号需要验证",
-                    reason: "开发团队不可用",
-                    recovery: "重新验证账号",
-                    code: "SEAL-AUTH-104"
+                    title: "Team 不可用",
+                    reason: "当前 Apple ID 已无法访问之前保存的 Team。",
+                    recovery: "选择 Team",
+                    code: "SEAL-AUTH-112"
                 )
             }
         } catch is CancellationError {
             throw CancellationError()
+        } catch ALTAppleAPIError.incorrectCredentials {
+            throw ImportFailure(
+                title: "Apple ID 需要重新验证",
+                reason: "Apple 已明确拒绝当前登录凭据。",
+                recovery: "重新验证 Apple ID",
+                code: "SEAL-AUTH-102"
+            )
         } catch let failure as ImportFailure {
             throw failure
         } catch {
+            if AppleServiceFailurePolicy.isNetworkError(error) {
+                throw AppleServiceFailurePolicy.networkFailure(
+                    title: "无法连接 Apple",
+                    reason: "当前网络或 Apple 服务不可用。已保存的 Apple ID 仍可继续选择。"
+                )
+            }
             throw ImportFailure(
-                title: "账号需要验证",
-                reason: "Apple ID 会话已失效",
-                recovery: "重新验证账号",
-                code: "SEAL-AUTH-104"
+                title: "无法验证 Apple ID",
+                reason: "Apple 验证返回了无法分类的错误，账号状态未改变。",
+                recovery: "稍后重试；如持续失败再重新验证 Apple ID",
+                code: "SEAL-VERIFY-500"
             )
         }
     }
@@ -385,6 +411,12 @@ final class AppleAccountClient {
                 reason: "Anisette 服务暂时不可用",
                 recovery: "重试",
                 code: code
+            )
+        }
+        if AppleServiceFailurePolicy.isNetworkError(error) {
+            return AppleServiceFailurePolicy.networkFailure(
+                title: "无法连接 Apple",
+                reason: "当前网络或 Apple 服务不可用。账号状态不会被修改。"
             )
         }
         let nsError = error as NSError

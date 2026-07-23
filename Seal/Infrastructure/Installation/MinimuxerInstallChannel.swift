@@ -245,7 +245,7 @@ actor MinimuxerInstallChannel: InstallChannel {
             || normalized.contains("invalid host") {
             return ImportFailure(
                 title: "设备配对不可用",
-                reason: message,
+                reason: "安装通道无法使用当前配对信息。技术信息已隐藏。",
                 recovery: "重新导入当前设备的配对文件",
                 code: "SEAL-INSTALL-703"
             )
@@ -253,7 +253,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         if normalized.contains("trust") || normalized.contains("trusted") {
             return ImportFailure(
                 title: "设备尚未信任",
-                reason: message,
+                reason: "当前设备尚未完成信任确认。",
                 recovery: "在 iPhone 上信任此设备后重试",
                 code: "SEAL-INSTALL-704"
             )
@@ -271,7 +271,7 @@ actor MinimuxerInstallChannel: InstallChannel {
         }
         return ImportFailure(
             title: "安装通道不可用",
-            reason: message,
+            reason: "安装通道返回异常。技术信息已隐藏。",
             recovery: "重试",
             code: "SEAL-INSTALL-705"
         )
@@ -280,7 +280,7 @@ actor MinimuxerInstallChannel: InstallChannel {
     private static func installationFailure(_ error: Error) -> ImportFailure {
         ImportFailure(
             title: "无法安装已签名应用",
-            reason: diagnostic(error),
+            reason: "iOS 安装服务未能完成安装。技术信息已隐藏。",
             recovery: "重试",
             code: "SEAL-INSTALL-702"
         )

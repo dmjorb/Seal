@@ -15,6 +15,13 @@ enum SettingsRoute: Hashable {
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
+    struct PendingTeamSelection: Identifiable {
+        let id = UUID()
+        let authenticated: AuthenticatedAppleAccount
+
+        var teams: [AppleTeamRecord] { authenticated.teams }
+    }
+
     enum AccountPhase: Equatable {
         case idle
         case authenticating
@@ -41,9 +48,11 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var certificateInventories: [UUID: ApplePortalInventory] = [:]
     @Published private(set) var certificateInventoryLoadingIDs: Set<UUID> = []
     @Published private(set) var certificateInventoryFailures: [UUID: ImportFailure] = [:]
+    @Published private(set) var certificateHealthStatuses: [UUID: CertificateHealthStatus] = [:]
     @Published private(set) var isCertificateOperationRunning = false
     @Published private(set) var notificationsEnabled = false
     @Published private(set) var reminderHours = 24
+    @Published private(set) var notificationStatus = NotificationScheduleStatus.disabled
     @Published private(set) var anisetteServers: [AnisetteServer] = []
     @Published private(set) var selectedAnisetteServerID: String?
     @Published private(set) var storageUsage: SettingsStorageUsage = .empty
@@ -51,6 +60,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var isPairingImporterPresented = false
     @Published var alertFailure: ImportFailure?
     @Published var requestedRoute: SettingsRoute?
+    @Published private(set) var pendingTeamSelection: PendingTeamSelection?
 
     let verificationBroker = VerificationCodeBroker()
 
@@ -69,7 +79,9 @@ final class SettingsViewModel: ObservableObject {
     private let notificationPreferences: NotificationPreferences?
     private let anisetteEnvironment: (any AnisetteEnvironmentManaging)?
     private let signingPreferenceStore: SigningPreferenceStore?
+    private let operationCoordinator: OperationCoordinator?
     private var hasLoaded = false
+    private var loadGeneration = 0
 
     init(
         accountRepository: any AccountRepository,
@@ -84,7 +96,8 @@ final class SettingsViewModel: ObservableObject {
         notificationScheduler: ExpiryNotificationScheduler,
         notificationPreferences: NotificationPreferences,
         anisetteEnvironment: any AnisetteEnvironmentManaging,
-        signingPreferenceStore: SigningPreferenceStore
+        signingPreferenceStore: SigningPreferenceStore,
+        operationCoordinator: OperationCoordinator? = nil
     ) {
         self.accountRepository = accountRepository
         self.keychain = keychain
@@ -101,6 +114,7 @@ final class SettingsViewModel: ObservableObject {
         self.notificationPreferences = notificationPreferences
         self.anisetteEnvironment = anisetteEnvironment
         self.signingPreferenceStore = signingPreferenceStore
+        self.operationCoordinator = operationCoordinator
         notificationsEnabled = notificationPreferences.isEnabled
         reminderHours = notificationPreferences.leadHours
     }
@@ -121,6 +135,7 @@ final class SettingsViewModel: ObservableObject {
         notificationPreferences = nil
         anisetteEnvironment = nil
         signingPreferenceStore = nil
+        operationCoordinator = nil
         alertFailure = startupFailure
     }
 
@@ -140,13 +155,14 @@ final class SettingsViewModel: ObservableObject {
         notificationPreferences = nil
         anisetteEnvironment = nil
         signingPreferenceStore = nil
+        operationCoordinator = nil
         hasLoaded = true
     }
 
     var environment: EnvironmentSnapshot {
         EnvironmentSnapshot(
             accountCount: accounts.count,
-            verifiedAccountCount: accounts.filter { $0.status == .verified }.count,
+            verifiedAccountCount: accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }.count,
             hasPairingFile: pairingRecord != nil,
             channelIsReady: {
                 guard case .ready = diagnosticState else { return false }
@@ -158,23 +174,36 @@ final class SettingsViewModel: ObservableObject {
     func load(force: Bool = false) async {
         guard force || hasLoaded == false else { return }
         guard let accountRepository, let pairingStore else { return }
+        loadGeneration &+= 1
+        let generation = loadGeneration
+
         do {
             let fetchedAccounts = try await accountRepository.fetchAll()
-            accounts = await refreshedAccountDisplayNames(fetchedAccounts)
+            guard generation == loadGeneration else { return }
+            let repairedAccounts = try await repairLegacyAccountStatuses(fetchedAccounts)
+            guard generation == loadGeneration else { return }
+            let displayedAccounts = try await refreshedAccountDisplayNames(repairedAccounts)
+            guard generation == loadGeneration else { return }
+
+            let loadedPairing: PairingRecord?
             do {
-                pairingRecord = try await pairingStore.current()
+                loadedPairing = try await pairingStore.current()
             } catch {
-                pairingRecord = PairingRecord(
+                loadedPairing = PairingRecord(
                     deviceIdentifier: nil,
                     isRemotePairing: false,
                     validationStatus: .fileUnreadable
                 )
             }
-            fullAccountEmails = await loadFullAccountEmails(for: accounts)
-            loadCertificateInventoryCache(for: accounts)
+            guard generation == loadGeneration else { return }
+
+            let loadedEmails = await loadFullAccountEmails(for: displayedAccounts)
+            guard generation == loadGeneration else { return }
 
             let storedApps = (try? await appStore?.fetchAll()) ?? []
-            appIconData = await loadAppIcons(for: storedApps)
+            guard generation == loadGeneration else { return }
+            let loadedAppIcons = await loadAppIcons(for: storedApps)
+            guard generation == loadGeneration else { return }
 
             let preferredAccountID: UUID?
             if let signingPreferenceStore {
@@ -182,32 +211,79 @@ final class SettingsViewModel: ObservableObject {
             } else {
                 preferredAccountID = nil
             }
-            let verifiedAccounts = accounts.filter { $0.status == .verified }
-            if let preferredAccountID,
-               verifiedAccounts.contains(where: { $0.id == preferredAccountID }) {
-                activeAccountID = preferredAccountID
+            guard generation == loadGeneration else { return }
+
+            let selectableAccounts = displayedAccounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
+            let resolvedAccountID: UUID?
+            if let preferredAccountID, displayedAccounts.contains(where: { $0.id == preferredAccountID }) {
+                resolvedAccountID = preferredAccountID
+            } else if let current = activeAccountID, displayedAccounts.contains(where: { $0.id == current }) {
+                resolvedAccountID = current
             } else {
-                activeAccountID = verifiedAccounts.first?.id
-                await signingPreferenceStore?.setActiveAccountID(activeAccountID)
+                resolvedAccountID = selectableAccounts.first?.id
+                if preferredAccountID == nil {
+                    await signingPreferenceStore?.setActiveAccountID(resolvedAccountID)
+                    guard generation == loadGeneration else { return }
+                }
             }
 
-            logs = (try? await logStore?.entries()) ?? []
-            signingHistory = (try? await signingHistoryStore?.records()) ?? []
-            signingHistoryIconData = await loadSigningHistoryIcons(for: signingHistory)
+            let loadedLogs = (try? await logStore?.entries()) ?? []
+            let loadedHistory = (try? await signingHistoryStore?.records()) ?? []
+            guard generation == loadGeneration else { return }
+            let loadedHistoryIcons = await loadSigningHistoryIcons(for: loadedHistory)
+            guard generation == loadGeneration else { return }
+
+            var loadedServers: [AnisetteServer] = anisetteServers
+            var loadedSelectedServerID: String? = selectedAnisetteServerID
             if let anisetteEnvironment {
                 async let availableServers = anisetteEnvironment.availableServers()
                 async let selectedServerID = anisetteEnvironment.selectedServerID()
-                anisetteServers = await availableServers
-                selectedAnisetteServerID = (await selectedServerID) ?? anisetteServers.first?.id
+                loadedServers = await availableServers
+                loadedSelectedServerID = (await selectedServerID) ?? loadedServers.first?.id
+                guard generation == loadGeneration else { return }
             }
+
+            var loadedNotificationsEnabled = notificationsEnabled
+            var loadedReminderHours = reminderHours
+            var loadedNotificationStatus = notificationStatus
             if let notificationPreferences {
-                notificationsEnabled = notificationPreferences.isEnabled
-                reminderHours = notificationPreferences.leadHours
+                loadedNotificationsEnabled = notificationPreferences.isEnabled
+                loadedReminderHours = notificationPreferences.leadHours
+                if let notificationScheduler {
+                    loadedNotificationStatus = await notificationScheduler.status(
+                        sealEnabled: loadedNotificationsEnabled
+                    )
+                }
+                guard generation == loadGeneration else { return }
             }
+
+            let loadedStorageUsage: SettingsStorageUsage
+            if let fileStore {
+                loadedStorageUsage = (try? await fileStore.storageUsage()) ?? .empty
+            } else {
+                loadedStorageUsage = .empty
+            }
+            guard generation == loadGeneration else { return }
+
+            accounts = displayedAccounts
+            pairingRecord = loadedPairing
+            fullAccountEmails = loadedEmails
+            loadCertificateInventoryCache(for: displayedAccounts)
+            appIconData = loadedAppIcons
+            activeAccountID = resolvedAccountID
+            logs = loadedLogs
+            signingHistory = loadedHistory
+            signingHistoryIconData = loadedHistoryIcons
+            anisetteServers = loadedServers
+            selectedAnisetteServerID = loadedSelectedServerID
+            notificationsEnabled = loadedNotificationsEnabled
+            reminderHours = loadedReminderHours
+            notificationStatus = loadedNotificationStatus
+            storageUsage = loadedStorageUsage
             refreshLogExportText()
-            await refreshStorageUsage()
             hasLoaded = true
         } catch {
+            guard generation == loadGeneration else { return }
             alertFailure = Self.failure(
                 title: "无法读取设置",
                 reason: "本地配置不可用",
@@ -233,7 +309,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func selectActiveAccount(_ account: AppleAccountRecord) async {
-        guard account.status == .verified,
+        guard AccountAvailabilityPolicy.isSelectable(account),
               accounts.contains(where: { $0.id == account.id }) else { return }
         activeAccountID = account.id
         await signingPreferenceStore?.setActiveAccountID(account.id)
@@ -298,6 +374,8 @@ final class SettingsViewModel: ObservableObject {
               let keychain,
               let accountRepository,
               let applePortalCertificateService else { return }
+        guard let operationLease = acquireOperation(.managingCertificate) else { return }
+        defer { releaseOperation(operationLease) }
 
         isCertificateOperationRunning = true
         defer { isCertificateOperationRunning = false }
@@ -353,6 +431,8 @@ final class SettingsViewModel: ObservableObject {
               let keychain,
               let accountRepository,
               let applePortalCertificateService else { return }
+        guard let operationLease = acquireOperation(.managingCertificate) else { return }
+        defer { releaseOperation(operationLease) }
 
         isCertificateOperationRunning = true
         defer { isCertificateOperationRunning = false }
@@ -420,6 +500,8 @@ final class SettingsViewModel: ObservableObject {
               let keychain,
               let accountRepository,
               let applePortalCertificateService else { return }
+        guard let operationLease = acquireOperation(.managingCertificate) else { return }
+        defer { releaseOperation(operationLease) }
 
         isCertificateOperationRunning = true
         defer { isCertificateOperationRunning = false }
@@ -521,28 +603,36 @@ final class SettingsViewModel: ObservableObject {
             updatedAccount.lastVerifiedAt = Date()
             try await accountRepository.save(updatedAccount)
         } catch {
-            let rollbackSucceeded: Bool
+            let originalError = error
+            var rollbackFailures: [String] = []
             do {
                 try await certificateService.revokeCertificate(
                     serialNumber: material.serialNumber,
                     account: originalAccount,
                     secret: material.updatedSecret
                 )
-                rollbackSucceeded = true
             } catch {
-                rollbackSucceeded = false
+                rollbackFailures.append("Apple 远程证书")
             }
-            try? await keychain.save(originalSecret, for: originalAccount.id)
-            try? await accountRepository.save(originalAccount)
-            guard rollbackSucceeded else {
+            do {
+                try await keychain.save(originalSecret, for: originalAccount.id)
+            } catch {
+                rollbackFailures.append("Keychain")
+            }
+            do {
+                try await accountRepository.save(originalAccount)
+            } catch {
+                rollbackFailures.append("账号记录")
+            }
+            if rollbackFailures.isEmpty == false {
                 throw Self.failure(
-                    title: "签名失败",
-                    reason: "Apple 返回：无法创建签名证书",
-                    recovery: "重试",
+                    title: "证书补偿未完成",
+                    reason: "证书创建后的补偿未完整完成（\(rollbackFailures.joined(separator: "、"))）。",
+                    recovery: "重新同步证书并检查 Apple ID 状态",
                     code: "SEAL-CERT-215"
                 )
             }
-            if let failure = error as? ImportFailure { throw failure }
+            if let failure = originalError as? ImportFailure { throw failure }
             throw Self.failure(
                 title: "签名失败",
                 reason: "Apple 返回：无法创建签名证书",
@@ -554,7 +644,7 @@ final class SettingsViewModel: ObservableObject {
 
     private func refreshedAccountDisplayNames(
         _ storedAccounts: [AppleAccountRecord]
-    ) async -> [AppleAccountRecord] {
+    ) async throws -> [AppleAccountRecord] {
         guard let keychain, let accountRepository else { return storedAccounts }
         var refreshedAccounts: [AppleAccountRecord] = []
 
@@ -596,7 +686,7 @@ final class SettingsViewModel: ObservableObject {
             }
 
             if changed {
-                try? await accountRepository.save(account)
+                try await accountRepository.save(account)
             }
             refreshedAccounts.append(account)
         }
@@ -625,7 +715,7 @@ final class SettingsViewModel: ObservableObject {
         guard let fileStore else { return [:] }
         var values: [UUID: Data] = [:]
         for app in apps {
-            guard let path = app.iconRelativePath,
+            guard let path = app.displayIconRelativePath,
                   let data = try? await fileStore.read(relativePath: path) else {
                 continue
             }
@@ -650,12 +740,16 @@ final class SettingsViewModel: ObservableObject {
         certificateInventoryFailures[accountID]
     }
 
+    func certificateHealthStatus(for accountID: UUID) -> CertificateHealthStatus? {
+        certificateHealthStatuses[accountID]
+    }
+
     func isCertificateInventoryLoading(accountID: UUID) -> Bool {
         certificateInventoryLoadingIDs.contains(accountID)
     }
 
     func refreshAppIDInventories() async {
-        for account in accounts where account.status == .verified {
+        for account in accounts where AccountAvailabilityPolicy.isSelectable(account) {
             await refreshAppIDInventory(for: account, force: true)
         }
     }
@@ -703,10 +797,9 @@ final class SettingsViewModel: ObservableObject {
         } catch let failure as ImportFailure {
             certificateInventoryFailures[account.id] = failure
         } catch {
-            let nsError = error as NSError
             certificateInventoryFailures[account.id] = Self.failure(
                 title: "Apple ID 同步失败",
-                reason: "来源：\(nsError.domain) \(nsError.code)；\(nsError.localizedDescription)",
+                reason: "Apple 返回：App ID 状态同步失败",
                 recovery: "重新同步",
                 code: "SEAL-INVENTORY-900"
             )
@@ -716,7 +809,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func refreshCertificateInventories() async {
-        for account in accounts where account.status == .verified {
+        for account in accounts where AccountAvailabilityPolicy.isSelectable(account) {
             await refreshCertificateInventory(for: account, force: true)
         }
     }
@@ -756,6 +849,11 @@ final class SettingsViewModel: ObservableObject {
             )
             certificateInventories[account.id] = inventory
             certificateInventoryFailures[account.id] = nil
+            certificateHealthStatuses[account.id] = await makeCertificateHealthStatus(
+                account: account,
+                secret: secret,
+                inventory: inventory
+            )
             saveCertificateInventoryCache(inventory)
             try? await logStore?.append(
                 category: .account,
@@ -763,6 +861,10 @@ final class SettingsViewModel: ObservableObject {
             )
         } catch let failure as ImportFailure {
             certificateInventoryFailures[account.id] = failure
+            certificateHealthStatuses[account.id] = await localCertificateHealthStatus(
+                account: account,
+                portalState: .unknown
+            )
             try? await logStore?.append(
                 category: .account,
                 level: .error,
@@ -770,14 +872,17 @@ final class SettingsViewModel: ObservableObject {
                 code: failure.code
             )
         } catch {
-            let nsError = error as NSError
             let failure = Self.failure(
                 title: "Apple 侧同步失败",
-                reason: "来源：\(nsError.domain) \(nsError.code)；\(nsError.localizedDescription)",
+                reason: "Apple 返回：证书状态同步失败",
                 recovery: "重新同步",
                 code: "SEAL-INVENTORY-900"
             )
             certificateInventoryFailures[account.id] = failure
+            certificateHealthStatuses[account.id] = await localCertificateHealthStatus(
+                account: account,
+                portalState: .unknown
+            )
             try? await logStore?.append(
                 category: .account,
                 level: .error,
@@ -787,6 +892,104 @@ final class SettingsViewModel: ObservableObject {
         }
         logs = (try? await logStore?.entries()) ?? logs
         refreshLogExportText()
+    }
+
+    private func localCertificateHealthStatus(
+        account: AppleAccountRecord,
+        portalState: CertificateHealthStatus.CheckState
+    ) async -> CertificateHealthStatus? {
+        guard let keychain else { return nil }
+        do {
+            guard let secret = try await keychain.load(accountID: account.id) else {
+                return nil
+            }
+            return await makeCertificateHealthStatus(
+                account: account,
+                secret: secret,
+                inventory: nil,
+                portalStateOverride: portalState
+            )
+        } catch {
+            guard let serial = account.selectedCertificateSerialNumber
+                    ?? account.certificateSerialNumber else {
+                return nil
+            }
+            return CertificateHealthStatus(
+                serialNumber: serial,
+                portalPresence: portalState,
+                p12Readable: .unknown,
+                localPrivateKey: .unknown,
+                keychainReadable: .invalid,
+                appleIDMatch: .unknown,
+                teamMatch: .unknown,
+                expirationDate: nil,
+                lastSignedAt: nil,
+                relatedAppCount: 0
+            )
+        }
+    }
+
+    private func makeCertificateHealthStatus(
+        account: AppleAccountRecord,
+        secret: AccountSecret,
+        inventory: ApplePortalInventory?,
+        portalStateOverride: CertificateHealthStatus.CheckState? = nil
+    ) async -> CertificateHealthStatus? {
+        guard let serial = account.selectedCertificateSerialNumber
+                ?? account.certificateSerialNumber
+                ?? secret.certificateSerialNumber,
+              serial.isEmpty == false else {
+            return nil
+        }
+
+        let localCertificate: ALTCertificate? = {
+            guard let p12 = secret.certificateP12 else { return nil }
+            return try? ALTCertificate(p12Data: p12, password: nil)
+        }()
+        let localSerialMatches = localCertificate?.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
+        let storedSerialMatches = secret.certificateSerialNumber?.caseInsensitiveCompare(serial) == .orderedSame
+        let portalCertificate = inventory?.certificates.first {
+            $0.serialNumber.caseInsensitiveCompare(serial) == .orderedSame
+        }
+
+        let portalPresence = portalStateOverride
+            ?? (portalCertificate == nil ? .invalid : .valid)
+        let localValidity = localCertificate?.data
+            .flatMap(X509CertificateValidityReader.validity(from:))
+        let expirationDate = portalCertificate?.expirationDate ?? localValidity?.notAfter
+
+        var relatedApps: [AppRecord] = []
+        if let appStore {
+            do {
+                relatedApps = try await appStore.fetchAll().filter { app in
+                    app.accountID == account.id
+                        && app.signingTeamID == account.teamID
+                        && app.certificateSerialNumber?.caseInsensitiveCompare(serial) == .orderedSame
+                }
+            } catch {
+                try? await logStore?.append(
+                    category: .account,
+                    level: .error,
+                    message: "无法读取使用当前 Serial 的应用记录",
+                    code: "SEAL-CERT-HEALTH-001"
+                )
+            }
+        }
+
+        return CertificateHealthStatus(
+            serialNumber: serial,
+            portalPresence: portalPresence,
+            p12Readable: localCertificate == nil ? .invalid : .valid,
+            localPrivateKey: localCertificate?.privateKey != nil
+                && localSerialMatches
+                && storedSerialMatches ? .valid : .invalid,
+            keychainReadable: .valid,
+            appleIDMatch: secret.accountIdentifier == account.accountIdentifier ? .valid : .invalid,
+            teamMatch: inventory.map { $0.teamID == account.teamID ? .valid : .invalid } ?? .unknown,
+            expirationDate: expirationDate,
+            lastSignedAt: relatedApps.compactMap(\AppRecord.lastSignedAt).max(),
+            relatedAppCount: relatedApps.count
+        )
     }
 
     private func loadCertificateInventoryCache(for accounts: [AppleAccountRecord]) {
@@ -864,6 +1067,8 @@ final class SettingsViewModel: ObservableObject {
 
     func resetSigningEnvironment() async {
         guard let anisetteEnvironment else { return }
+        guard let operationLease = acquireOperation(.managingAccount) else { return }
+        defer { releaseOperation(operationLease) }
         await anisetteEnvironment.resetProvisioning()
         try? await logStore?.append(
             category: .system,
@@ -878,9 +1083,9 @@ final class SettingsViewModel: ObservableObject {
         replacing existingAccount: AppleAccountRecord? = nil
     ) async -> Bool {
         guard accountPhase == .idle,
-              let accountRepository,
-              let keychain,
               let accountClient else { return false }
+        guard let operationLease = acquireOperation(.managingAccount) else { return false }
+        defer { releaseOperation(operationLease) }
         let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
         guard normalizedEmail.isEmpty == false, password.isEmpty == false else {
             alertFailure = Self.failure(
@@ -892,6 +1097,7 @@ final class SettingsViewModel: ObservableObject {
             return false
         }
 
+        pendingTeamSelection = nil
         accountPhase = .authenticating
         defer { accountPhase = .idle }
         do {
@@ -904,68 +1110,50 @@ final class SettingsViewModel: ObservableObject {
             )
             try Task.checkCancellation()
 
-            let canReplaceExistingAccount = existingAccount.map { account in
-                account.accountIdentifier == authenticated.record.accountIdentifier
-                    && account.teamID == authenticated.record.teamID
-            } ?? false
-
-            let storedAccounts = (try? await accountRepository.fetchAll()) ?? []
-            let replacingAccountID = canReplaceExistingAccount ? existingAccount?.id : nil
-            let duplicateAccount = storedAccounts.first { candidate in
-                if let replacingAccountID, candidate.id == replacingAccountID { return false }
-                return candidate.accountIdentifier == authenticated.record.accountIdentifier
-                    && candidate.teamID == authenticated.record.teamID
-            }
-            let baseAccount = canReplaceExistingAccount ? existingAccount : duplicateAccount
-            let record = baseAccount.map {
-                AppleAccountRecord(
-                    id: $0.id,
-                    maskedEmail: authenticated.record.maskedEmail,
-                    accountIdentifier: authenticated.record.accountIdentifier,
-                    teamID: authenticated.record.teamID,
-                    teamName: authenticated.record.teamName,
-                    isFreeTeam: authenticated.record.isFreeTeam,
-                    status: .verified,
-                    certificateSerialNumber: $0.certificateSerialNumber,
-                    selectedCertificateSerialNumber: $0.selectedCertificateSerialNumber,
-                    lastVerifiedAt: authenticated.record.lastVerifiedAt
+            guard authenticated.teams.isEmpty == false else {
+                throw Self.failure(
+                    title: "没有可用 Team",
+                    reason: "Apple 返回的账号信息中没有可用于签名的 Team。",
+                    recovery: "重新验证",
+                    code: "SEAL-AUTH-107"
                 )
-            } ?? authenticated.record
+            }
 
-            let previousSecret = try? await keychain.load(accountID: record.id)
-            var mergedSecret = authenticated.secret
-            if let previousSecret,
-               previousSecret.accountIdentifier == authenticated.secret.accountIdentifier {
-                mergedSecret.certificateP12 = previousSecret.certificateP12
-                mergedSecret.certificateSerialNumber = previousSecret.certificateSerialNumber
-                mergedSecret.certificateMachineIdentifier = previousSecret.certificateMachineIdentifier
-            }
-            try await keychain.save(mergedSecret, for: record.id)
-            do {
-                try await accountRepository.save(record)
-            } catch {
-                if let previousSecret {
-                    try? await keychain.save(previousSecret, for: record.id)
-                } else {
-                    try? await keychain.delete(accountID: record.id)
+            if let existingAccount {
+                guard existingAccount.accountIdentifier == authenticated.accountIdentifier else {
+                    throw Self.failure(
+                        title: "Apple ID 不匹配",
+                        reason: "重新验证返回的账号与原账号记录不一致。",
+                        recovery: "重新验证 Apple ID",
+                        code: "SEAL-AUTH-108"
+                    )
                 }
-                throw error
-            }
-            await load(force: true)
-            if let saved = accounts.first(where: { $0.id == record.id }) {
-                await refreshCertificateInventory(for: saved, force: true)
-                if activeAccountID == nil || existingAccount == nil && duplicateAccount == nil {
-                    await selectActiveAccount(saved)
+                guard let existingTeam = authenticated.teams.first(where: { $0.id == existingAccount.teamID }) else {
+                    throw Self.failure(
+                        title: "原 Team 不可用",
+                        reason: "重新验证后没有找到原 Team（\(existingAccount.teamName) / \(existingAccount.teamID)）。Seal 不会静默切换到其他 Team。",
+                        recovery: "重新验证 Apple ID",
+                        code: "SEAL-AUTH-109"
+                    )
                 }
+                return try await persistAuthenticatedAccount(
+                    authenticated,
+                    team: existingTeam,
+                    replacing: existingAccount
+                )
             }
-            try? await logStore?.append(
-                category: .account,
-                message: duplicateAccount == nil ? "Apple ID 已添加" : "Apple ID 已重新绑定到现有账号记录"
-            )
-            return true
+
+            if authenticated.teams.count == 1, let team = authenticated.teams.first {
+                return try await persistAuthenticatedAccount(authenticated, team: team, replacing: nil)
+            }
+
+            pendingTeamSelection = PendingTeamSelection(authenticated: authenticated)
+            return false
         } catch is CancellationError {
+            pendingTeamSelection = nil
             return false
         } catch let failure as ImportFailure {
+            pendingTeamSelection = nil
             alertFailure = failure
             try? await logStore?.append(
                 category: .account,
@@ -976,12 +1164,15 @@ final class SettingsViewModel: ObservableObject {
             logs = (try? await logStore?.entries()) ?? logs
             return false
         } catch {
-            let failure = Self.failure(
-                title: "无法添加账号",
-                reason: "Apple ID 验证失败",
-                recovery: "重试",
-                code: "SEAL-AUTH-102"
-            )
+            pendingTeamSelection = nil
+            let failure = AppleServiceFailurePolicy.isNetworkError(error)
+                ? AppleServiceFailurePolicy.networkFailure(underlying: error)
+                : Self.failure(
+                    title: "无法添加账号",
+                    reason: "Apple ID 验证失败",
+                    recovery: "重试",
+                    code: "SEAL-AUTH-102"
+                )
             alertFailure = failure
             try? await logStore?.append(
                 category: .account,
@@ -994,11 +1185,134 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    func completeTeamSelection(_ team: AppleTeamRecord) async -> Bool {
+        guard accountPhase == .idle,
+              let pending = pendingTeamSelection,
+              pending.teams.contains(team) else { return false }
+        guard let operationLease = acquireOperation(.managingAccount) else { return false }
+        defer { releaseOperation(operationLease) }
+        accountPhase = .authenticating
+        defer { accountPhase = .idle }
+        do {
+            let result = try await persistAuthenticatedAccount(
+                pending.authenticated,
+                team: team,
+                replacing: nil
+            )
+            if result { pendingTeamSelection = nil }
+            return result
+        } catch let failure as ImportFailure {
+            alertFailure = failure
+            return false
+        } catch {
+            alertFailure = Self.failure(
+                title: "无法保存 Team",
+                reason: "账号信息保存失败，请重试。",
+                recovery: "重试",
+                code: "SEAL-AUTH-110"
+            )
+            return false
+        }
+    }
+
+    func cancelTeamSelection() {
+        pendingTeamSelection = nil
+    }
+
+    private func persistAuthenticatedAccount(
+        _ authenticated: AuthenticatedAppleAccount,
+        team: AppleTeamRecord,
+        replacing existingAccount: AppleAccountRecord?
+    ) async throws -> Bool {
+        guard let accountRepository, let keychain else { return false }
+        let storedAccounts = try await accountRepository.fetchAll()
+        let canReplaceExisting = existingAccount.map { account in
+            account.accountIdentifier == authenticated.accountIdentifier && account.teamID == team.id
+        } ?? false
+        let replacingAccountID = canReplaceExisting ? existingAccount?.id : nil
+        let duplicateAccount = storedAccounts.first { candidate in
+            if let replacingAccountID, candidate.id == replacingAccountID { return false }
+            return candidate.accountIdentifier == authenticated.accountIdentifier && candidate.teamID == team.id
+        }
+        let baseAccount = canReplaceExisting ? existingAccount : duplicateAccount
+        let baseRecord = authenticated.record(team: team, id: baseAccount?.id ?? UUID())
+        let record = baseAccount.map { old in
+            AppleAccountRecord(
+                id: old.id,
+                maskedEmail: baseRecord.maskedEmail,
+                accountIdentifier: baseRecord.accountIdentifier,
+                teamID: baseRecord.teamID,
+                teamName: baseRecord.teamName,
+                isFreeTeam: baseRecord.isFreeTeam,
+                status: .verified,
+                certificateSerialNumber: old.certificateSerialNumber,
+                selectedCertificateSerialNumber: old.selectedCertificateSerialNumber,
+                lastVerifiedAt: baseRecord.lastVerifiedAt
+            )
+        } ?? baseRecord
+
+        let previousSecret = try await keychain.load(accountID: record.id)
+        var mergedSecret = authenticated.secret
+        if let previousSecret,
+           previousSecret.accountIdentifier == authenticated.secret.accountIdentifier {
+            mergedSecret.certificateP12 = previousSecret.certificateP12
+            mergedSecret.certificateSerialNumber = previousSecret.certificateSerialNumber
+            mergedSecret.certificateMachineIdentifier = previousSecret.certificateMachineIdentifier
+        }
+        try await keychain.save(mergedSecret, for: record.id)
+        do {
+            try await accountRepository.save(record)
+        } catch {
+            let originalError = error
+            do {
+                if let previousSecret {
+                    try await keychain.save(previousSecret, for: record.id)
+                } else {
+                    try await keychain.delete(accountID: record.id)
+                }
+            } catch {
+                throw Self.failure(
+                    title: "账号保存补偿未完成",
+                    reason: "账号记录保存失败，且 Keychain 无法恢复到修改前状态。",
+                    recovery: "重新验证 Apple ID 后检查账号状态",
+                    code: "SEAL-AUTH-DB-002"
+                )
+            }
+            throw originalError
+        }
+
+        await load(force: true)
+        if let saved = accounts.first(where: { $0.id == record.id }) {
+            await refreshCertificateInventory(for: saved, force: true)
+            if activeAccountID == nil || existingAccount == nil && duplicateAccount == nil {
+                await selectActiveAccount(saved)
+            }
+        }
+        try? await logStore?.append(
+            category: .account,
+            message: duplicateAccount == nil ? "Apple ID 已添加（Team: \(team.name)）" : "Apple ID 已重新绑定到现有账号记录（Team: \(team.name)）"
+        )
+        return true
+    }
+
     func deleteAccount(_ account: AppleAccountRecord) async {
         guard let accountRepository, let keychain else { return }
+        guard let operationLease = acquireOperation(.managingAccount) else { return }
+        defer { releaseOperation(operationLease) }
         let relatedApps = (try? await appStore?.fetchAll())?
             .filter { $0.accountID == account.id } ?? []
-        let storedSecret = try? await keychain.load(accountID: account.id)
+        let storedSecret: AccountSecret?
+        do {
+            storedSecret = try await keychain.load(accountID: account.id)
+        } catch {
+            alertFailure = Self.failure(
+                title: "无法删除 Apple ID",
+                reason: "删除前无法读取本机 Keychain 凭据，因此未修改账号记录。",
+                recovery: "稍后重试",
+                code: "SEAL-AUTH-DB-003"
+            )
+            return
+        }
         do {
             try await accountRepository.delete(id: account.id)
             try await keychain.delete(accountID: account.id)
@@ -1012,16 +1326,27 @@ final class SettingsViewModel: ObservableObject {
                 message: "Apple ID 已移除；关联应用保留原账号绑定，用于防止误用其他账号续签。关联应用数：\(relatedApps.count)"
             )
         } catch {
-            try? await accountRepository.save(account)
+            var rollbackFailures: [String] = []
+            do {
+                try await accountRepository.save(account)
+            } catch {
+                rollbackFailures.append("账号记录")
+            }
             if let storedSecret {
-                try? await keychain.save(storedSecret, for: account.id)
+                do {
+                    try await keychain.save(storedSecret, for: account.id)
+                } catch {
+                    rollbackFailures.append("Keychain")
+                }
             }
             await load(force: true)
             alertFailure = Self.failure(
                 title: "无法移除账号",
-                reason: "本地数据未能更新",
-                recovery: "重试",
-                code: "SEAL-AUTH-106"
+                reason: rollbackFailures.isEmpty
+                    ? "本地数据未能更新，原账号已恢复。"
+                    : "删除失败，且本地补偿未完整完成（\(rollbackFailures.joined(separator: "、"))）。",
+                recovery: rollbackFailures.isEmpty ? "重试" : "重新验证 Apple ID 后检查账号状态",
+                code: rollbackFailures.isEmpty ? "SEAL-AUTH-106" : "SEAL-AUTH-DB-002"
             )
         }
     }
@@ -1033,6 +1358,8 @@ final class SettingsViewModel: ObservableObject {
 
     func importPairingFile(_ url: URL) async {
         guard let pairingStore else { return }
+        guard let operationLease = acquireOperation(.resettingPairing) else { return }
+        defer { releaseOperation(operationLease) }
         let hasSecurityScope = url.startAccessingSecurityScopedResource()
         defer {
             if hasSecurityScope {
@@ -1073,6 +1400,8 @@ final class SettingsViewModel: ObservableObject {
 
     func removePairingFile() async {
         guard let pairingStore else { return }
+        guard let operationLease = acquireOperation(.resettingPairing) else { return }
+        defer { releaseOperation(operationLease) }
         do {
             try await pairingStore.remove()
             pairingRecord = nil
@@ -1124,7 +1453,7 @@ final class SettingsViewModel: ObservableObject {
         }
 
         let selected = activeAccount
-            ?? accounts.first(where: { $0.status == .verified })
+            ?? accounts.first(where: { AccountAvailabilityPolicy.isSelectable($0) })
             ?? accounts.first
         guard var account = selected else { return }
         if activeAccountID != account.id {
@@ -1150,17 +1479,23 @@ final class SettingsViewModel: ObservableObject {
                 account.lastVerifiedAt = Date()
                 try await accountRepository.save(account)
             } catch let failure as ImportFailure {
-                account.status = .needsVerification
-                try? await accountRepository.save(account)
+                if AppleServiceFailurePolicy.shouldRequireReverification(failure) {
+                    account.status = .needsVerification
+                    try await accountRepository.save(account)
+                }
                 throw failure
             } catch {
-                account.status = .needsVerification
-                try? await accountRepository.save(account)
+                if AppleServiceFailurePolicy.isNetworkError(error) {
+                    throw AppleServiceFailurePolicy.networkFailure(
+                        title: "无法连接 Apple",
+                        reason: "当前网络或 Apple 服务不可用。Apple ID 状态未改变。"
+                    )
+                }
                 throw Self.failure(
-                    title: "Apple ID 需要重新验证",
-                    reason: "当前签名 Apple ID 的登录状态已失效。",
-                    recovery: "重新验证 Apple ID",
-                    code: "SEAL-AUTH-102"
+                    title: "无法验证 Apple ID",
+                    reason: "Apple 验证返回了无法分类的错误。账号状态未改变。",
+                    recovery: "稍后重试；如持续失败再重新验证 Apple ID",
+                    code: "SEAL-VERIFY-500"
                 )
             }
 
@@ -1180,6 +1515,24 @@ final class SettingsViewModel: ObservableObject {
                 logMessage: "签名环境检测失败"
             )
         }
+    }
+
+    private func repairLegacyAccountStatuses(
+        _ records: [AppleAccountRecord]
+    ) async throws -> [AppleAccountRecord] {
+        guard let accountRepository, let keychain else { return records }
+        var repaired = records
+        for index in repaired.indices where repaired[index].status == .needsVerification {
+            let hasLocalSecret = try await keychain.load(accountID: repaired[index].id) != nil
+            let status = AccountAvailabilityPolicy.repairedStatus(
+                for: repaired[index],
+                hasLocalSecret: hasLocalSecret
+            )
+            guard status != repaired[index].status else { continue }
+            repaired[index].status = status
+            try await accountRepository.save(repaired[index])
+        }
+        return repaired
     }
 
     func testLocalDevVPN() async {
@@ -1203,7 +1556,19 @@ final class SettingsViewModel: ObservableObject {
         guard let installChannel else { return }
         diagnosticState = .running
         if let pairingStore, pairingRecord != nil {
-            pairingRecord = try? await pairingStore.markValidating()
+            do {
+                pairingRecord = try await pairingStore.markValidating()
+            } catch {
+                let failure = Self.failure(
+                    title: "配对验证失败",
+                    reason: "无法保存配对文件的验证中状态。",
+                    recovery: "重新导入配对文件",
+                    code: "SEAL-PAIR-206"
+                )
+                diagnosticState = .failed(failure)
+                alertFailure = failure
+                return
+            }
         }
         let diagnostics = await installChannel.diagnose()
         installDiagnostics = diagnostics
@@ -1258,12 +1623,21 @@ final class SettingsViewModel: ObservableObject {
         logMessage: String
     ) async {
         if let pairingStore {
-            if let deviceIdentifier = diagnostics?.deviceIdentifier {
-                pairingRecord = try? await pairingStore.markValidated(
-                    deviceIdentifier: deviceIdentifier
+            do {
+                if let deviceIdentifier = diagnostics?.deviceIdentifier {
+                    pairingRecord = try await pairingStore.markValidated(
+                        deviceIdentifier: deviceIdentifier
+                    )
+                } else {
+                    pairingRecord = try await pairingStore.markPendingValidation()
+                }
+            } catch {
+                alertFailure = Self.failure(
+                    title: "配对状态保存失败",
+                    reason: "LocalDevVPN 检测失败后，配对状态未能写入本机存储。",
+                    recovery: "重新导入配对文件后再检测",
+                    code: "SEAL-PAIR-208"
                 )
-            } else {
-                pairingRecord = try? await pairingStore.markPendingValidation()
             }
         }
         await load(force: true)
@@ -1287,10 +1661,13 @@ final class SettingsViewModel: ObservableObject {
             if enabled {
                 let granted = try await notificationScheduler.requestAuthorization()
                 guard granted else {
+                    notificationPreferences.isEnabled = true
+                    notificationsEnabled = true
+                    notificationStatus = await notificationScheduler.status(sealEnabled: true)
                     throw Self.failure(
                         title: "通知未开启",
-                        reason: "系统未授予通知权限",
-                        recovery: "知道了",
+                        reason: "Seal 内提醒已开启，但系统没有授予通知权限。",
+                        recovery: "检查系统通知权限",
                         code: "SEAL-NOTIFY-001"
                     )
                 }
@@ -1302,21 +1679,27 @@ final class SettingsViewModel: ObservableObject {
                 enabled: enabled,
                 leadHours: reminderHours
             )
+            notificationStatus = await notificationScheduler.status(sealEnabled: enabled)
         } catch let failure as ImportFailure {
-            notificationsEnabled = false
-            notificationPreferences.isEnabled = false
-            try? await notificationScheduler.reschedule(apps: [], enabled: false)
+            notificationStatus = await notificationScheduler.status(
+                sealEnabled: notificationPreferences.isEnabled,
+                schedulingFailure: failure.reason
+            )
             alertFailure = failure
+            try? await logStore?.append(category: .system, level: .error, message: failure.reason, code: failure.code)
         } catch {
-            notificationsEnabled = false
-            notificationPreferences.isEnabled = false
-            try? await notificationScheduler.reschedule(apps: [], enabled: false)
-            alertFailure = Self.failure(
+            let failure = Self.failure(
                 title: "无法设置提醒",
-                reason: "通知配置失败",
+                reason: "通知调度失败",
                 recovery: "重试",
                 code: "SEAL-NOTIFY-002"
             )
+            notificationStatus = await notificationScheduler.status(
+                sealEnabled: notificationPreferences.isEnabled,
+                schedulingFailure: failure.reason
+            )
+            alertFailure = failure
+            try? await logStore?.append(category: .system, level: .error, message: failure.reason, code: failure.code)
         }
     }
 
@@ -1332,6 +1715,7 @@ final class SettingsViewModel: ObservableObject {
                 enabled: notificationsEnabled,
                 leadHours: NotificationPreferences.fixedLeadHours
             )
+            notificationStatus = await notificationScheduler.status(sealEnabled: notificationsEnabled)
         } catch {
             alertFailure = Self.failure(
                 title: "无法设置提醒",
@@ -1356,6 +1740,8 @@ final class SettingsViewModel: ObservableObject {
 
     func clearTemporaryFiles() async {
         guard let fileStore else { return }
+        guard let operationLease = acquireOperation(.maintainingStorage) else { return }
+        defer { releaseOperation(operationLease) }
         do {
             try await fileStore.clearTemporaryFiles()
             await refreshStorageUsage()
@@ -1377,39 +1763,56 @@ final class SettingsViewModel: ObservableObject {
 
     func clearIPAAndSigningCache() async {
         guard let fileStore, let appStore else { return }
+        guard let operationLease = acquireOperation(.maintainingStorage) else { return }
+        defer { releaseOperation(operationLease) }
         do {
-            var apps = try await appStore.fetchAll()
+            let apps = try await appStore.fetchAll()
+            var historyUpdateFailures = 0
+            // A persisted Signed.ipa is a user-visible artifact, not cache. Only
+            // unsigned imports and true temporary workspaces may be removed here.
             let removableImportedApps = apps.filter { app in
-                app.isSeal == false && app.state != .installed
+                app.isSeal == false
+                    && app.state != .installed
+                    && app.hasSignedArtifact == false
             }
             for app in removableImportedApps {
                 try await appStore.delete(id: app.id)
                 try await fileStore.removeApp(appID: app.id)
-                try? await signingHistoryStore?.markDeleted(appID: app.id)
+                if let signingHistoryStore {
+                    do {
+                        try await signingHistoryStore.markDeleted(appID: app.id)
+                    } catch {
+                        historyUpdateFailures += 1
+                    }
+                }
             }
 
-            apps = try await appStore.fetchAll()
-            try await fileStore.clearSignedIPAs()
+            let remainingApps = try await appStore.fetchAll()
             try await fileStore.clearTemporaryFiles()
-            try await fileStore.clearOrphanedAppFiles(validAppIDs: Set(apps.map(\.id)))
+            try await fileStore.clearOrphanedAppFiles(validAppIDs: Set(remainingApps.map(\.id)))
 
-            for index in apps.indices where apps[index].signedIPARelativePath != nil {
-                apps[index].signedIPARelativePath = nil
-                try await appStore.save(apps[index])
+            if let signingHistoryStore {
+                signingHistory = try await signingHistoryStore.records()
             }
-
-            signingHistory = (try? await signingHistoryStore?.records()) ?? signingHistory
             signingHistoryIconData = await loadSigningHistoryIcons(for: signingHistory)
             await refreshStorageUsage()
             try? await logStore?.append(
                 category: .system,
-                message: "IPA 与签名缓存已真实清理"
+                message: "待签名 IPA 与临时签名工作区已清理；正式 Signed.ipa 已保留"
             )
             logs = (try? await logStore?.entries()) ?? logs
             refreshLogExportText()
+            if historyUpdateFailures > 0 {
+                alertFailure = Self.failure(
+                    title: "缓存已清理",
+                    reason: "IPA 文件已清理，但有 \(historyUpdateFailures) 个签名历史状态未能同步。",
+                    recovery: "稍后重新打开 Seal 检查日志",
+                    code: "SEAL-HISTORY-002"
+                )
+            }
         } catch {
             alertFailure = Self.failure(
-                title: "无法清理 IPA 与签名缓存",
+                title: "无法清理 IPA 与临时缓存",
                 reason: "本地文件仍在使用或存储记录无法更新",
                 recovery: "关闭正在进行的签名任务后重试",
                 code: "SEAL-STORAGE-003"
@@ -1417,30 +1820,10 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// Legacy API retained for call-site compatibility. Formal Signed.ipa files
+    /// are never considered cache; this now only clears transient workspaces.
     func clearSignedIPACache() async {
-        guard let fileStore, let appStore else { return }
-        do {
-            try await fileStore.clearSignedIPAs()
-            var apps = try await appStore.fetchAll()
-            for index in apps.indices where apps[index].signedIPARelativePath != nil {
-                apps[index].signedIPARelativePath = nil
-                try await appStore.save(apps[index])
-            }
-            await refreshStorageUsage()
-            try? await logStore?.append(
-                category: .system,
-                message: "签名产物缓存已清理"
-            )
-            logs = (try? await logStore?.entries()) ?? logs
-            refreshLogExportText()
-        } catch {
-            alertFailure = Self.failure(
-                title: "无法清理签名产物",
-                reason: "本地文件清理失败",
-                recovery: "重试",
-                code: "SEAL-STORAGE-002"
-            )
-        }
+        await clearTemporaryFiles()
     }
 
     func clearLogs() async {
@@ -1461,6 +1844,8 @@ final class SettingsViewModel: ObservableObject {
 
     func resetCertificate(for account: AppleAccountRecord) async {
         guard let accountRepository else { return }
+        guard let operationLease = acquireOperation(.managingCertificate) else { return }
+        defer { releaseOperation(operationLease) }
         var updated = account
         updated.certificateSerialNumber = nil
         updated.selectedCertificateSerialNumber = nil
@@ -1483,6 +1868,24 @@ final class SettingsViewModel: ObservableObject {
                 code: "SEAL-CERT-101"
             )
         }
+    }
+
+    private func acquireOperation(
+        _ kind: OperationCoordinator.Kind,
+        appID: UUID? = nil
+    ) -> OperationCoordinator.Lease? {
+        guard let operationCoordinator else {
+            return .uncoordinated(kind, appID: appID)
+        }
+        guard let lease = operationCoordinator.begin(kind, appID: appID) else {
+            alertFailure = operationCoordinator.conflictFailure(requested: kind)
+            return nil
+        }
+        return lease
+    }
+
+    private func releaseOperation(_ lease: OperationCoordinator.Lease) {
+        operationCoordinator?.end(lease)
     }
 
     private func refreshLogExportText() {

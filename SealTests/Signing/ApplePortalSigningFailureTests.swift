@@ -16,7 +16,8 @@ struct ApplePortalSigningFailureTests {
 
         #expect(failure.code == "SEAL-APPID-302")
         #expect(failure.reason.contains("App ID"))
-        #expect(failure.reason.contains("ApplePortal 409"))
+        #expect(failure.reason.contains("ApplePortal 409") == false)
+        #expect(failure.reason.contains("Bundle identifier is unavailable") == false)
     }
 
     @Test
@@ -41,12 +42,27 @@ struct ApplePortalSigningFailureTests {
         )
 
         #expect(failure.code == "SEAL-CERT-204")
-        #expect(failure.reason.contains("没有撤销任何证书"))
-        #expect(failure.recovery.contains("完整 Serial"))
+        #expect(failure.reason == "Apple 返回：无法创建签名证书")
+        #expect(failure.recovery == "重试")
     }
 
     @Test
-    func preservesUnderlyingPortalFailureForDiagnosis() {
+    func unclassifiedAccountFailureDoesNotForceReverification() {
+        let failure = ApplePortalSigningFailure.make(
+            stage: .account,
+            error: NSError(
+                domain: "ApplePortal",
+                code: 500,
+                userInfo: [NSLocalizedDescriptionKey: "Unexpected response"]
+            )
+        )
+
+        #expect(failure.code == "SEAL-VERIFY-500")
+        #expect(AppleServiceFailurePolicy.shouldRequireReverification(failure) == false)
+    }
+
+    @Test
+    func networkFailureIsSeparatedFromAuthenticationAndTechnicalDetailsAreHidden() {
         let failure = ApplePortalSigningFailure.make(
             stage: .provisioningProfile,
             error: NSError(
@@ -56,8 +72,9 @@ struct ApplePortalSigningFailureTests {
             )
         )
 
-        #expect(failure.code == "SEAL-PROFILE-303")
-        #expect(failure.reason.contains("描述文件"))
-        #expect(failure.reason.contains("NSURLErrorDomain -1001"))
+        #expect(failure.code.hasPrefix("SEAL-NET-"))
+        #expect(failure.reason.contains("Apple ID 状态不会被修改"))
+        #expect(failure.reason.contains("NSURLErrorDomain") == false)
+        #expect(failure.reason.contains("-1001") == false)
     }
 }

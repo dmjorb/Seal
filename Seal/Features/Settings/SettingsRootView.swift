@@ -11,6 +11,7 @@ struct SettingsRootView: View {
 
     @AppStorage("behavior.autoRenew") private var autoRenew = false
     @AppStorage("behavior.deleteIPAAfterInstall") private var deleteIPAAfterInstall = false
+    @AppStorage("appearance.mode") private var appearanceRawValue = SealAppearance.system.rawValue
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -76,6 +77,17 @@ struct SettingsRootView: View {
                         .disabled(isChecking)
                     }
 
+                    settingsSection("外观") {
+                        Picker("外观", selection: $appearanceRawValue) {
+                            ForEach(SealAppearance.allCases) { appearance in
+                                Text(appearance.title).tag(appearance.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .padding(.vertical, 10)
+                        .accessibilityLabel("外观模式")
+                    }
+
                     settingsSection("自动化") {
                         Toggle(isOn: $autoRenew) {
                             settingsRow(
@@ -95,15 +107,23 @@ struct SettingsRootView: View {
                         )) {
                             settingsRow(
                                 title: "到期前 24 小时提醒",
-                                value: viewModel.notificationsEnabled ? "开" : "关",
+                                value: viewModel.notificationStatus.summary,
                                 icon: "bell",
                                 showsChevron: false,
                                 iconColor: Color.sealWarning
                             )
                         }
                         .tint(.sealAccent)
+                        if viewModel.notificationsEnabled {
+                            Text(notificationDetailText)
+                                .font(.caption)
+                                .foregroundStyle(Color.sealTextSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, 8)
+                                .padding(.top, 2)
+                        }
                     }
-                    Text("开启后，每天第一次打开 Seal 会自动续签全部 App。")
+                    Text("开启后，Seal 会在打开时检查续签；每天第一次打开时执行自动续签。需要配对有效、LocalDevVPN 可用，并且 Apple ID、Team、Serial 均可用于签名。iOS 后台不会无条件自动续签。")
                         .font(.system(size: 13, weight: .regular))
                         .foregroundStyle(Color.sealTextSecondary)
                         .padding(.horizontal, 8)
@@ -123,7 +143,7 @@ struct SettingsRootView: View {
                     settingsSection("存储与维护") {
                         NavigationLink(value: SettingsRoute.storage) {
                             settingsRow(
-                                title: "IPA 与签名缓存",
+                                title: "IPA 与本机存储",
                                 value: viewModel.storageUsage.total.formattedByteCount,
                                 icon: "internaldrive",
                                 showsChevron: true
@@ -143,7 +163,7 @@ struct SettingsRootView: View {
                         sectionDivider
                         Toggle(isOn: $deleteIPAAfterInstall) {
                             settingsRow(
-                                title: "安装完成后清理签名缓存",
+                                title: "安装完成后清理临时缓存",
                                 value: deleteIPAAfterInstall ? "开" : "关",
                                 icon: "trash",
                                 showsChevron: false,
@@ -222,10 +242,7 @@ struct SettingsRootView: View {
                     dismissButton: .default(Text(failure.recovery))
                 )
             }
-            .task { await viewModel.load(force: true) }
-            .onAppear {
-                Task { await viewModel.load(force: true) }
-            }
+            .task { await viewModel.load() }
             .refreshable {
                 await viewModel.load(force: true)
                 await viewModel.refreshStorageUsage()
@@ -283,6 +300,7 @@ struct SettingsRootView: View {
             Spacer(minLength: 12)
             if let statusColor {
                 Circle().fill(statusColor).frame(width: 9, height: 9)
+                    .accessibilityHidden(true)
             }
             if let value {
                 Text(value)
@@ -297,6 +315,7 @@ struct SettingsRootView: View {
         }
         .frame(minHeight: 56)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 
     private var sectionDivider: some View {
@@ -313,7 +332,7 @@ struct SettingsRootView: View {
     }
 
     private var verifiedAccounts: [AppleAccountRecord] {
-        viewModel.accounts.filter { $0.status == .verified }
+        viewModel.accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
     }
 
     private var accountSummary: String {
@@ -417,6 +436,20 @@ struct SettingsRootView: View {
         case .warning: return .sealWarning
         case .error: return .sealDanger
         }
+    }
+
+    private var notificationDetailText: String {
+        let status = viewModel.notificationStatus
+        if let failure = status.schedulingFailure, failure.isEmpty == false {
+            return "调度失败：\(failure)"
+        }
+        guard status.authorization == .allowed else {
+            return status.authorization == .denied ? "系统通知权限已关闭。" : "系统尚未授予通知权限。"
+        }
+        guard let nextDate = status.nextReminderDate else {
+            return "已安排 \(status.scheduledCount) 条提醒，当前没有下一条到期提醒。"
+        }
+        return "已安排 \(status.scheduledCount) 条提醒；下一条：\(SealSettingsDateFormatter.string(from: nextDate))"
     }
 
     private var oneClickCheckSummary: String {

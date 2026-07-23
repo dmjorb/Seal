@@ -9,9 +9,11 @@ final class ImportFlowUITests: XCTestCase {
         XCTAssertFalse(element("imported-app-row", in: app).exists)
     }
 
-    func testImportedStateAppearsInPendingList() {
+    func testNormalColdLaunchDefaultsToInstalledAndPendingItemRemainsAvailable() {
         let app = launch(with: "--ui-testing-imported")
         XCTAssertTrue(app.buttons["待签名，1 个"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["已安装应用"].waitForExistence(timeout: 10))
+        app.buttons["待签名，1 个"].tap()
         XCTAssertTrue(element("imported-app-row", in: app).waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["import-toolbar-button"].exists)
     }
@@ -26,6 +28,48 @@ final class ImportFlowUITests: XCTestCase {
         assertSummary("import-summary-account", value: "签名时选择", in: app)
         XCTAssertTrue(app.buttons["导入"].exists)
         XCTAssertTrue(app.buttons["取消"].exists)
+    }
+
+    func testThreeStageNavigationCanBeTappedWithoutChangingHeaderAlignment() {
+        let app = launch(with: "--ui-testing-empty")
+        XCTAssertTrue(app.buttons["待签名，0 个"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["已签名，0 个"].exists)
+        XCTAssertTrue(app.buttons["已安装，0 个"].exists)
+
+        app.buttons["已签名，0 个"].tap()
+        XCTAssertTrue(app.staticTexts["已签名应用"].waitForExistence(timeout: 5))
+        app.buttons["已安装，0 个"].tap()
+        XCTAssertTrue(app.staticTexts["已安装应用"].waitForExistence(timeout: 5))
+        app.buttons["待签名，0 个"].tap()
+        XCTAssertTrue(app.staticTexts["待签名应用"].waitForExistence(timeout: 5))
+    }
+
+
+    func testThreeStageNavigationSupportsHorizontalSwipe() {
+        let app = launch(with: "--ui-testing-empty")
+        XCTAssertTrue(app.staticTexts["待签名应用"].waitForExistence(timeout: 10))
+        let pager = element("apps-stage-pager", in: app)
+        XCTAssertTrue(pager.waitForExistence(timeout: 10))
+        pager.swipeLeft()
+        XCTAssertTrue(app.staticTexts["已签名应用"].waitForExistence(timeout: 5))
+        pager.swipeLeft()
+        XCTAssertTrue(app.staticTexts["已安装应用"].waitForExistence(timeout: 5))
+        pager.swipeRight()
+        XCTAssertTrue(app.staticTexts["已签名应用"].waitForExistence(timeout: 5))
+    }
+
+    func testLargeDynamicTypeKeepsPrimaryNavigationReachable() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "--ui-testing-empty",
+            "-UIPreferredContentSizeCategoryName",
+            "UICTContentSizeCategoryAccessibilityExtraExtraExtraLarge"
+        ]
+        app.launch()
+        XCTAssertTrue(app.buttons["待签名，0 个"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["已签名，0 个"].exists)
+        XCTAssertTrue(app.buttons["已安装，0 个"].exists)
+        XCTAssertTrue(app.buttons["import-toolbar-button"].exists)
     }
 
     private func launch(with argument: String) -> XCUIApplication {

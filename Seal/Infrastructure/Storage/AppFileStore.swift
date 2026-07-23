@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import ZIPFoundation
 
@@ -88,13 +89,31 @@ actor AppFileStore {
             try protect(stagedURL)
             return StagedIPA(id: id, url: stagedURL)
         } catch is CancellationError {
-            try? fileManager.removeItem(at: directory)
+            do {
+                try Self.removeIfExists(directory, fileManager: fileManager)
+            } catch {
+                throw Self.temporaryCleanupFailure(
+                    reason: "导入已取消，但暂存目录无法删除。"
+                )
+            }
             throw CancellationError()
         } catch let failure as ImportFailure {
-            try? fileManager.removeItem(at: directory)
+            do {
+                try Self.removeIfExists(directory, fileManager: fileManager)
+            } catch {
+                throw Self.temporaryCleanupFailure(
+                    reason: "导入失败，且暂存目录无法删除。"
+                )
+            }
             throw failure
         } catch {
-            try? fileManager.removeItem(at: directory)
+            do {
+                try Self.removeIfExists(directory, fileManager: fileManager)
+            } catch {
+                throw Self.temporaryCleanupFailure(
+                    reason: "文件复制失败，且暂存目录无法删除。"
+                )
+            }
             throw ImportFailure(
                 title: "无法导入 IPA",
                 reason: "文件复制失败",
@@ -151,7 +170,7 @@ actor AppFileStore {
         } catch {
             throw ImportFailure(
                 title: "无法导入构建产物",
-                reason: "来源：文件系统\n原始返回：文件无法读取",
+                reason: "本机文件无法读取。",
                 recovery: "重新选择",
                 code: "SEAL-IPA-208"
             )
@@ -191,83 +210,252 @@ actor AppFileStore {
         }
     }
 
-    func commit(
+    func prepareImportCommit(
         staged: StagedIPA,
         appID: UUID,
-        iconData: Data?
-    ) throws -> StoredAppFiles {
+        iconData: Data?,
+        preferredIconData: Data? = nil
+    ) throws -> PreparedAppFileTransaction {
         try Task.checkCancellation()
         guard isDescendant(staged.url, of: temporaryDirectory) else {
             throw invalidStagedFileFailure()
         }
 
         let fileManager = FileManager.default
-        let appsRoot = documentsDirectory.appending(
-            path: "Apps",
-            directoryHint: .isDirectory
-        )
+        let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
+        try fileManager.createDirectory(at: appsRoot, withIntermediateDirectories: true)
+
+        let transactionID = UUID()
         let appDirectoryName = appID.uuidString
-        let finalDirectory = appsRoot.appending(
-            path: appDirectoryName,
-            directoryHint: .isDirectory
+        let pendingDirectoryName = ".\(appDirectoryName).pending-\(transactionID.uuidString)"
+        let backupDirectoryName = ".\(appDirectoryName).backup-\(transactionID.uuidString)"
+        let finalDirectory = appsRoot.appending(path: appDirectoryName, directoryHint: .isDirectory)
+        let pendingDirectory = appsRoot.appending(path: pendingDirectoryName, directoryHint: .isDirectory)
+
+        let files = StoredAppFiles(
+            ipaRelativePath: "Apps/\(appDirectoryName)/Original.ipa",
+            iconRelativePath: iconData == nil ? nil : "Apps/\(appDirectoryName)/Icon.png",
+            preferredIconRelativePath: preferredIconData == nil ? nil : "Apps/\(appDirectoryName)/PreferredIcon.png"
         )
-        let pendingDirectory = appsRoot.appending(
-            path: ".\(appDirectoryName).pending-\(UUID().uuidString)",
-            directoryHint: .isDirectory
-        )
-        let backupDirectory = appsRoot.appending(
-            path: ".\(appDirectoryName).backup-\(UUID().uuidString)",
-            directoryHint: .isDirectory
+        var transaction = PreparedAppFileTransaction(
+            id: transactionID,
+            appID: appID,
+            pendingDirectoryName: pendingDirectoryName,
+            backupDirectoryName: backupDirectoryName,
+            hadExistingFinalDirectory: fileManager.fileExists(atPath: finalDirectory.path),
+            files: StoredAppFilesCodable(files),
+            phase: .prepared
         )
 
         do {
-            try fileManager.createDirectory(
-                at: pendingDirectory,
-                withIntermediateDirectories: true
-            )
+            try fileManager.createDirectory(at: pendingDirectory, withIntermediateDirectories: true)
             let pendingIPA = pendingDirectory.appending(path: "Original.ipa")
             try fileManager.copyItem(at: staged.url, to: pendingIPA)
             try protect(pendingIPA)
+            guard (try? pendingIPA.resourceValues(forKeys: [.fileSizeKey]).fileSize).map({ $0 > 0 }) == true else {
+                throw invalidStagedFileFailure()
+            }
 
             if let iconData {
                 let iconURL = pendingDirectory.appending(path: "Icon.png")
                 try iconData.write(to: iconURL, options: .atomic)
                 try protect(iconURL)
             }
+            if let preferredIconData {
+                let preferredIconURL = pendingDirectory.appending(path: "PreferredIcon.png")
+                try preferredIconData.write(to: preferredIconURL, options: .atomic)
+                try protect(preferredIconURL)
+            }
             try protect(pendingDirectory)
+            try writeImportTransactionJournal(transaction)
+            return transaction
+        } catch is CancellationError {
+            do {
+                try Self.removeIfExists(pendingDirectory, fileManager: fileManager)
+                try removeImportTransactionJournal(id: transaction.id)
+            } catch {
+                throw Self.importRecoveryFailure(
+                    reason: "导入准备已取消，但临时事务文件无法完整清理。"
+                )
+            }
+            throw CancellationError()
+        } catch {
+            do {
+                try Self.removeIfExists(pendingDirectory, fileManager: fileManager)
+                try removeImportTransactionJournal(id: transaction.id)
+            } catch {
+                throw Self.importRecoveryFailure(
+                    reason: "导入准备失败，且临时事务文件无法完整清理。"
+                )
+            }
+            throw ImportFailure(
+                title: "无法保存 IPA",
+                reason: "本地存储准备失败",
+                recovery: "检查存储空间后重试",
+                code: "SEAL-IPA-203"
+            )
+        }
+    }
 
-            if fileManager.fileExists(atPath: finalDirectory.path) {
+    func markDatabaseCommitPending(
+        _ transaction: PreparedAppFileTransaction
+    ) throws -> PreparedAppFileTransaction {
+        var updated = transaction
+        updated.phase = .databaseCommitPending
+        try writeImportTransactionJournal(updated)
+        return updated
+    }
+
+    func finalizeImportCommit(
+        _ transaction: PreparedAppFileTransaction
+    ) throws -> PreparedAppFileTransaction {
+        let fileManager = FileManager.default
+        let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
+        let finalDirectory = appsRoot.appending(path: transaction.appID.uuidString, directoryHint: .isDirectory)
+        let pendingDirectory = appsRoot.appending(path: transaction.pendingDirectoryName, directoryHint: .isDirectory)
+        let backupDirectory = appsRoot.appending(path: transaction.backupDirectoryName, directoryHint: .isDirectory)
+
+        // Idempotent finalize: useful when recovering after the app was terminated.
+        if fileManager.fileExists(atPath: pendingDirectory.path) == false,
+           fileManager.fileExists(atPath: finalDirectory.path) {
+            var updated = transaction
+            updated.phase = .finalized
+            try writeImportTransactionJournal(updated)
+            return updated
+        }
+
+        guard fileManager.fileExists(atPath: pendingDirectory.path) else {
+            throw ImportFailure(
+                title: "无法保存 IPA",
+                reason: "待提交文件缺失",
+                recovery: "重新导入 IPA",
+                code: "SEAL-IPA-211"
+            )
+        }
+
+        do {
+            if fileManager.fileExists(atPath: finalDirectory.path),
+               fileManager.fileExists(atPath: backupDirectory.path) == false {
                 try fileManager.moveItem(at: finalDirectory, to: backupDirectory)
             }
             do {
                 try fileManager.moveItem(at: pendingDirectory, to: finalDirectory)
             } catch {
                 if fileManager.fileExists(atPath: backupDirectory.path) {
-                    try? fileManager.moveItem(at: backupDirectory, to: finalDirectory)
+                    guard fileManager.fileExists(atPath: finalDirectory.path) == false else {
+                        throw Self.importRecoveryFailure(
+                            reason: "新旧应用目录同时存在，无法安全恢复旧文件。"
+                        )
+                    }
+                    do {
+                        try fileManager.moveItem(at: backupDirectory, to: finalDirectory)
+                    } catch {
+                        throw Self.importRecoveryFailure(
+                            reason: "文件提交失败，并且旧应用目录恢复失败。"
+                        )
+                    }
                 }
                 throw error
             }
-
-            try? fileManager.removeItem(at: backupDirectory)
-        } catch is CancellationError {
-            try? fileManager.removeItem(at: pendingDirectory)
-            throw CancellationError()
+            var updated = transaction
+            updated.phase = .finalized
+            try writeImportTransactionJournal(updated)
+            return updated
+        } catch let failure as ImportFailure {
+            throw failure
         } catch {
-            try? fileManager.removeItem(at: pendingDirectory)
             throw ImportFailure(
                 title: "无法保存 IPA",
-                reason: "本地存储失败",
+                reason: "文件提交失败",
                 recovery: "检查存储空间后重试",
-                code: "SEAL-IPA-203"
+                code: "SEAL-IPA-212"
             )
         }
+    }
 
-        return StoredAppFiles(
-            ipaRelativePath: "Apps/\(appDirectoryName)/Original.ipa",
-            iconRelativePath: iconData == nil
-                ? nil
-                : "Apps/\(appDirectoryName)/Icon.png"
+    func completeImportCommit(_ transaction: PreparedAppFileTransaction) throws {
+        let fileManager = FileManager.default
+        let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
+        let backupDirectory = appsRoot.appending(path: transaction.backupDirectoryName, directoryHint: .isDirectory)
+        let pendingDirectory = appsRoot.appending(path: transaction.pendingDirectoryName, directoryHint: .isDirectory)
+        if fileManager.fileExists(atPath: backupDirectory.path) {
+            try fileManager.removeItem(at: backupDirectory)
+        }
+        if fileManager.fileExists(atPath: pendingDirectory.path) {
+            try fileManager.removeItem(at: pendingDirectory)
+        }
+        try removeImportTransactionJournal(id: transaction.id)
+    }
+
+    func abortImportCommit(_ transaction: PreparedAppFileTransaction) throws {
+        let fileManager = FileManager.default
+        let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
+        let finalDirectory = appsRoot.appending(path: transaction.appID.uuidString, directoryHint: .isDirectory)
+        let backupDirectory = appsRoot.appending(path: transaction.backupDirectoryName, directoryHint: .isDirectory)
+        let pendingDirectory = appsRoot.appending(path: transaction.pendingDirectoryName, directoryHint: .isDirectory)
+
+        if transaction.phase == .finalized {
+            if fileManager.fileExists(atPath: backupDirectory.path) {
+                if fileManager.fileExists(atPath: finalDirectory.path) {
+                    try fileManager.removeItem(at: finalDirectory)
+                }
+                try fileManager.moveItem(at: backupDirectory, to: finalDirectory)
+            } else if transaction.hadExistingFinalDirectory == false,
+                      fileManager.fileExists(atPath: finalDirectory.path) {
+                try fileManager.removeItem(at: finalDirectory)
+            }
+        }
+        if fileManager.fileExists(atPath: pendingDirectory.path) {
+            try fileManager.removeItem(at: pendingDirectory)
+        }
+        try removeImportTransactionJournal(id: transaction.id)
+    }
+
+    func pendingImportTransactions() throws -> [PreparedAppFileTransaction] {
+        let directory = importTransactionsDirectory
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        let journalURLs = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
         )
+        .filter { $0.pathExtension == "json" }
+        let transactions = try journalURLs.map { url in
+            do {
+                let data = try Data(contentsOf: url)
+                return try JSONDecoder().decode(PreparedAppFileTransaction.self, from: data)
+            } catch {
+                throw Self.importRecoveryFailure(
+                    reason: "本地导入事务记录无法读取，已保留原文件以便诊断。"
+                )
+            }
+        }
+        return transactions.sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+
+    /// Compatibility helper used by existing tests/callers that do not have a
+    /// database transaction. New imports use prepare -> DB -> finalize -> complete.
+    func commit(
+        staged: StagedIPA,
+        appID: UUID,
+        iconData: Data?
+    ) throws -> StoredAppFiles {
+        var transaction = try prepareImportCommit(staged: staged, appID: appID, iconData: iconData)
+        do {
+            transaction = try finalizeImportCommit(transaction)
+            try completeImportCommit(transaction)
+            return transaction.storedFiles
+        } catch {
+            let originalError = error
+            do {
+                try abortImportCommit(transaction)
+            } catch {
+                throw Self.importRecoveryFailure(
+                    reason: "文件提交失败，并且回滚未能完成。"
+                )
+            }
+            throw originalError
+        }
     }
 
     func cancel(_ staged: StagedIPA) throws {
@@ -332,6 +520,13 @@ actor AppFileStore {
         }
     }
 
+    func storedSignedIPA(appID: UUID) throws -> (relativePath: String, url: URL)? {
+        let relativePath = "Apps/\(appID.uuidString)/Signed.ipa"
+        let url = try fileURL(relativePath: relativePath)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return (relativePath, url)
+    }
+
     func signingWorkspace(appID: UUID) throws -> URL {
         let url = temporaryDirectory
             .deletingLastPathComponent()
@@ -344,14 +539,92 @@ actor AppFileStore {
 
     func storeSignedIPA(sourceURL: URL, appID: UUID) throws -> String {
         let relativePath = "Apps/\(appID.uuidString)/Signed.ipa"
-        let destination = documentsDirectory.appending(path: relativePath)
+        let destination = documentsDirectory.appending(path: relativePath).standardizedFileURL
+        let directory = destination.deletingLastPathComponent()
         guard isDescendant(destination, of: documentsDirectory) else {
             throw invalidStagedFileFailure()
         }
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.copyItem(at: sourceURL, to: destination)
+
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let pending = directory.appending(path: ".Signed.pending-\(UUID().uuidString).ipa")
+        let backup = directory.appending(path: ".Signed.backup-\(UUID().uuidString).ipa")
+        do {
+            try fileManager.copyItem(at: sourceURL, to: pending)
+            try protect(pending)
+            guard (try? pending.resourceValues(forKeys: [.fileSizeKey]).fileSize).map({ $0 > 0 }) == true else {
+                throw invalidStagedFileFailure()
+            }
+            if fileManager.fileExists(atPath: destination.path) {
+                try fileManager.moveItem(at: destination, to: backup)
+            }
+            do {
+                try fileManager.moveItem(at: pending, to: destination)
+            } catch {
+                if fileManager.fileExists(atPath: backup.path) {
+                    try? fileManager.moveItem(at: backup, to: destination)
+                }
+                throw error
+            }
+            try? fileManager.removeItem(at: backup)
+            return relativePath
+        } catch {
+            try? fileManager.removeItem(at: pending)
+            if fileManager.fileExists(atPath: destination.path) == false,
+               fileManager.fileExists(atPath: backup.path) {
+                try? fileManager.moveItem(at: backup, to: destination)
+            }
+            throw error
+        }
+    }
+
+    func sha256(relativePath: String) throws -> String {
+        let url = try fileURL(relativePath: relativePath)
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    func validateSHA256(relativePath: String, expected: String) throws -> Bool {
+        try sha256(relativePath: relativePath).caseInsensitiveCompare(expected) == .orderedSame
+    }
+
+    func storePreferredIcon(data: Data, appID: UUID) throws -> String {
+        let relativePath = "Apps/\(appID.uuidString)/PreferredIcon.png"
+        let destination = try fileURL(relativePath: relativePath)
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: destination, options: .atomic)
         try protect(destination)
         return relativePath
+    }
+
+    func removePreferredIcon(appID: UUID) throws {
+        let relativePath = "Apps/\(appID.uuidString)/PreferredIcon.png"
+        let url = try fileURL(relativePath: relativePath)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
+    func makeSignedIPAExportCopy(
+        relativePath: String,
+        fileName: String,
+        appID: UUID
+    ) throws -> URL {
+        let source = try fileURL(relativePath: relativePath)
+        let exports = exportDirectory(appID: appID)
+        try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
+        let safeName = fileName.isEmpty ? "Seal-Signed.ipa" : fileName
+        let destination = exports.appending(path: safeName)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.copyItem(at: source, to: destination)
+        try protect(destination)
+        return destination
     }
 
     func removeSignedIPA(appID: UUID) throws {
@@ -366,6 +639,17 @@ actor AppFileStore {
         if FileManager.default.fileExists(atPath: signedIPA.path) {
             try FileManager.default.removeItem(at: signedIPA)
         }
+        let exports = exportDirectory(appID: appID)
+        if FileManager.default.fileExists(atPath: exports.path) {
+            try FileManager.default.removeItem(at: exports)
+        }
+    }
+
+    private func exportDirectory(appID: UUID) -> URL {
+        temporaryDirectory
+            .deletingLastPathComponent()
+            .appending(path: "Exports", directoryHint: .isDirectory)
+            .appending(path: appID.uuidString, directoryHint: .isDirectory)
     }
 
     func clearOrphanedAppFiles(validAppIDs: Set<UUID>) throws {
@@ -381,12 +665,12 @@ actor AppFileStore {
         for directory in directories {
             let name = directory.lastPathComponent
             if name.hasPrefix(".") {
-                try? fileManager.removeItem(at: directory)
+                try fileManager.removeItem(at: directory)
                 continue
             }
             guard let appID = UUID(uuidString: name) else { continue }
             if validAppIDs.contains(appID) == false {
-                try? fileManager.removeItem(at: directory)
+                try fileManager.removeItem(at: directory)
             }
         }
     }
@@ -435,23 +719,30 @@ actor AppFileStore {
         return usage
     }
 
-    func clearSignedIPAs() throws {
-        let appsRoot = documentsDirectory.appending(path: "Apps", directoryHint: .isDirectory)
-        guard FileManager.default.fileExists(atPath: appsRoot.path) else { return }
-        let directories = try FileManager.default.contentsOfDirectory(
-            at: appsRoot,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        )
-        for directory in directories {
-            guard UUID(uuidString: directory.lastPathComponent) != nil else { continue }
-            let signedIPA = directory.appending(path: "Signed.ipa")
-            if FileManager.default.fileExists(atPath: signedIPA.path) {
-                try FileManager.default.removeItem(at: signedIPA)
-            }
-        }
+
+    private var importTransactionsDirectory: URL {
+        documentsDirectory.appending(path: "Transactions", directoryHint: .isDirectory)
     }
 
+    private func importTransactionJournalURL(id: UUID) -> URL {
+        importTransactionsDirectory.appending(path: "import-\(id.uuidString).json")
+    }
+
+    private func writeImportTransactionJournal(_ transaction: PreparedAppFileTransaction) throws {
+        let directory = importTransactionsDirectory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(transaction)
+        let url = importTransactionJournalURL(id: transaction.id)
+        try data.write(to: url, options: .atomic)
+        try protect(url)
+    }
+
+    private func removeImportTransactionJournal(id: UUID) throws {
+        let url = importTransactionJournalURL(id: id)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
 
     private func directorySize(at url: URL) throws -> Int64 {
         var total: Int64 = 0
@@ -487,6 +778,30 @@ actor AppFileStore {
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let candidatePath = candidate.standardizedFileURL.path
         return candidatePath.hasPrefix("/\(parentPath)/")
+    }
+
+    private static func removeIfExists(_ url: URL, fileManager: FileManager) throws {
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
+    }
+
+    private static func temporaryCleanupFailure(reason: String) -> ImportFailure {
+        ImportFailure(
+            title: "临时文件清理失败",
+            reason: reason,
+            recovery: "稍后在存储维护中重试清理",
+            code: "SEAL-STORAGE-IMPORT-002"
+        )
+    }
+
+    private static func importRecoveryFailure(reason: String) -> ImportFailure {
+        ImportFailure(
+            title: "导入事务恢复未完成",
+            reason: reason,
+            recovery: "重新打开 Seal 后重试；如持续失败请复制诊断日志",
+            code: "SEAL-IPA-RECOVERY-003"
+        )
     }
 
     private func invalidStagedFileFailure() -> ImportFailure {

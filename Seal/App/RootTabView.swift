@@ -7,6 +7,7 @@ struct RootTabView: View {
     @State private var selection: AppSection = .apps
     @State private var launchCheckInProgress = false
     @AppStorage("behavior.autoRenew") private var autoRenew = false
+    @AppStorage("appearance.mode") private var appearanceRawValue = SealAppearance.system.rawValue
 
     var body: some View {
         TabView(selection: $selection) {
@@ -29,7 +30,7 @@ struct RootTabView: View {
             .tag(AppSection.settings)
         }
         .tint(.sealAccent)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(SealAppearance(rawValue: appearanceRawValue)?.colorScheme)
         .sealScreenBackground()
         .task {
             await LocalNetworkPermissionPrimer.requestIfNeeded()

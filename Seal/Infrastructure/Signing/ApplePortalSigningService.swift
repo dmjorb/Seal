@@ -23,24 +23,30 @@ enum ApplePortalAppIDResolver {
 
 enum ApplePortalSigningFailure {
     static func make(stage: ApplePortalSigningStage, error: Error) -> ImportFailure {
+        if AppleServiceFailurePolicy.isNetworkError(error) {
+            return AppleServiceFailurePolicy.networkFailure(
+                title: "Apple 服务暂时不可用",
+                reason: "当前网络或 Apple 服务不可用。Apple ID 状态不会被修改。"
+            )
+        }
         let nsError = error as NSError
         let diagnostic = "[\(nsError.domain) \(nsError.code)] \(nsError.localizedDescription)"
         let details: (title: String, reason: String, recovery: String, code: String)
         switch stage {
         case .account:
-            details = ("Apple 账户失败", "Apple 返回：\(diagnostic)", "重新验证 Apple ID", "SEAL-AUTH-105")
+            details = ("Apple 账户操作失败", "Apple 返回了无法分类的账户错误。账号状态未改变。", "重试", "SEAL-VERIFY-500")
         case .device:
-            details = ("设备注册失败", "Apple 返回：\(diagnostic)", "检查设备配对", "SEAL-DEVICE-203")
+            details = ("设备注册失败", "Apple 返回：设备注册未完成", "检查设备配对", "SEAL-DEVICE-203")
         case .certificate:
             return certificateFailure(error: error, diagnostic: diagnostic)
         case .appID:
             return appIDFailure(error: error, diagnostic: diagnostic)
         case .provisioningProfile:
-            details = ("描述文件失败", "Apple 返回：\(diagnostic)", "重试", "SEAL-PROFILE-303")
+            details = ("描述文件失败", "Apple 返回：描述文件生成失败", "重试", "SEAL-PROFILE-303")
         case .signing:
-            details = ("签名失败", "签名工具返回：\(diagnostic)", "重试", "SEAL-SIGN-501")
+            details = ("签名失败", "签名工具未能完成当前 IPA。", "重试", "SEAL-SIGN-501")
         case .packaging:
-            details = ("打包失败", "打包工具返回：\(diagnostic)", "重试", "SEAL-SIGN-502")
+            details = ("打包失败", "签名后的 IPA 无法完成打包。", "重试", "SEAL-SIGN-502")
         }
         return ImportFailure(
             title: details.title,
@@ -61,7 +67,7 @@ enum ApplePortalSigningFailure {
             || normalized.contains("bundle identifier unavailable") {
             return ImportFailure(
                 title: "Bundle ID 不可用",
-                reason: "Apple 返回：\(diagnostic)",
+                reason: "Apple 返回：Bundle ID 不可用",
                 recovery: "更换 Bundle ID",
                 code: "SEAL-APPID-302"
             )
@@ -69,7 +75,7 @@ enum ApplePortalSigningFailure {
 
         return ImportFailure(
             title: "App ID 操作失败",
-            reason: "Apple 返回：\(diagnostic)",
+            reason: "Apple 返回：App ID 操作失败",
             recovery: "重试",
             code: "SEAL-APPID-303"
         )
@@ -98,7 +104,7 @@ enum ApplePortalSigningFailure {
             || nsError.domain == NSURLErrorDomain {
             return ImportFailure(
                 title: "证书服务连接失败",
-                reason: "Apple 返回：\(diagnostic)",
+                reason: "Apple 返回：证书服务暂时不可用",
                 recovery: "重试",
                 code: "SEAL-CERT-205"
             )
@@ -110,15 +116,15 @@ enum ApplePortalSigningFailure {
             || normalized.contains("forbidden") {
             return ImportFailure(
                 title: "账号需要重新验证",
-                reason: "Apple 返回：\(diagnostic)",
+                reason: "Apple 返回：认证状态无效",
                 recovery: "重新验证 Apple ID",
-                code: "SEAL-AUTH-104"
+                code: "SEAL-AUTH-102"
             )
         }
 
         return ImportFailure(
             title: "证书准备失败",
-            reason: "Apple 返回：\(diagnostic)",
+            reason: "Apple 返回：证书准备失败",
             recovery: "重试",
             code: "SEAL-CERT-203"
         )
@@ -146,6 +152,7 @@ actor ApplePortalSigningService {
         originalIPAURL: URL,
         workspaceRoot: URL,
         targetBundleIdentifier: String? = nil,
+        preferredIconData: Data? = nil,
         selectedCertificateSerialNumber: String? = nil,
         allowDroppingExtensions: Bool,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
@@ -167,6 +174,7 @@ actor ApplePortalSigningService {
                 originalIPAURL: originalIPAURL,
                 workspaceRoot: workspaceRoot,
                 targetBundleIdentifier: targetBundleIdentifier,
+                preferredIconData: preferredIconData,
                 selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
                 persistSigningMaterial: persistence,
@@ -183,6 +191,7 @@ actor ApplePortalSigningService {
                     originalIPAURL: originalIPAURL,
                     workspaceRoot: workspaceRoot,
                     targetBundleIdentifier: targetBundleIdentifier,
+                    preferredIconData: preferredIconData,
                     selectedCertificateSerialNumber: selectedCertificateSerialNumber,
                     allowDroppingExtensions: allowDroppingExtensions,
                     persistSigningMaterial: persistence,
@@ -194,7 +203,7 @@ actor ApplePortalSigningService {
                 let nsError = error as NSError
                 throw Self.failure(
                     title: "签名失败",
-                    reason: "Apple 返回：\(nsError.domain) \(nsError.code)；\(nsError.localizedDescription)",
+                    reason: "Apple 返回：请求未能完成",
                     recovery: "重试",
                     code: "SEAL-SIGN-501"
                 )
@@ -210,6 +219,7 @@ actor ApplePortalSigningService {
         originalIPAURL: URL,
         workspaceRoot: URL,
         targetBundleIdentifier: String?,
+        preferredIconData: Data?,
         selectedCertificateSerialNumber: String?,
         allowDroppingExtensions: Bool,
         persistSigningMaterial: @escaping @Sendable (AccountSecret, String) async throws -> Void,
@@ -232,10 +242,10 @@ actor ApplePortalSigningService {
             try Task.checkCancellation()
             guard let team = teams.first(where: { $0.identifier == account.teamID }) else {
                 throw Self.failure(
-                    title: "账号需要验证",
-                    reason: "开发团队不可用",
-                    recovery: "重新验证账号",
-                    code: "SEAL-AUTH-104"
+                    title: "Team 不匹配",
+                    reason: "当前 Apple ID 中没有找到已保存的 Team。Seal 不会静默切换到其他 Team。",
+                    recovery: "选择 Team",
+                    code: "SEAL-AUTH-112"
                 )
             }
             let deviceName = await MainActor.run { UIDevice.current.name }
@@ -267,7 +277,9 @@ actor ApplePortalSigningService {
                 workspaceRoot: workspaceRoot,
                 originalBundleID: app.originalBundleIdentifier,
                 teamID: team.identifier,
-                targetMainBundleID: targetBundleIdentifier
+                targetMainBundleID: targetBundleIdentifier,
+                preferredDisplayName: app.preferredDisplayName,
+                preferredIconData: preferredIconData
             )
             try Task.checkCancellation()
 
@@ -276,7 +288,7 @@ actor ApplePortalSigningService {
             let profilePreparation = try await provisioningProfiles(
                 mappings: prepared.bundleIDMappings,
                 mappedMainBundleID: prepared.mappedMainBundleID,
-                appName: app.name,
+                appName: app.displayName,
                 appURL: prepared.appURL,
                 workspace: prepared,
                 allowDroppingExtensions: allowDroppingExtensions,
@@ -356,14 +368,14 @@ actor ApplePortalSigningService {
                 title: "账号需要验证",
                 reason: "Apple ID 会话已失效",
                 recovery: "重新验证账号",
-                code: "SEAL-AUTH-104"
+                code: "SEAL-AUTH-102"
             )
         } catch ALTAppleAPIError.authenticationHandshakeFailed {
             throw Self.failure(
                 title: "账号需要验证",
                 reason: "Apple ID 会话已失效",
                 recovery: "重新验证账号",
-                code: "SEAL-AUTH-104"
+                code: "SEAL-AUTH-102"
             )
         } catch let failure as ImportFailure {
             throw failure
@@ -500,7 +512,7 @@ actor ApplePortalSigningService {
             }) else {
                 throw Self.failure(
                     title: "证书创建结果不一致",
-                    reason: "Apple 已返回新证书，但重新同步后找不到 Serial：\(requested.serialNumber)。",
+                    reason: "Apple 已返回新证书，但重新同步后无法确认该证书。",
                     recovery: "重新同步证书",
                     code: "SEAL-CERT-209"
                 )

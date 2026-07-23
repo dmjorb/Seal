@@ -45,6 +45,13 @@ struct AddAccountView: View {
             }
         }
         .sealScreenBackground()
+        .sheet(item: Binding(
+            get: { viewModel.pendingTeamSelection },
+            set: { if $0 == nil { viewModel.cancelTeamSelection() } }
+        )) { _ in
+            TeamSelectionView(viewModel: viewModel)
+                .presentationDetents([.medium, .large])
+        }
     }
 
     private var credentialsContent: some View {
@@ -117,7 +124,10 @@ struct AddAccountView: View {
             let added = await viewModel.addAccount(email: email, password: password, replacing: replacingAccount)
             authenticationTask = nil
             if added, Task.isCancelled == false { dismiss() }
-            else if Task.isCancelled == false, let failure = viewModel.alertFailure {
+            else if Task.isCancelled == false, viewModel.pendingTeamSelection != nil {
+                verificationCode = ""
+                verificationBroker.cancel()
+            } else if Task.isCancelled == false, let failure = viewModel.alertFailure {
                 verificationCode = ""
                 verificationBroker.cancel()
                 viewModel.alertFailure = nil

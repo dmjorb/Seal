@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import ZIPFoundation
 
 struct SigningWorkspace: Sendable {
@@ -18,7 +19,9 @@ struct SigningWorkspace: Sendable {
         workspaceRoot: URL,
         originalBundleID: String,
         teamID: String,
-        targetMainBundleID: String? = nil
+        targetMainBundleID: String? = nil,
+        preferredDisplayName: String? = nil,
+        preferredIconData: Data? = nil
     ) throws -> PreparedSigningWorkspace {
         let archive = try Archive(url: ipaURL, accessMode: .read)
         let entries = Array(archive)
@@ -60,6 +63,12 @@ struct SigningWorkspace: Sendable {
             )
             var mappings = [originalBundleID: mappedMain]
             try updateBundleIdentifier(at: appURL, to: mappedMain)
+            if let preferredDisplayName = normalizedDisplayName(preferredDisplayName) {
+                try updateDisplayName(at: appURL, to: preferredDisplayName)
+            }
+            if let preferredIconData {
+                try replacePrimaryAppIcon(at: appURL, imageData: preferredIconData)
+            }
 
             let extensionURLs = try appExtensionURLs(in: appURL)
             for extensionURL in extensionURLs {
@@ -67,6 +76,7 @@ struct SigningWorkspace: Sendable {
                 let original = try bundleIdentifier(at: extensionURL)
                 let mapped = bundleIDMapper.extensionBundleID(
                     original: original,
+                    originalMainBundleID: originalBundleID,
                     mappedMainBundleID: mappedMain
                 )
                 try updateBundleIdentifier(at: extensionURL, to: mapped)
@@ -228,6 +238,136 @@ struct SigningWorkspace: Sendable {
         info["CFBundleIdentifier"] = identifier
         info.removeValue(forKey: "DTXcode")
         info.removeValue(forKey: "DTXcodeBuild")
+        let updated = try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: format,
+            options: 0
+        )
+        try updated.write(to: infoURL, options: .atomic)
+    }
+
+    private func normalizedDisplayName(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func updateDisplayName(at appURL: URL, to displayName: String) throws {
+        try mutateInfoPlist(at: appURL.appending(path: "Info.plist")) { info in
+            info["CFBundleDisplayName"] = displayName
+            info["CFBundleName"] = displayName
+        }
+
+        let localizationURLs = (try? FileManager.default.contentsOfDirectory(
+            at: appURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for localizationURL in localizationURLs where localizationURL.pathExtension == "lproj" {
+            let stringsURL = localizationURL.appending(path: "InfoPlist.strings")
+            guard FileManager.default.fileExists(atPath: stringsURL.path) else { continue }
+            do {
+                let data = try Data(contentsOf: stringsURL)
+                var format = PropertyListSerialization.PropertyListFormat.openStep
+                let value = try PropertyListSerialization.propertyList(
+                    from: data,
+                    options: [.mutableContainersAndLeaves],
+                    format: &format
+                )
+                guard var strings = value as? [String: Any] else { continue }
+                strings["CFBundleDisplayName"] = displayName
+                strings["CFBundleName"] = displayName
+                let updated = try PropertyListSerialization.data(
+                    fromPropertyList: strings,
+                    format: format,
+                    options: 0
+                )
+                try updated.write(to: stringsURL, options: .atomic)
+            } catch {
+                // A malformed optional localization must not corrupt the IPA.
+                continue
+            }
+        }
+    }
+
+    private func replacePrimaryAppIcon(at appURL: URL, imageData: Data) throws {
+        guard let image = UIImage(data: imageData), image.size.width > 0, image.size.height > 0 else {
+            throw Self.signingFailure(reason: "自定义 App 图标无法读取", code: "SEAL-CUSTOM-004")
+        }
+
+        let variants: [(name: String, pixels: CGFloat)] = [
+            ("SealCustomIcon60@2x.png", 120),
+            ("SealCustomIcon60@3x.png", 180),
+            ("SealCustomIcon76@2x.png", 152),
+            ("SealCustomIcon83.5@2x.png", 167)
+        ]
+        for variant in variants {
+            let rendered = try renderedSquareIcon(image, pixels: variant.pixels)
+            try rendered.write(to: appURL.appending(path: variant.name), options: .atomic)
+        }
+
+        try mutateInfoPlist(at: appURL.appending(path: "Info.plist")) { info in
+            var phoneIcons = (info["CFBundleIcons"] as? [String: Any]) ?? [:]
+            var phonePrimary = (phoneIcons["CFBundlePrimaryIcon"] as? [String: Any]) ?? [:]
+            phonePrimary["CFBundleIconFiles"] = ["SealCustomIcon60"]
+            phonePrimary.removeValue(forKey: "CFBundleIconName")
+            phoneIcons["CFBundlePrimaryIcon"] = phonePrimary
+            info["CFBundleIcons"] = phoneIcons
+
+            var padIcons = (info["CFBundleIcons~ipad"] as? [String: Any]) ?? [:]
+            var padPrimary = (padIcons["CFBundlePrimaryIcon"] as? [String: Any]) ?? [:]
+            padPrimary["CFBundleIconFiles"] = ["SealCustomIcon76", "SealCustomIcon83.5"]
+            padPrimary.removeValue(forKey: "CFBundleIconName")
+            padIcons["CFBundlePrimaryIcon"] = padPrimary
+            info["CFBundleIcons~ipad"] = padIcons
+            info["CFBundleIconFiles"] = ["SealCustomIcon60", "SealCustomIcon76"]
+            info.removeValue(forKey: "CFBundleIconName")
+        }
+    }
+
+    private func renderedSquareIcon(_ image: UIImage, pixels: CGFloat) throws -> Data {
+        guard let source = image.cgImage else {
+            throw Self.signingFailure(reason: "自定义 App 图标无法处理", code: "SEAL-CUSTOM-004")
+        }
+        let side = min(source.width, source.height)
+        let sourceRect = CGRect(
+            x: (source.width - side) / 2,
+            y: (source.height - side) / 2,
+            width: side,
+            height: side
+        )
+        guard let cgImage = source.cropping(to: sourceRect) else {
+            throw Self.signingFailure(reason: "自定义 App 图标无法处理", code: "SEAL-CUSTOM-004")
+        }
+        let cropped = UIImage(cgImage: cgImage, scale: 1, orientation: image.imageOrientation)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: pixels, height: pixels), format: format)
+        let output = renderer.image { _ in
+            cropped.draw(in: CGRect(x: 0, y: 0, width: pixels, height: pixels))
+        }
+        guard let png = output.pngData() else {
+            throw Self.signingFailure(reason: "自定义 App 图标无法编码", code: "SEAL-CUSTOM-004")
+        }
+        return png
+    }
+
+    private func mutateInfoPlist(
+        at infoURL: URL,
+        mutation: (inout [String: Any]) -> Void
+    ) throws {
+        let data = try Data(contentsOf: infoURL)
+        var format = PropertyListSerialization.PropertyListFormat.binary
+        let value = try PropertyListSerialization.propertyList(
+            from: data,
+            options: [.mutableContainersAndLeaves],
+            format: &format
+        )
+        guard var info = value as? [String: Any] else {
+            throw Self.signingFailure(reason: "应用信息无效", code: "SEAL-SIGN-404")
+        }
+        mutation(&info)
         let updated = try PropertyListSerialization.data(
             fromPropertyList: info,
             format: format,

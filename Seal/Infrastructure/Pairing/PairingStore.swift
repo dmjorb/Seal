@@ -235,7 +235,7 @@ actor PairingStore {
     ) -> ImportFailure {
         ImportFailure(
             title: "配对文件属于其他设备",
-            reason: "文件 UDID：\(fileUDID)\n当前连接设备 UDID：\(connectedUDID)",
+            reason: "配对文件与当前连接设备不匹配。",
             recovery: "导入当前 iPhone 的配对文件",
             code: "SEAL-PAIR-206"
         )

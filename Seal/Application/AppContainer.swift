@@ -53,6 +53,7 @@ struct AppContainer {
                     directoryHint: .isDirectory
                 )
             )
+            let operationCoordinator = OperationCoordinator()
             let workflow = ImportWorkflow(
                 parser: IPAParserService(),
                 fileStore: fileStore,
@@ -103,6 +104,7 @@ struct AppContainer {
                     appStore: appStore,
                     fileStore: fileStore,
                     accountRepository: accountRepository,
+                    keychain: keychain,
                     signingCoordinator: signingCoordinator,
                     installChannel: installChannel,
                     renewalCoordinator: renewalCoordinator,
@@ -112,7 +114,8 @@ struct AppContainer {
                     signingHistoryStore: signingHistoryStore,
                     notificationScheduler: notificationScheduler,
                     notificationPreferences: notificationPreferences,
-                    signingPreferenceStore: signingPreferenceStore
+                    signingPreferenceStore: signingPreferenceStore,
+                    operationCoordinator: operationCoordinator
                 ),
                 settingsViewModel: SettingsViewModel(
                     accountRepository: accountRepository,
@@ -129,7 +132,8 @@ struct AppContainer {
                     notificationScheduler: notificationScheduler,
                     notificationPreferences: notificationPreferences,
                     anisetteEnvironment: anisetteProvider,
-                    signingPreferenceStore: signingPreferenceStore
+                    signingPreferenceStore: signingPreferenceStore,
+                    operationCoordinator: operationCoordinator
                 )
             )
         } catch {

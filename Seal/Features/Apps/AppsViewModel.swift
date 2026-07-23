@@ -36,11 +36,13 @@ final class AppsViewModel: ObservableObject {
     @Published var requestedSettingsRoute: SettingsRoute?
     @Published private(set) var signingChannelStatus: SigningChannelStatus = .idle
     @Published private(set) var autoRenewInProgress = false
+    @Published private(set) var installingSignedAppID: UUID?
 
     private let workflow: ImportWorkflow?
     private let appStore: (any AppStore)?
     private let fileStore: AppFileStore?
     private let accountRepository: (any AccountRepository)?
+    private let keychain: KeychainVault?
     private let signingCoordinator: SigningCoordinator?
     private let installChannel: (any InstallChannel)?
     private let renewalCoordinator: RenewalCoordinator?
@@ -51,6 +53,7 @@ final class AppsViewModel: ObservableObject {
     private let notificationScheduler: ExpiryNotificationScheduler?
     private let notificationPreferences: NotificationPreferences?
     private let signingPreferenceStore: SigningPreferenceStore?
+    private let operationCoordinator: OperationCoordinator?
     private let dailyAutoRenewStateStore: DailyAutoRenewStateStore
     private var signingTask: Task<Void, Never>?
     private var batchRefreshTask: Task<Void, Never>?
@@ -58,9 +61,15 @@ final class AppsViewModel: ObservableObject {
     private var pendingVPNAction: PendingVPNAction?
     private var currentAutoRenewDayKey: String?
     private var hasLoaded = false
+    private var loadGeneration = 0
 
     private enum PendingVPNAction {
-        case signing(AppRecord, accountID: UUID?)
+        case signing(
+            AppRecord,
+            accountID: UUID?,
+            requestedBundleIdentifier: String?,
+            completionMode: SigningCompletionMode
+        )
         case batch(
             resume: Bool,
             dueLeadHours: Int?,
@@ -75,6 +84,7 @@ final class AppsViewModel: ObservableObject {
         appStore: any AppStore,
         fileStore: AppFileStore,
         accountRepository: any AccountRepository,
+        keychain: KeychainVault,
         signingCoordinator: SigningCoordinator,
         installChannel: any InstallChannel,
         renewalCoordinator: RenewalCoordinator,
@@ -84,12 +94,14 @@ final class AppsViewModel: ObservableObject {
         signingHistoryStore: SigningHistoryStore,
         notificationScheduler: ExpiryNotificationScheduler,
         notificationPreferences: NotificationPreferences,
-        signingPreferenceStore: SigningPreferenceStore
+        signingPreferenceStore: SigningPreferenceStore,
+        operationCoordinator: OperationCoordinator? = nil
     ) {
         self.workflow = workflow
         self.appStore = appStore
         self.fileStore = fileStore
         self.accountRepository = accountRepository
+        self.keychain = keychain
         self.signingCoordinator = signingCoordinator
         self.installChannel = installChannel
         self.renewalCoordinator = renewalCoordinator
@@ -100,6 +112,7 @@ final class AppsViewModel: ObservableObject {
         self.notificationScheduler = notificationScheduler
         self.notificationPreferences = notificationPreferences
         self.signingPreferenceStore = signingPreferenceStore
+        self.operationCoordinator = operationCoordinator
         self.dailyAutoRenewStateStore = DailyAutoRenewStateStore()
         apps = []
         accounts = []
@@ -113,6 +126,7 @@ final class AppsViewModel: ObservableObject {
         appStore = nil
         fileStore = nil
         accountRepository = nil
+        keychain = nil
         signingCoordinator = nil
         installChannel = nil
         renewalCoordinator = nil
@@ -123,6 +137,7 @@ final class AppsViewModel: ObservableObject {
         notificationScheduler = nil
         notificationPreferences = nil
         signingPreferenceStore = nil
+        operationCoordinator = nil
         dailyAutoRenewStateStore = DailyAutoRenewStateStore()
         apps = []
         accounts = []
@@ -137,6 +152,7 @@ final class AppsViewModel: ObservableObject {
         appStore = nil
         fileStore = nil
         accountRepository = nil
+        keychain = nil
         signingCoordinator = nil
         installChannel = nil
         renewalCoordinator = nil
@@ -147,6 +163,7 @@ final class AppsViewModel: ObservableObject {
         notificationScheduler = nil
         notificationPreferences = nil
         signingPreferenceStore = nil
+        operationCoordinator = nil
         dailyAutoRenewStateStore = DailyAutoRenewStateStore()
         self.apps = apps
         accounts = []
@@ -159,10 +176,27 @@ final class AppsViewModel: ObservableObject {
 
     var unsignedApps: [AppRecord] {
         apps
-            .filter { $0.state != .installed && $0.isSeal == false }
+            .filter {
+                $0.isSeal == false
+                    && $0.state != .installed
+                    && $0.state != .signed
+                    && $0.hasSignedArtifact == false
+            }
             .sorted { lhs, rhs in
                 if lhs.importedAt != rhs.importedAt { return lhs.importedAt > rhs.importedAt }
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+
+    var signedApps: [AppRecord] {
+        apps
+            .filter { $0.isSeal == false && $0.state != .installed && ($0.state == .signed || $0.hasSignedArtifact) }
+            .sorted { lhs, rhs in
+                let left = lhs.lastSignedAt ?? lhs.importedAt
+                let right = rhs.lastSignedAt ?? rhs.importedAt
+                if left != right { return left > right }
+                return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
             }
     }
 
@@ -189,12 +223,16 @@ final class AppsViewModel: ObservableObject {
         pendingVPNAction != nil
     }
 
-    var verifiedAccounts: [AppleAccountRecord] {
-        accounts.filter { $0.status == .verified }
+    var availableAccounts: [AppleAccountRecord] {
+        accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
     }
 
+    // Kept for existing call sites; locally available accounts remain selectable
+    // while offline even if a fresh Portal validation has not run yet.
+    var verifiedAccounts: [AppleAccountRecord] { availableAccounts }
+
     func selectActiveAccount(id: UUID) async {
-        guard verifiedAccounts.contains(where: { $0.id == id }) else { return }
+        guard availableAccounts.contains(where: { $0.id == id }) else { return }
         activeAccountID = id
         await signingPreferenceStore?.setActiveAccountID(id)
     }
@@ -202,12 +240,15 @@ final class AppsViewModel: ObservableObject {
     func refreshActiveAccountSelection() async {
         guard let signingPreferenceStore else { return }
         let storedID = await signingPreferenceStore.activeAccountID()
-        if let storedID,
-           verifiedAccounts.contains(where: { $0.id == storedID }) {
+        if let storedID, accounts.contains(where: { $0.id == storedID }) {
             activeAccountID = storedID
+        } else if let current = activeAccountID, accounts.contains(where: { $0.id == current }) {
+            // Keep the in-memory choice. Do not clear it because connectivity changed.
         } else if activeAccountID == nil {
-            activeAccountID = verifiedAccounts.first?.id
-            await signingPreferenceStore.setActiveAccountID(activeAccountID)
+            activeAccountID = availableAccounts.first?.id
+            if storedID == nil {
+                await signingPreferenceStore.setActiveAccountID(activeAccountID)
+            }
         }
     }
 
@@ -254,49 +295,108 @@ final class AppsViewModel: ObservableObject {
 
     func load(force: Bool = false) async {
         guard force || hasLoaded == false, let appStore else { return }
+        loadGeneration &+= 1
+        let generation = loadGeneration
+
         do {
-            try? await selfAppRegistrar?.ensureRegistered()
-            try? await appRecordRecovery?.restoreMissingRecords()
+            if let selfAppRegistrar {
+                do {
+                    try await selfAppRegistrar.ensureRegistered()
+                } catch {
+                    try? await logStore?.append(
+                        category: .system,
+                        level: .error,
+                        message: "Seal 自身记录同步失败",
+                        code: "SEAL-SELF-REG-001"
+                    )
+                }
+            }
+            guard generation == loadGeneration else { return }
+            try await appRecordRecovery?.restoreMissingRecords()
+            guard generation == loadGeneration else { return }
+
             let fetched = try await appStore.fetchAll()
-            let fetchedAccounts = try await accountRepository?.fetchAll() ?? []
+            guard generation == loadGeneration else { return }
+            var fetchedAccounts = try await accountRepository?.fetchAll() ?? []
+            guard generation == loadGeneration else { return }
+            fetchedAccounts = try await repairLegacyAccountStatuses(fetchedAccounts)
+            guard generation == loadGeneration else { return }
+
             var loadedIcons: [UUID: Data] = [:]
             if let fileStore {
                 for app in fetched {
-                    guard let path = app.iconRelativePath,
+                    guard generation == loadGeneration else { return }
+                    guard let path = app.displayIconRelativePath,
                           let data = try? await fileStore.read(relativePath: path) else {
                         continue
                     }
                     loadedIcons[app.id] = data
                 }
             }
+            guard generation == loadGeneration else { return }
+
             await seedSigningHistoryIfNeeded(apps: fetched, accounts: fetchedAccounts)
-            apps = fetched
-            accounts = fetchedAccounts
+            guard generation == loadGeneration else { return }
+
             let preferredAccountID: UUID?
             if let signingPreferenceStore {
                 preferredAccountID = await signingPreferenceStore.activeAccountID()
             } else {
                 preferredAccountID = nil
             }
-            let verifiedAccounts = fetchedAccounts.filter { $0.status == .verified }
-            if let preferredAccountID,
-               verifiedAccounts.contains(where: { $0.id == preferredAccountID }) {
-                activeAccountID = preferredAccountID
+            guard generation == loadGeneration else { return }
+
+            let selectableAccounts = fetchedAccounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
+            let resolvedAccountID: UUID?
+            if let preferredAccountID, fetchedAccounts.contains(where: { $0.id == preferredAccountID }) {
+                resolvedAccountID = preferredAccountID
+            } else if let current = activeAccountID, fetchedAccounts.contains(where: { $0.id == current }) {
+                resolvedAccountID = current
             } else {
-                activeAccountID = verifiedAccounts.first?.id
-                await signingPreferenceStore?.setActiveAccountID(activeAccountID)
+                resolvedAccountID = selectableAccounts.first?.id
+                if preferredAccountID == nil {
+                    await signingPreferenceStore?.setActiveAccountID(resolvedAccountID)
+                    guard generation == loadGeneration else { return }
+                }
             }
-            iconData = loadedIcons
-            pendingRefreshCount = (try? await renewalCoordinator?.pendingCount()) ?? 0
+
+            let refreshedPendingCount: Int
+            if let renewalCoordinator {
+                refreshedPendingCount = try await renewalCoordinator.pendingCount()
+            } else {
+                refreshedPendingCount = 0
+            }
+            guard generation == loadGeneration else { return }
+
             if let notificationScheduler, let notificationPreferences {
-                try? await notificationScheduler.reschedule(
-                    apps: fetched,
-                    enabled: notificationPreferences.isEnabled,
-                    leadHours: notificationPreferences.leadHours
-                )
+                do {
+                    try await notificationScheduler.reschedule(
+                        apps: fetched,
+                        enabled: notificationPreferences.isEnabled,
+                        leadHours: notificationPreferences.leadHours
+                    )
+                } catch {
+                    try? await logStore?.append(
+                        category: .system,
+                        level: .error,
+                        message: "通知调度失败",
+                        code: "SEAL-NOTIFY-002"
+                    )
+                }
+                guard generation == loadGeneration else { return }
             }
+
+            apps = fetched
+            accounts = fetchedAccounts
+            activeAccountID = resolvedAccountID
+            iconData = loadedIcons
+            pendingRefreshCount = refreshedPendingCount
             hasLoaded = true
+        } catch let failure as ImportFailure {
+            guard generation == loadGeneration else { return }
+            alertFailure = failure
         } catch {
+            guard generation == loadGeneration else { return }
             alertFailure = Self.dataFailure
         }
     }
@@ -309,7 +409,6 @@ final class AppsViewModel: ObservableObject {
     }
 
     func startDailyAutoRenewIfNeeded(now: Date = Date()) async {
-        await performLightweightLaunchCheck()
         guard autoRenewInProgress == false,
               signingTask == nil,
               batchRefreshTask == nil,
@@ -331,7 +430,17 @@ final class AppsViewModel: ObservableObject {
         accounts: [AppleAccountRecord]
     ) async {
         guard let signingHistoryStore else { return }
-        let existingRecords = (try? await signingHistoryStore.records()) ?? []
+        let existingRecords: [SigningHistoryRecord]
+        do {
+            existingRecords = try await signingHistoryStore.records()
+        } catch {
+            surfaceHistoryWarning(
+                title: "签名历史读取失败",
+                reason: "无法读取历史记录，已跳过本次历史回填。",
+                code: "SEAL-HISTORY-004"
+            )
+            return
+        }
         let existingKeys = Set(
             existingRecords.compactMap { record -> String? in
                 guard let appID = record.appID else { return nil }
@@ -356,7 +465,16 @@ final class AppsViewModel: ObservableObject {
                 finalSignedBundleIdentifier: app.mappedBundleIdentifier,
                 lifecycleStatus: .active
             )
-            try? await signingHistoryStore.append(record)
+            do {
+                try await signingHistoryStore.append(record)
+            } catch {
+                surfaceHistoryWarning(
+                    title: "签名历史回填未完成",
+                    reason: "部分已有应用的历史记录无法保存。",
+                    code: "SEAL-HISTORY-004"
+                )
+                return
+            }
         }
     }
 
@@ -367,6 +485,8 @@ final class AppsViewModel: ObservableObject {
 
     func importSelectedFile(_ url: URL) async {
         guard let workflow, phase == .idle else { return }
+        guard let operationLease = acquireOperation(.importing) else { return }
+        defer { releaseOperation(operationLease) }
         let hasSecurityScope = url.startAccessingSecurityScopedResource()
         defer {
             if hasSecurityScope {
@@ -384,6 +504,8 @@ final class AppsViewModel: ObservableObject {
 
     func confirmImport() async {
         guard let workflow else { return }
+        guard let operationLease = acquireOperation(.importing) else { return }
+        defer { releaseOperation(operationLease) }
         guard let draft = sheetDraft else {
             sheetFailure = ImportFailure(
                 title: "无法导入 IPA",
@@ -405,6 +527,8 @@ final class AppsViewModel: ObservableObject {
 
     func retryImport() async {
         guard let workflow, sheetDraft != nil else { return }
+        guard let operationLease = acquireOperation(.importing) else { return }
+        defer { releaseOperation(operationLease) }
         phase = .committing
         sheetFailure = nil
         await workflow.retry()
@@ -412,13 +536,18 @@ final class AppsViewModel: ObservableObject {
     }
 
     func cancelImport() async {
+        var cleanupFailure: ImportFailure?
         if let workflow {
             await workflow.cancel()
+            cleanupFailure = await workflow.takeCleanupFailure()
         }
         sheetDraft = nil
         sheetFailure = nil
         isImportSheetPresented = false
         phase = .idle
+        if let cleanupFailure {
+            alertFailure = cleanupFailure
+        }
     }
 
     func handleImporterFailure(_ error: Error) {
@@ -451,7 +580,7 @@ final class AppsViewModel: ObservableObject {
     func requestSigning(for app: AppRecord) async {
         guard signingTask == nil, batchRefreshTask == nil else { return }
         await load(force: true)
-        let availableAccounts = accounts.filter { $0.status == .verified }
+        let availableAccounts = accounts.filter { AccountAvailabilityPolicy.isSelectable($0) }
         guard availableAccounts.isEmpty == false else {
             alertFailure = ImportFailure(
                 title: "缺少签名账号",
@@ -474,7 +603,12 @@ final class AppsViewModel: ObservableObject {
         }
 
         guard await refreshSigningChannel() else {
-            presentVPNRecovery(for: .signing(app, accountID: boundAccountID))
+            presentVPNRecovery(for: .signing(
+                app,
+                accountID: boundAccountID,
+                requestedBundleIdentifier: nil,
+                completionMode: .signAndInstall
+            ))
             return
         }
 
@@ -484,7 +618,8 @@ final class AppsViewModel: ObservableObject {
     func beginSigning(
         for app: AppRecord,
         accountID: UUID,
-        requestedBundleIdentifier: String? = nil
+        requestedBundleIdentifier: String? = nil,
+        completionMode: SigningCompletionMode = .signAndInstall
     ) async {
         guard signingTask == nil, batchRefreshTask == nil else { return }
         await load(force: true)
@@ -501,7 +636,12 @@ final class AppsViewModel: ObservableObject {
             return
         }
         guard await refreshSigningChannel() else {
-            presentVPNRecovery(for: .signing(app, accountID: resolvedAccountID))
+            presentVPNRecovery(for: .signing(
+                app,
+                accountID: resolvedAccountID,
+                requestedBundleIdentifier: isRenewal ? nil : requestedBundleIdentifier,
+                completionMode: completionMode
+            ))
             return
         }
         if isRenewal == false {
@@ -510,7 +650,8 @@ final class AppsViewModel: ObservableObject {
         startSigning(
             app: app,
             account: account,
-            requestedBundleIdentifier: isRenewal ? nil : requestedBundleIdentifier
+            requestedBundleIdentifier: isRenewal ? nil : requestedBundleIdentifier,
+            completionMode: completionMode
         )
     }
 
@@ -552,9 +693,19 @@ final class AppsViewModel: ObservableObject {
         }
         pendingVPNAction = nil
         switch action {
-        case .signing(let app, let accountID):
+        case .signing(
+            let app,
+            let accountID,
+            let requestedBundleIdentifier,
+            let completionMode
+        ):
             if let accountID {
-                await beginSigning(for: app, accountID: accountID)
+                await beginSigning(
+                    for: app,
+                    accountID: accountID,
+                    requestedBundleIdentifier: requestedBundleIdentifier,
+                    completionMode: completionMode
+                )
             } else {
                 await requestSigning(for: app)
             }
@@ -592,7 +743,7 @@ final class AppsViewModel: ObservableObject {
 
     func chooseAnotherAccount(for app: AppRecord) async {
         await load(force: true)
-        guard accounts.contains(where: { $0.status == .verified }) else {
+        guard accounts.contains(where: { AccountAvailabilityPolicy.isSelectable($0) }) else {
             alertFailure = ImportFailure(
                 title: "缺少签名账号",
                 reason: accounts.isEmpty ? "尚未添加 Apple ID" : "Apple ID 需要重新验证",
@@ -634,18 +785,272 @@ final class AppsViewModel: ObservableObject {
         selectedOperationApp = nil
     }
 
+    @discardableResult
+    func updatePreferredBundleIdentifier(for app: AppRecord, value: String) async -> Bool {
+        guard let appStore, BundleIDPolicy.isEditable(app) else { return false }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let validationError = BundleIDPolicy.validationError(for: trimmed) {
+            alertFailure = ImportFailure(
+                title: "Bundle ID 无效",
+                reason: validationError,
+                recovery: "修改 Bundle ID",
+                code: "SEAL-BUNDLE-001"
+            )
+            return false
+        }
+        do {
+            var updated = app
+            updated.preferredBundleIdentifier = trimmed
+            try await appStore.save(updated)
+            await load(force: true)
+            return true
+        } catch {
+            alertFailure = ImportFailure(
+                title: "无法保存 Bundle ID",
+                reason: "本地草稿保存失败。",
+                recovery: "重试",
+                code: "SEAL-BUNDLE-003"
+            )
+            return false
+        }
+    }
+
+    @discardableResult
+    func updatePreferredDisplayName(for app: AppRecord, name: String) async -> Bool {
+        guard let appStore, app.state != .installed, app.hasSignedArtifact == false else { return false }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else {
+            alertFailure = ImportFailure(
+                title: "App 名称无效",
+                reason: "App 名称不能为空。",
+                recovery: "修改 App 名称",
+                code: "SEAL-CUSTOM-001"
+            )
+            return false
+        }
+        do {
+            var updated = app
+            updated.preferredDisplayName = trimmed == app.name ? nil : trimmed
+            try await appStore.save(updated)
+            await load(force: true)
+            return true
+        } catch {
+            alertFailure = ImportFailure(
+                title: "无法保存 App 名称",
+                reason: "本地记录保存失败。",
+                recovery: "重试",
+                code: "SEAL-CUSTOM-002"
+            )
+            return false
+        }
+    }
+
+    @discardableResult
+    func updatePreferredIcon(for app: AppRecord, data: Data?) async -> Bool {
+        guard let appStore, let fileStore, app.state != .installed, app.hasSignedArtifact == false else { return false }
+        do {
+            var updated = app
+            if let data {
+                updated.preferredIconRelativePath = try await fileStore.storePreferredIcon(data: data, appID: app.id)
+            } else {
+                try await fileStore.removePreferredIcon(appID: app.id)
+                updated.preferredIconRelativePath = nil
+            }
+            try await appStore.save(updated)
+            if let path = updated.displayIconRelativePath,
+               let data = try? await fileStore.read(relativePath: path) {
+                iconData[updated.id] = data
+            } else {
+                iconData[updated.id] = nil
+            }
+            await load(force: true)
+            return true
+        } catch {
+            alertFailure = ImportFailure(
+                title: "无法保存 App 图标",
+                reason: "图标文件无法写入本机存储。",
+                recovery: "重试",
+                code: "SEAL-CUSTOM-003"
+            )
+            return false
+        }
+    }
+
+    func retryInstallationForCurrentSigningSession() async {
+        guard let session = signingSession else { return }
+        await load(force: true)
+        guard let signedApp = apps.first(where: { $0.id == session.app.id && $0.hasSignedArtifact }) else {
+            alertFailure = ImportFailure(
+                title: "无法重新安装",
+                reason: "本机没有可用的已签名 IPA。",
+                recovery: "重新签名",
+                code: "SEAL-INSTALL-715"
+            )
+            return
+        }
+        let succeeded = await installSignedArtifact(signedApp)
+        guard succeeded, let installed = apps.first(where: { $0.id == signedApp.id }) else { return }
+        var updatedSession = session
+        updatedSession.status = .succeeded(installed)
+        signingSession = updatedSession
+    }
+
+    func installSignedArtifact(_ app: AppRecord) async -> Bool {
+        guard signingTask == nil, batchRefreshTask == nil, installingSignedAppID == nil,
+              let signingCoordinator else { return false }
+        guard let operationLease = acquireOperation(.installing, appID: app.id) else { return false }
+        defer { releaseOperation(operationLease) }
+        installingSignedAppID = app.id
+        defer { installingSignedAppID = nil }
+        do {
+            let installed = try await signingCoordinator.installSignedArtifact(
+                appID: app.id,
+                progress: { _ in }
+            )
+            try? await logStore?.append(
+                category: .signing,
+                message: "已使用本机保存的已签名 IPA 重新安装：\(installed.displayName)"
+            )
+            await cleanTemporaryFilesIfNeeded(appID: app.id)
+            await load(force: true)
+            return true
+        } catch let failure as ImportFailure {
+            alertFailure = failure
+            try? await logStore?.append(
+                category: .signing,
+                level: .error,
+                message: "已签名 IPA 安装失败：\(failure.reason)",
+                code: failure.code
+            )
+        } catch {
+            alertFailure = Self.unexpectedSigningFailure(error)
+        }
+        await load(force: true)
+        return false
+    }
+
+    func exportSignedIPAURL(for app: AppRecord) async -> URL? {
+        guard let fileStore,
+              let path = app.signedIPARelativePath,
+              let expectedSHA256 = app.signedIPASHA256 else {
+            alertFailure = ImportFailure(
+                title: "无法导出",
+                reason: "已签名 IPA 记录不完整。",
+                recovery: "重新签名",
+                code: "SEAL-EXPORT-001"
+            )
+            return nil
+        }
+        do {
+            guard try await fileStore.validateSHA256(relativePath: path, expected: expectedSHA256) else {
+                throw ImportFailure(
+                    title: "无法导出",
+                    reason: "已签名 IPA 的 SHA-256 校验不一致。",
+                    recovery: "重新签名",
+                    code: "SEAL-EXPORT-002"
+                )
+            }
+            return try await fileStore.makeSignedIPAExportCopy(
+                relativePath: path,
+                fileName: Self.exportFileName(for: app),
+                appID: app.id
+            )
+        } catch let failure as ImportFailure {
+            alertFailure = failure
+        } catch {
+            alertFailure = ImportFailure(
+                title: "无法导出",
+                reason: "本机无法读取已签名 IPA。",
+                recovery: "重试",
+                code: "SEAL-EXPORT-003"
+            )
+        }
+        return nil
+    }
+
+    func deleteSignedArtifact(_ app: AppRecord) async -> Bool {
+        guard let fileStore, let appStore else { return false }
+        guard let operationLease = acquireOperation(.maintainingStorage, appID: app.id) else { return false }
+        defer { releaseOperation(operationLease) }
+        do {
+            try await fileStore.removeSignedIPA(appID: app.id)
+            var updated = app
+            updated.signedIPARelativePath = nil
+            updated.signedIPASHA256 = nil
+            updated.signedArtifactStatus = nil
+            updated.lastInstallFailureCode = nil
+            updated.lastInstallFailureReason = nil
+            if updated.state != .installed {
+                updated.state = .imported
+                // Keep the historical Apple ID / Team / Serial and extension handling
+                // preference. Deleting a Signed.ipa removes the artifact, not the user's
+                // signing identity or successful customization memory.
+                updated.signedDeviceIdentifier = nil
+                updated.provisioningProfileUUID = nil
+                updated.provisioningProfileName = nil
+                updated.provisioningProfileCreationDate = nil
+                updated.provisioningProfileExpirationDate = nil
+                updated.signingTargets = []
+                if let mapped = updated.mappedBundleIdentifier {
+                    updated.preferredBundleIdentifier = mapped
+                }
+                updated.mappedBundleIdentifier = nil
+            }
+            try await appStore.save(updated)
+            await load(force: true)
+            return true
+        } catch {
+            alertFailure = ImportFailure(
+                title: "无法删除已签名 IPA",
+                reason: "本机签名文件没有被删除。",
+                recovery: "重试",
+                code: "SEAL-STORAGE-004"
+            )
+            return false
+        }
+    }
+
     func delete(_ app: AppRecord) async -> Bool {
         guard let appStore, let fileStore else { return false }
+        guard let operationLease = acquireOperation(.maintainingStorage, appID: app.id) else { return false }
+        defer { releaseOperation(operationLease) }
         do {
             try await appStore.delete(id: app.id)
             do {
                 try await fileStore.removeApp(appID: app.id)
-                try? await signingHistoryStore?.markDeleted(appID: app.id)
             } catch {
-                try? await appStore.save(app)
+                do {
+                    try await appStore.save(app)
+                } catch {
+                    alertFailure = ImportFailure(
+                        title: "应用删除未完整回滚",
+                        reason: "本地文件删除失败，并且应用数据库记录未能恢复。",
+                        recovery: "重新打开 Seal 让启动恢复检查本地文件",
+                        code: "SEAL-APP-ROLLBACK-001"
+                    )
+                    await load(force: true)
+                    return false
+                }
                 throw error
             }
+
+            var historyFailure: ImportFailure?
+            if let signingHistoryStore {
+                do {
+                    try await signingHistoryStore.markDeleted(appID: app.id)
+                } catch {
+                    historyFailure = ImportFailure(
+                        title: "应用已删除",
+                        reason: "应用和本地文件已删除，但签名历史状态未能同步。",
+                        recovery: "稍后重新打开 Seal 检查日志",
+                        code: "SEAL-HISTORY-003"
+                    )
+                }
+            }
             await load(force: true)
+            if let historyFailure {
+                alertFailure = historyFailure
+            }
             return true
         } catch {
             alertFailure = ImportFailure(
@@ -765,6 +1170,14 @@ final class AppsViewModel: ObservableObject {
         dailyAutoRenewDayKey: String? = nil
     ) async {
         guard let renewalCoordinator else { return }
+        guard let operationLease = acquireOperation(.renewing) else {
+            batchRefreshSession = nil
+            autoRenewInProgress = false
+            currentAutoRenewDayKey = nil
+            batchRefreshTask = nil
+            return
+        }
+        defer { releaseOperation(operationLease) }
         do {
             let progress: @Sendable (BatchRefreshEvent) async -> Void = { [weak self] event in
                 await self?.consumeBatchEvent(event)
@@ -897,6 +1310,7 @@ final class AppsViewModel: ObservableObject {
         app: AppRecord,
         account: AppleAccountRecord,
         requestedBundleIdentifier: String? = nil,
+        completionMode: SigningCompletionMode = .signAndInstall,
         allowDroppingExtensions: Bool = false
     ) {
         guard signingTask == nil,
@@ -904,12 +1318,15 @@ final class AppsViewModel: ObservableObject {
               signingCoordinator != nil else { return }
         let selectedCertificateSerialNumber = try? SigningCertificateSelectionPolicy
             .resolvedSerialNumber(for: app, account: account)
+        let resolvedAllowDroppingExtensions = allowDroppingExtensions
+            || app.removedExtensionBundleIdentifiers.isEmpty == false
         signingSession = SigningSession(
             app: app,
             account: account,
             requestedBundleIdentifier: requestedBundleIdentifier,
             selectedCertificateSerialNumber: selectedCertificateSerialNumber,
-            allowsDroppingExtensions: allowDroppingExtensions,
+            completionMode: completionMode,
+            allowsDroppingExtensions: resolvedAllowDroppingExtensions,
             status: .running(.waitingForChannel)
         )
         let targetBundleIdentifier = (try? BundleIDPolicy.targetBundleIdentifier(
@@ -928,7 +1345,8 @@ final class AppsViewModel: ObservableObject {
                 account: account,
                 requestedBundleIdentifier: requestedBundleIdentifier,
                 selectedCertificateSerialNumber: selectedCertificateSerialNumber,
-                allowDroppingExtensions: allowDroppingExtensions
+                completionMode: completionMode,
+                allowDroppingExtensions: resolvedAllowDroppingExtensions
             )
         }
     }
@@ -948,6 +1366,7 @@ final class AppsViewModel: ObservableObject {
                 account: session.account,
                 requestedBundleIdentifier: session.requestedBundleIdentifier,
                 selectedCertificateSerialNumber: session.selectedCertificateSerialNumber,
+                completionMode: session.completionMode,
                 allowDroppingExtensions: allowDroppingExtensions
             )
         }
@@ -958,40 +1377,64 @@ final class AppsViewModel: ObservableObject {
         account: AppleAccountRecord,
         requestedBundleIdentifier: String? = nil,
         selectedCertificateSerialNumber: String?,
+        completionMode: SigningCompletionMode,
         allowDroppingExtensions: Bool
     ) async {
         guard let signingCoordinator else { return }
+        let operationKind: OperationCoordinator.Kind = (app.state == .installed || app.isSeal) ? .renewing : .signing
+        guard let operationLease = acquireOperation(operationKind, appID: app.id) else {
+            signingTask = nil
+            return
+        }
+        defer { releaseOperation(operationLease) }
         let attemptedBundleIdentifier = try? BundleIDPolicy.targetBundleIdentifier(
             for: app,
             requestedBundleIdentifier: requestedBundleIdentifier
         )
         do {
-            let installed = try await signingCoordinator.signAndInstall(
-                appID: app.id,
-                accountID: account.id,
-                requestedBundleIdentifier: requestedBundleIdentifier,
-                selectedCertificateSerialNumber: selectedCertificateSerialNumber,
-                allowDroppingExtensions: allowDroppingExtensions,
-                progress: { [weak self] stage in
-                    await self?.updateSigningStage(stage)
-                }
-            )
+            let completed: AppRecord
+            switch completionMode {
+            case .signAndInstall:
+                completed = try await signingCoordinator.signAndInstall(
+                    appID: app.id,
+                    accountID: account.id,
+                    requestedBundleIdentifier: requestedBundleIdentifier,
+                    selectedCertificateSerialNumber: selectedCertificateSerialNumber,
+                    allowDroppingExtensions: allowDroppingExtensions,
+                    progress: { [weak self] stage in
+                        await self?.updateSigningStage(stage)
+                    }
+                )
+            case .signOnly:
+                completed = try await signingCoordinator.signOnly(
+                    appID: app.id,
+                    accountID: account.id,
+                    requestedBundleIdentifier: requestedBundleIdentifier,
+                    selectedCertificateSerialNumber: selectedCertificateSerialNumber,
+                    allowDroppingExtensions: allowDroppingExtensions,
+                    progress: { [weak self] stage in
+                        await self?.updateSigningStage(stage)
+                    }
+                )
+            }
             let action: SigningHistoryRecord.Action = app.state == .installed ? .renew : .sign
-            signingSession?.status = .succeeded(installed)
+            signingSession?.status = .succeeded(completed)
             try? await logStore?.append(
                 category: .signing,
-                message: app.state == .installed ? "应用续签与安装完成" : "应用签名与安装完成"
+                message: completionMode == .signOnly
+                    ? "应用签名完成，已保存正式已签名 IPA"
+                    : (app.state == .installed ? "应用续签与安装完成" : "应用签名与安装完成")
             )
             await recordSigningHistory(
-                app: installed,
+                app: completed,
                 account: account,
                 action: action,
                 result: .success,
                 attemptedBundleIdentifier: attemptedBundleIdentifier,
-                finalSignedBundleIdentifier: installed.mappedBundleIdentifier,
-                lifecycleStatus: .active
+                finalSignedBundleIdentifier: completed.mappedBundleIdentifier,
+                lifecycleStatus: completed.state == .installed ? .active : .unknown
             )
-            await cleanTemporaryFilesIfNeeded(appID: installed.id)
+            await cleanTemporaryFilesIfNeeded(appID: completed.id)
             await load(force: true)
         } catch is CancellationError {
             signingSession = nil
@@ -1077,7 +1520,15 @@ final class AppsViewModel: ObservableObject {
             errorCode: failure?.code,
             errorReason: failure?.reason
         )
-        try? await signingHistoryStore.append(record)
+        do {
+            try await signingHistoryStore.append(record)
+        } catch {
+            surfaceHistoryWarning(
+                title: "签名历史未保存",
+                reason: "签名结果已经完成，但历史记录无法写入。",
+                code: "SEAL-HISTORY-005"
+            )
+        }
     }
 
     private func resolvedHistoryAccount(
@@ -1090,8 +1541,31 @@ final class AppsViewModel: ObservableObject {
             return account
         }
         guard let accountRepository else { return nil }
-        let fetchedAccounts = try? await accountRepository.fetchAll()
-        return fetchedAccounts?.first { $0.id == accountID }
+        do {
+            let fetchedAccounts = try await accountRepository.fetchAll()
+            return fetchedAccounts.first { $0.id == accountID }
+        } catch {
+            surfaceHistoryWarning(
+                title: "签名历史账号读取失败",
+                reason: "无法读取历史记录关联的 Apple ID。",
+                code: "SEAL-HISTORY-006"
+            )
+            return nil
+        }
+    }
+
+    private func surfaceHistoryWarning(
+        title: String,
+        reason: String,
+        code: String
+    ) {
+        guard alertFailure == nil else { return }
+        alertFailure = ImportFailure(
+            title: title,
+            reason: reason,
+            recovery: "检查本地存储空间后重试",
+            code: code
+        )
     }
 
     private func cleanTemporaryFilesIfNeeded(appID: UUID? = nil) async {
@@ -1099,18 +1573,9 @@ final class AppsViewModel: ObservableObject {
               let fileStore else { return }
         do {
             try await fileStore.clearTemporaryFiles()
-
-            if let appID {
-                try await fileStore.removeSignedIPA(appID: appID)
-                try await clearStoredSignedIPAPath(appID: appID)
-            } else {
-                try await fileStore.clearSignedIPAs()
-                try await clearAllStoredSignedIPAPaths()
-            }
-
             try? await logStore?.append(
                 category: .system,
-                message: appID == nil ? "安装完成后已清理签名缓存" : "安装完成后已清理当前应用签名缓存"
+                message: appID == nil ? "安装完成后已清理临时签名工作区" : "安装完成后已清理当前应用临时签名工作区"
             )
         } catch {
             try? await logStore?.append(
@@ -1122,21 +1587,40 @@ final class AppsViewModel: ObservableObject {
         }
     }
 
-    private func clearStoredSignedIPAPath(appID: UUID) async throws {
-        guard let appStore else { return }
-        var apps = try await appStore.fetchAll()
-        guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
-        apps[index].signedIPARelativePath = nil
-        try await appStore.save(apps[index])
+    private func repairLegacyAccountStatuses(
+        _ records: [AppleAccountRecord]
+    ) async throws -> [AppleAccountRecord] {
+        guard let accountRepository, let keychain else { return records }
+        var repaired = records
+        for index in repaired.indices where repaired[index].status == .needsVerification {
+            let hasLocalSecret = try await keychain.load(accountID: repaired[index].id) != nil
+            let status = AccountAvailabilityPolicy.repairedStatus(
+                for: repaired[index],
+                hasLocalSecret: hasLocalSecret
+            )
+            guard status != repaired[index].status else { continue }
+            repaired[index].status = status
+            try await accountRepository.save(repaired[index])
+        }
+        return repaired
     }
 
-    private func clearAllStoredSignedIPAPaths() async throws {
-        guard let appStore else { return }
-        var apps = try await appStore.fetchAll()
-        for index in apps.indices where apps[index].signedIPARelativePath != nil {
-            apps[index].signedIPARelativePath = nil
-            try await appStore.save(apps[index])
+    private func acquireOperation(
+        _ kind: OperationCoordinator.Kind,
+        appID: UUID? = nil
+    ) -> OperationCoordinator.Lease? {
+        guard let operationCoordinator else {
+            return .uncoordinated(kind, appID: appID)
         }
+        guard let lease = operationCoordinator.begin(kind, appID: appID) else {
+            alertFailure = operationCoordinator.conflictFailure(requested: kind)
+            return nil
+        }
+        return lease
+    }
+
+    private func releaseOperation(_ lease: OperationCoordinator.Lease) {
+        operationCoordinator?.end(lease)
     }
 
     private func settingsRoute(for failure: ImportFailure) -> SettingsRoute? {
@@ -1149,10 +1633,9 @@ final class AppsViewModel: ObservableObject {
     }
 
     private static func unexpectedSigningFailure(_ error: Error) -> ImportFailure {
-        let nsError = error as NSError
         return ImportFailure(
             title: "签名失败",
-            reason: "来源：\(nsError.domain) \(nsError.code)；\(nsError.localizedDescription)",
+            reason: "签名流程遇到未预期错误。技术信息已隐藏，可在日志中心查看脱敏诊断。",
             recovery: "重试",
             code: "SEAL-SIGN-500"
         )
@@ -1184,6 +1667,9 @@ final class AppsViewModel: ObservableObject {
             isImportSheetPresented = false
             await load(force: true)
             importCompletionCount += 1
+            if let cleanupFailure = await workflow.takeCleanupFailure() {
+                alertFailure = cleanupFailure
+            }
         case .failed(let failure):
             phase = .idle
             if sheetDraft == nil {
@@ -1193,6 +1679,12 @@ final class AppsViewModel: ObservableObject {
                 isImportSheetPresented = true
             }
         }
+    }
+
+    private static func exportFileName(for app: AppRecord) -> String {
+        let raw = "\(app.displayName)-\(app.version)-Seal.ipa"
+        let invalid = CharacterSet(charactersIn: "/:\\?%*|\"<>")
+        return raw.components(separatedBy: invalid).joined(separator: "-")
     }
 
     static func uiTestModel(arguments: [String]) -> AppsViewModel? {

@@ -27,7 +27,14 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
     var signingTargets: [SigningTargetRecord]
     let ipaRelativePath: String
     var signedIPARelativePath: String?
+    var signedIPASHA256: String?
+    var signedArtifactStatus: SignedArtifactStatus?
     var preferredBundleIdentifier: String?
+    var preferredDisplayName: String?
+    var preferredIconRelativePath: String?
+    var lastInstallFailureCode: String?
+    var lastInstallFailureReason: String?
+    var pendingFileTransactionID: UUID?
     let isSeal: Bool
     var isPinned: Bool
     let importedAt: Date
@@ -60,7 +67,14 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         signingTargets: [SigningTargetRecord] = [],
         ipaRelativePath: String,
         signedIPARelativePath: String? = nil,
+        signedIPASHA256: String? = nil,
+        signedArtifactStatus: SignedArtifactStatus? = nil,
         preferredBundleIdentifier: String? = nil,
+        preferredDisplayName: String? = nil,
+        preferredIconRelativePath: String? = nil,
+        lastInstallFailureCode: String? = nil,
+        lastInstallFailureReason: String? = nil,
+        pendingFileTransactionID: UUID? = nil,
         isSeal: Bool = false,
         isPinned: Bool = false,
         importedAt: Date,
@@ -92,7 +106,14 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         self.signingTargets = signingTargets
         self.ipaRelativePath = ipaRelativePath
         self.signedIPARelativePath = signedIPARelativePath
+        self.signedIPASHA256 = signedIPASHA256
+        self.signedArtifactStatus = signedArtifactStatus
         self.preferredBundleIdentifier = preferredBundleIdentifier
+        self.preferredDisplayName = preferredDisplayName
+        self.preferredIconRelativePath = preferredIconRelativePath
+        self.lastInstallFailureCode = lastInstallFailureCode
+        self.lastInstallFailureReason = lastInstallFailureReason
+        self.pendingFileTransactionID = pendingFileTransactionID
         self.isSeal = isSeal
         self.isPinned = isPinned
         self.importedAt = importedAt
@@ -126,7 +147,14 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         case signingTargets
         case ipaRelativePath
         case signedIPARelativePath
+        case signedIPASHA256
+        case signedArtifactStatus
         case preferredBundleIdentifier
+        case preferredDisplayName
+        case preferredIconRelativePath
+        case lastInstallFailureCode
+        case lastInstallFailureReason
+        case pendingFileTransactionID
         case isSeal
         case isPinned
         case importedAt
@@ -167,7 +195,14 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
         ) ?? []
         ipaRelativePath = try container.decode(String.self, forKey: .ipaRelativePath)
         signedIPARelativePath = try container.decodeIfPresent(String.self, forKey: .signedIPARelativePath)
+        signedIPASHA256 = try container.decodeIfPresent(String.self, forKey: .signedIPASHA256)
+        signedArtifactStatus = try container.decodeIfPresent(SignedArtifactStatus.self, forKey: .signedArtifactStatus)
         preferredBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .preferredBundleIdentifier)
+        preferredDisplayName = try container.decodeIfPresent(String.self, forKey: .preferredDisplayName)
+        preferredIconRelativePath = try container.decodeIfPresent(String.self, forKey: .preferredIconRelativePath)
+        lastInstallFailureCode = try container.decodeIfPresent(String.self, forKey: .lastInstallFailureCode)
+        lastInstallFailureReason = try container.decodeIfPresent(String.self, forKey: .lastInstallFailureReason)
+        pendingFileTransactionID = try container.decodeIfPresent(UUID.self, forKey: .pendingFileTransactionID)
         isSeal = try container.decodeIfPresent(Bool.self, forKey: .isSeal) ?? false
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         importedAt = try container.decode(Date.self, forKey: .importedAt)
@@ -189,6 +224,22 @@ struct AppRecord: Codable, Equatable, Identifiable, Sendable {
 
     var requiresLockedSigningIdentity: Bool {
         hasPersistedSigningIdentity
+    }
+
+    var displayName: String {
+        if let trimmed = preferredDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           trimmed.isEmpty == false {
+            return trimmed
+        }
+        return name
+    }
+
+    var displayIconRelativePath: String? {
+        preferredIconRelativePath ?? iconRelativePath
+    }
+
+    var hasSignedArtifact: Bool {
+        signedIPARelativePath?.isEmpty == false && signedIPASHA256?.isEmpty == false
     }
 
 }

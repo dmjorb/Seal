@@ -167,19 +167,43 @@ actor RenewalCoordinator {
                     )
                 )
             } catch is CancellationError {
-                try? await queueStore.markPending(appID: item.appID)
+                do {
+                    try await queueStore.markPending(appID: item.appID)
+                } catch {
+                    throw Self.queuePersistenceFailure(
+                        reason: "取消续签后，队列状态未能保存。",
+                        code: "SEAL-RENEW-QUEUE-002"
+                    )
+                }
                 throw CancellationError()
             } catch let failure as ImportFailure {
                 if isAutomaticRenewal {
                     markAutomaticRenewalFailure(appID: item.appID, at: Date())
                 }
-                try? await queueStore.markFailed(
-                    appID: item.appID,
-                    errorCode: failure.code
-                )
+                do {
+                    try await queueStore.markFailed(
+                        appID: item.appID,
+                        errorCode: failure.code
+                    )
+                } catch {
+                    throw Self.queuePersistenceFailure(
+                        reason: "续签失败状态未能写入队列。",
+                        code: "SEAL-RENEW-QUEUE-003"
+                    )
+                }
                 failed += 1
-                let currentApps = try? await appStore.fetchAll()
-                if let app = currentApps?.first(where: { $0.id == item.appID }) {
+                let currentApps: [AppRecord]
+                do {
+                    currentApps = try await appStore.fetchAll()
+                } catch {
+                    throw ImportFailure(
+                        title: "续签状态读取失败",
+                        reason: "续签失败后无法重新读取本地应用状态。",
+                        recovery: "重新打开 Seal 后重试",
+                        code: "SEAL-RENEW-STORE-001"
+                    )
+                }
+                if let app = currentApps.first(where: { $0.id == item.appID }) {
                     await progress(
                         .appFailed(
                             index: offset + 1,
@@ -199,13 +223,30 @@ actor RenewalCoordinator {
                     recovery: "重试",
                     code: "SEAL-RENEW-500"
                 )
-                try? await queueStore.markFailed(
-                    appID: item.appID,
-                    errorCode: failure.code
-                )
+                do {
+                    try await queueStore.markFailed(
+                        appID: item.appID,
+                        errorCode: failure.code
+                    )
+                } catch {
+                    throw Self.queuePersistenceFailure(
+                        reason: "续签失败状态未能写入队列。",
+                        code: "SEAL-RENEW-QUEUE-004"
+                    )
+                }
                 failed += 1
-                let currentApps = try? await appStore.fetchAll()
-                if let app = currentApps?.first(where: { $0.id == item.appID }) {
+                let currentApps: [AppRecord]
+                do {
+                    currentApps = try await appStore.fetchAll()
+                } catch {
+                    throw ImportFailure(
+                        title: "续签状态读取失败",
+                        reason: "续签失败后无法重新读取本地应用状态。",
+                        recovery: "重新打开 Seal 后重试",
+                        code: "SEAL-RENEW-STORE-002"
+                    )
+                }
+                if let app = currentApps.first(where: { $0.id == item.appID }) {
                     await progress(
                         .appFailed(
                             index: offset + 1,
@@ -218,11 +259,27 @@ actor RenewalCoordinator {
             }
         }
 
-        try? await queueStore.removeCompleted()
+        do {
+            try await queueStore.removeCompleted()
+        } catch {
+            throw Self.queuePersistenceFailure(
+                reason: "已完成的续签任务未能从队列中清理。",
+                code: "SEAL-RENEW-QUEUE-005"
+            )
+        }
         return BatchRefreshResult(
             total: queue.count,
             succeeded: succeeded,
             failed: failed
+        )
+    }
+
+    private static func queuePersistenceFailure(reason: String, code: String) -> ImportFailure {
+        ImportFailure(
+            title: "续签队列异常",
+            reason: reason,
+            recovery: "检查本机存储后重试",
+            code: code
         )
     }
 

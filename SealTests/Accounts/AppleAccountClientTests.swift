@@ -14,7 +14,7 @@ struct AppleAccountClientTests {
     }
 
     @Test
-    func preservesAppleErrorCodeWhenTeamLookupFailsAfterVerification() {
+    func teamLookupFailureDoesNotExposeRawAppleTechnicalDetails() {
         let error = NSError(
             domain: "com.apple.authentication",
             code: -20101,
@@ -27,7 +27,8 @@ struct AppleAccountClientTests {
         )
 
         #expect(failure.code == "SEAL-AUTH-105")
-        #expect(failure.reason.contains("-20101"))
-        #expect(failure.reason.contains("Developer services are unavailable"))
+        #expect(failure.reason.contains("-20101") == false)
+        #expect(failure.reason.contains("Developer services are unavailable") == false)
+        #expect(failure.reason.contains("开发团队"))
     }
 }

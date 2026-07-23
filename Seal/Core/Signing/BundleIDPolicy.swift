@@ -22,7 +22,7 @@ enum BundleIDPolicy {
         requestedBundleIdentifier: String? = nil,
         currentSealBundleIdentifier: String? = Bundle.main.bundleIdentifier
     ) throws -> String {
-        if app.state == .installed || app.isSeal {
+        if app.requiresLockedSigningIdentity || app.state == .installed || app.isSeal {
             if let mapped = normalized(app.mappedBundleIdentifier), mapped.isEmpty == false {
                 return try validated(mapped)
             }
@@ -45,14 +45,18 @@ enum BundleIDPolicy {
         if let mapped = normalized(app.mappedBundleIdentifier), mapped.isEmpty == false {
             return try validated(mapped)
         }
-        return try validated(app.originalBundleIdentifier)
+        return try validated(recommendedBundleIdentifier(for: app.originalBundleIdentifier))
     }
 
     static func recommendedBundleIdentifier(for original: String) -> String {
-        normalized(original) ?? original
+        let value = normalized(original) ?? original
+        guard value.lowercased().hasSuffix(".seal") == false else { return value }
+        return value + ".seal"
     }
 
-    static func isEditable(_ app: AppRecord) -> Bool { app.state != .installed && app.isSeal == false }
+    static func isEditable(_ app: AppRecord) -> Bool {
+        app.isSeal == false && app.requiresLockedSigningIdentity == false && app.state != .installed
+    }
 
     static func displayMode(for app: AppRecord) -> String {
         "按 Apple / iOS 实际返回处理"

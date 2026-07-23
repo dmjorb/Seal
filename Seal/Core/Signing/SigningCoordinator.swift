@@ -31,6 +31,7 @@ actor SigningCoordinator {
         requestedBundleIdentifier: String? = nil,
         selectedCertificateSerialNumber: String? = nil,
         allowDroppingExtensions: Bool = false,
+        installAfterSigning: Bool = true,
         progress: @Sendable (SigningStage) async -> Void
     ) async throws -> AppRecord {
         guard var app = try await appStore.fetchAll().first(where: { $0.id == appID }) else {
@@ -42,10 +43,19 @@ actor SigningCoordinator {
         }
         guard var account = try await accountRepository.fetchAll().first(where: {
             $0.id == accountID
-        }), var secret = try await keychain.load(accountID: accountID) else {
+        }) else {
             throw Self.failure(
-                reason: "签名账号不可用",
+                reason: "签名账号记录不存在",
                 recovery: "添加 Apple ID",
+                code: "SEAL-AUTH-105"
+            )
+        }
+        guard var secret = try await keychain.load(accountID: accountID) else {
+            account.status = .needsVerification
+            try await persistAccountState(account)
+            throw Self.failure(
+                reason: "本机 Keychain 中缺少当前 Apple ID 的登录凭据。",
+                recovery: "重新验证 Apple ID",
                 code: "SEAL-AUTH-105"
             )
         }
@@ -79,6 +89,7 @@ actor SigningCoordinator {
         let originalState = app.state
         let originalSecret = secret
         let originalAccount = account
+        var didPersistNewSignedArtifact = false
 
         do {
             try Task.checkCancellation()
@@ -86,10 +97,27 @@ actor SigningCoordinator {
             await progress(.waitingForChannel)
             let deviceIdentifier = try await installChannel.start()
 
+            if installAfterSigning,
+               let cachedInstall = try await installCachedSignedIPAIfPossible(
+                app: app,
+                account: account,
+                targetBundleIdentifier: targetBundleIdentifier,
+                certificateSerialNumber: effectiveCertificateSerialNumber,
+                deviceIdentifier: deviceIdentifier,
+                progress: progress
+            ) {
+                return cachedInstall
+            }
 
             let originalURL = try await fileStore.fileURL(
                 relativePath: app.ipaRelativePath
             )
+            let preferredIconData: Data?
+            if let preferredIconPath = app.preferredIconRelativePath {
+                preferredIconData = try? await fileStore.read(relativePath: preferredIconPath)
+            } else {
+                preferredIconData = nil
+            }
             let portalResult = try await portal.sign(
                 app: app,
                 account: account,
@@ -98,6 +126,7 @@ actor SigningCoordinator {
                 originalIPAURL: originalURL,
                 workspaceRoot: workspaceRoot,
                 targetBundleIdentifier: targetBundleIdentifier,
+                preferredIconData: preferredIconData,
                 selectedCertificateSerialNumber: effectiveCertificateSerialNumber,
                 allowDroppingExtensions: allowDroppingExtensions,
                 persistSigningMaterial: { updatedSecret, serialNumber in
@@ -110,7 +139,6 @@ actor SigningCoordinator {
                     )
                 },
                 progress: { stage in
-                    try? await self.updateState(appID: appID, stage: stage)
                     await progress(stage)
                 }
             )
@@ -125,14 +153,22 @@ actor SigningCoordinator {
                 sourceURL: portalResult.signedIPAURL,
                 appID: appID
             )
+            let signedSHA256 = try await fileStore.sha256(relativePath: signedPath)
             applySigningResult(
                 portalResult,
                 signedPath: signedPath,
                 accountID: accountID,
                 to: &app
             )
-            app.state = originalState == .installed ? .installed : .waitingForInstallChannel
+            app.signedIPASHA256 = signedSHA256
+            app.signedArtifactStatus = originalState == .installed ? .installed : .available
+            app.lastInstallFailureCode = nil
+            app.lastInstallFailureReason = nil
+            app.state = originalState == .installed ? .installed : .signed
             try await appStore.save(app)
+            didPersistNewSignedArtifact = true
+
+            guard installAfterSigning else { return app }
 
             let installed = try await installSignedIPA(
                 app: app,
@@ -143,20 +179,187 @@ actor SigningCoordinator {
             )
             return installed
         } catch is CancellationError {
-            app.state = originalState
-            try? await appStore.save(app)
+            if app.signedIPARelativePath != nil, originalState != .installed {
+                app.state = .signed
+            } else {
+                app.state = originalState
+            }
+            try await persistAppState(app)
             throw CancellationError()
         } catch let failure as ImportFailure {
-            if failure.code.hasPrefix("SEAL-AUTH-") {
+            if AppleServiceFailurePolicy.shouldRequireReverification(failure) {
                 account.status = .needsVerification
-                try? await accountRepository.save(account)
+                try await persistAccountState(account)
             }
-            app.state = originalState == .installed ? .installed : .failedRecoverable
-            try? await appStore.save(app)
+            if didPersistNewSignedArtifact || failure.code.hasPrefix("SEAL-INSTALL-") {
+                app.state = originalState == .installed ? .installed : .signed
+                app.signedArtifactStatus = .installFailed
+                app.lastInstallFailureCode = failure.code
+                app.lastInstallFailureReason = failure.reason
+            } else {
+                app.state = originalState == .installed ? .installed : originalState
+            }
+            try await persistAppState(app)
             throw failure
         } catch {
-            app.state = originalState == .installed ? .installed : .failedRecoverable
-            try? await appStore.save(app)
+            if didPersistNewSignedArtifact {
+                app.state = originalState == .installed ? .installed : .signed
+                app.signedArtifactStatus = .installFailed
+                app.lastInstallFailureCode = "SEAL-INSTALL-500"
+                app.lastInstallFailureReason = "安装流程遇到未预期错误，技术信息已写入脱敏日志。"
+            } else {
+                app.state = originalState == .installed ? .installed : originalState
+            }
+            try await persistAppState(app)
+            throw error
+        }
+    }
+
+    func signOnly(
+        appID: UUID,
+        accountID: UUID,
+        requestedBundleIdentifier: String? = nil,
+        selectedCertificateSerialNumber: String? = nil,
+        allowDroppingExtensions: Bool = false,
+        progress: @Sendable (SigningStage) async -> Void
+    ) async throws -> AppRecord {
+        try await signAndInstall(
+            appID: appID,
+            accountID: accountID,
+            requestedBundleIdentifier: requestedBundleIdentifier,
+            selectedCertificateSerialNumber: selectedCertificateSerialNumber,
+            allowDroppingExtensions: allowDroppingExtensions,
+            installAfterSigning: false,
+            progress: progress
+        )
+    }
+
+    func installSignedArtifact(
+        appID: UUID,
+        progress: @Sendable (SigningStage) async -> Void
+    ) async throws -> AppRecord {
+        guard var app = try await appStore.fetchAll().first(where: { $0.id == appID }),
+              let signedPath = app.signedIPARelativePath,
+              let expectedSHA256 = app.signedIPASHA256,
+              let bundleIdentifier = app.mappedBundleIdentifier,
+              let expirationDate = app.provisioningProfileExpirationDate else {
+            throw Self.failure(
+                reason: "已签名 IPA 记录不完整。",
+                recovery: "重新签名",
+                code: "SEAL-INSTALL-710"
+            )
+        }
+        guard try await fileStore.exists(relativePath: signedPath) else {
+            app.signedArtifactStatus = .missing
+            try await persistAppState(app)
+            throw Self.failure(
+                reason: "本机保存的已签名 IPA 文件缺失。",
+                recovery: "重新签名",
+                code: "SEAL-INSTALL-711"
+            )
+        }
+        guard try await fileStore.validateSHA256(relativePath: signedPath, expected: expectedSHA256) else {
+            app.signedArtifactStatus = .damaged
+            try await persistAppState(app)
+            throw Self.failure(
+                reason: "已签名 IPA 的 SHA-256 校验不一致。",
+                recovery: "重新签名",
+                code: "SEAL-INSTALL-712"
+            )
+        }
+        guard expirationDate > Date() else {
+            app.signedArtifactStatus = .expired
+            try await persistAppState(app)
+            throw Self.failure(
+                reason: "已签名 IPA 的描述文件已经过期。",
+                recovery: "重新签名",
+                code: "SEAL-INSTALL-713"
+            )
+        }
+        guard BundleIDPolicy.validationError(for: bundleIdentifier) == nil else {
+            app.signedArtifactStatus = .damaged
+            try await persistAppState(app)
+            throw Self.failure(
+                reason: "已签名 IPA 的 Bundle ID 记录不完整或格式无效。",
+                recovery: "重新签名",
+                code: "SEAL-INSTALL-716"
+            )
+        }
+
+        await progress(.waitingForChannel)
+        let currentDeviceIdentifier = try await installChannel.start()
+        if let mainTarget = app.signingTargets.first(where: {
+            $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
+        }) {
+            guard mainTarget.profileExpirationDate > Date(),
+                  mainTarget.deviceIdentifiers.contains(where: {
+                      $0.caseInsensitiveCompare(currentDeviceIdentifier) == .orderedSame
+                  }) else {
+                app.signedArtifactStatus = .deviceUnavailable
+                try await persistAppState(app)
+                throw Self.failure(
+                    reason: "当前设备不在此已签名 IPA 的描述文件设备列表中，或描述文件已经过期。",
+                    recovery: "重新签名",
+                    code: "SEAL-INSTALL-714"
+                )
+            }
+            if let signingTeamID = app.signingTeamID,
+               mainTarget.teamIdentifier.caseInsensitiveCompare(signingTeamID) != .orderedSame {
+                app.signedArtifactStatus = .damaged
+                try await persistAppState(app)
+                throw Self.failure(
+                    reason: "已签名 IPA 的 Team 与保存的签名记录不一致。",
+                    recovery: "重新签名",
+                    code: "SEAL-INSTALL-717"
+                )
+            }
+            if let serial = app.certificateSerialNumber {
+                let expected = serial.filter(\.isHexDigit).uppercased()
+                let serials = Set(mainTarget.certificateSerialNumbers.map {
+                    $0.filter(\.isHexDigit).uppercased()
+                })
+                guard serials.contains(expected) else {
+                    app.signedArtifactStatus = .damaged
+                    try await persistAppState(app)
+                    throw Self.failure(
+                        reason: "已签名 IPA 的描述文件不包含保存的签名证书。",
+                        recovery: "重新签名",
+                        code: "SEAL-INSTALL-718"
+                    )
+                }
+            }
+        } else if let signedDeviceIdentifier = app.signedDeviceIdentifier,
+                  signedDeviceIdentifier.caseInsensitiveCompare(currentDeviceIdentifier) != .orderedSame {
+            app.signedArtifactStatus = .deviceUnavailable
+            try await persistAppState(app)
+            throw Self.failure(
+                reason: "当前设备不在此签名包使用的设备记录中。",
+                recovery: "重新签名",
+                code: "SEAL-INSTALL-714"
+            )
+        }
+
+        do {
+            return try await installSignedIPA(
+                app: app,
+                signedPath: signedPath,
+                bundleIdentifier: bundleIdentifier,
+                expirationDate: expirationDate,
+                progress: progress
+            )
+        } catch let failure as ImportFailure {
+            app.state = app.state == .installed ? .installed : .signed
+            app.signedArtifactStatus = .installFailed
+            app.lastInstallFailureCode = failure.code
+            app.lastInstallFailureReason = failure.reason
+            try await persistAppState(app)
+            throw failure
+        } catch {
+            app.state = app.state == .installed ? .installed : .signed
+            app.signedArtifactStatus = .installFailed
+            app.lastInstallFailureCode = "SEAL-INSTALL-500"
+            app.lastInstallFailureReason = "安装流程遇到未预期错误，技术信息已写入脱敏日志。"
+            try await persistAppState(app)
             throw error
         }
     }
@@ -189,9 +392,26 @@ actor SigningCoordinator {
             updatedAccount.lastVerifiedAt = Date()
             try await accountRepository.save(updatedAccount)
         } catch {
-            try? await keychain.save(originalSecret, for: accountID)
-            try? await accountRepository.save(originalAccount)
-            throw error
+            let originalError = error
+            var rollbackFailures: [String] = []
+            do {
+                try await keychain.save(originalSecret, for: accountID)
+            } catch {
+                rollbackFailures.append("Keychain")
+            }
+            do {
+                try await accountRepository.save(originalAccount)
+            } catch {
+                rollbackFailures.append("账号记录")
+            }
+            if rollbackFailures.isEmpty == false {
+                throw Self.failure(
+                    reason: "证书保存失败，且本地补偿未完整完成（\(rollbackFailures.joined(separator: "、"))）。",
+                    recovery: "重新验证 Apple ID 后检查证书状态",
+                    code: "SEAL-CERT-215"
+                )
+            }
+            throw originalError
         }
     }
 
@@ -249,6 +469,7 @@ actor SigningCoordinator {
         progress: @Sendable (SigningStage) async -> Void
     ) async throws -> AppRecord? {
         guard let signedPath = app.signedIPARelativePath,
+              let expectedSHA256 = app.signedIPASHA256,
               let mappedBundleIdentifier = app.mappedBundleIdentifier,
               mappedBundleIdentifier.caseInsensitiveCompare(targetBundleIdentifier) == .orderedSame,
               app.accountID == account.id,
@@ -265,6 +486,10 @@ actor SigningCoordinator {
 
         do {
             _ = try await fileStore.fileURL(relativePath: signedPath)
+            guard try await fileStore.validateSHA256(
+                relativePath: signedPath,
+                expected: expectedSHA256
+            ) else { return nil }
         } catch {
             return nil
         }
@@ -292,6 +517,9 @@ actor SigningCoordinator {
         if app.isSeal {
             // Persist the real signed-profile expiry before iOS replaces this running app.
             updated.state = .installed
+            updated.signedArtifactStatus = .installed
+            updated.lastInstallFailureCode = nil
+            updated.lastInstallFailureReason = nil
             updated.expiryDate = expirationDate
             updated.lastInstalledAt = Date()
             try await appStore.save(updated)
@@ -314,6 +542,9 @@ actor SigningCoordinator {
         try await installChannel.verifyInstalled(bundleID: bundleIdentifier)
 
         updated.state = .installed
+        updated.signedArtifactStatus = .installed
+        updated.lastInstallFailureCode = nil
+        updated.lastInstallFailureReason = nil
         updated.expiryDate = expirationDate
         updated.lastInstalledAt = Date()
         try await appStore.save(updated)
@@ -326,7 +557,6 @@ actor SigningCoordinator {
         selectedAccountID: UUID
     ) async throws {
         guard secret.accountIdentifier == account.accountIdentifier else {
-            try? await keychain.delete(accountID: selectedAccountID)
             throw Self.failure(
                 reason: "本地 Keychain 凭据与当前 Apple ID 记录不一致。",
                 recovery: "重新验证 Apple ID",
@@ -390,6 +620,30 @@ actor SigningCoordinator {
             try await accountRepository.save(updatedAccount)
         }
         return (updatedAccount, updatedSecret)
+    }
+
+    private func persistAppState(_ app: AppRecord) async throws {
+        do {
+            try await appStore.save(app)
+        } catch {
+            throw Self.failure(
+                reason: "签名状态未能写入本机数据库。",
+                recovery: "检查本机存储空间后重试",
+                code: "SEAL-SIGN-DB-001"
+            )
+        }
+    }
+
+    private func persistAccountState(_ account: AppleAccountRecord) async throws {
+        do {
+            try await accountRepository.save(account)
+        } catch {
+            throw Self.failure(
+                reason: "Apple ID 状态未能写入本机数据库。",
+                recovery: "检查本机存储空间后重试",
+                code: "SEAL-AUTH-DB-001"
+            )
+        }
     }
 
     private func updateState(appID: UUID, stage: SigningStage) async throws {

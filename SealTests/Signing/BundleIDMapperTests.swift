@@ -9,6 +9,7 @@ struct BundleIDMapperTests {
         let repeated = mapper.mainBundleID(original: "com.example.demo", teamID: "TEAM2")
         let appExtension = mapper.extensionBundleID(
             original: "com.example.demo.share",
+            originalMainBundleID: "com.example.demo",
             mappedMainBundleID: first
         )
         let appGroup = mapper.appGroupID(
@@ -18,7 +19,7 @@ struct BundleIDMapperTests {
 
         #expect(first == "com.example.demo.seal")
         #expect(first == repeated)
-        #expect(appExtension.hasPrefix("\(first).e"))
+        #expect(appExtension == "com.example.demo.seal.share")
         #expect(appGroup.hasPrefix("group.com.mjorb.seal.groups."))
         #expect(appGroup == mapper.appGroupID(
             original: "group.com.example.demo",
@@ -120,4 +121,43 @@ struct BundleIDMapperTests {
             ) == "com.mjorb.seal.current"
         )
     }
+
+    @Test
+    func recommendedBundleIdentifierDoesNotDoubleAppendSealCaseInsensitively() {
+        #expect(BundleIDPolicy.recommendedBundleIdentifier(for: "com.example.demo") == "com.example.demo.seal")
+        #expect(BundleIDPolicy.recommendedBundleIdentifier(for: "com.example.demo.seal") == "com.example.demo.seal")
+        #expect(BundleIDPolicy.recommendedBundleIdentifier(for: "com.example.demo.SEAL") == "com.example.demo.SEAL")
+    }
+
+    @Test
+    func extensionMappingPreservesRelativeSuffix() {
+        let mapper = BundleIDMapper()
+        #expect(
+            mapper.extensionBundleID(
+                original: "com.example.app.widget",
+                originalMainBundleID: "com.example.app",
+                mappedMainBundleID: "com.example.app.seal"
+            ) == "com.example.app.seal.widget"
+        )
+        #expect(
+            mapper.extensionBundleID(
+                original: "com.example.app.share",
+                originalMainBundleID: "com.example.app",
+                mappedMainBundleID: "com.example.custom"
+            ) == "com.example.custom.share"
+        )
+    }
+
+    @Test
+    func bundleIdentifierValidationCoversFinalRules() {
+        #expect(BundleIDPolicy.validationError(for: "") != nil)
+        #expect(BundleIDPolicy.validationError(for: "single") != nil)
+        #expect(BundleIDPolicy.validationError(for: ".com.example") != nil)
+        #expect(BundleIDPolicy.validationError(for: "com..example") != nil)
+        #expect(BundleIDPolicy.validationError(for: "com.-example") != nil)
+        #expect(BundleIDPolicy.validationError(for: "com.example-") != nil)
+        #expect(BundleIDPolicy.validationError(for: "com.example_app") != nil)
+        #expect(BundleIDPolicy.validationError(for: "com.example-app") == nil)
+    }
+
 }

@@ -21,6 +21,24 @@ struct BundleIDMapper: Sendable {
 
     func extensionBundleID(
         original: String,
+        originalMainBundleID: String,
+        mappedMainBundleID: String
+    ) -> String {
+        let originalLower = original.lowercased()
+        let mainLower = originalMainBundleID.lowercased()
+        if originalLower.hasPrefix(mainLower + ".") {
+            let suffixIndex = original.index(
+                original.startIndex,
+                offsetBy: originalMainBundleID.count
+            )
+            let suffix = String(original[suffixIndex...])
+            return mappedMainBundleID + suffix
+        }
+        return "\(mappedMainBundleID).e\(digest(original, length: 10))"
+    }
+
+    func extensionBundleID(
+        original: String,
         mappedMainBundleID: String
     ) -> String {
         "\(mappedMainBundleID).e\(digest(original, length: 10))"

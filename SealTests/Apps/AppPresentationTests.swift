@@ -23,7 +23,7 @@ struct AppPresentationTests {
         let presentation = AppOperationPresentation(app: app, now: now)
 
         #expect(presentation.kind == .renewal)
-        #expect(presentation.validity?.text == "剩余 6 天")
+        #expect(presentation.validity?.text == "6天")
         #expect(presentation.validity?.tone == .neutral)
     }
 
@@ -36,9 +36,22 @@ struct AppPresentationTests {
         let presentation = AppOperationPresentation(app: app, now: now)
 
         #expect(presentation.kind == .urgentRenewal)
-        #expect(presentation.validity?.text == "剩余 1 天")
+        #expect(presentation.validity?.text == "1天")
         #expect(presentation.validity?.tone == .warning)
         #expect(presentation.primaryAction == "续签并安装")
+    }
+
+    @Test
+    func lessThanOneDayUsesHoursWithoutPrefix() {
+        let app = makeApp(
+            state: .installed,
+            expiryDate: now.addingTimeInterval(23 * 3_600 + 900)
+        )
+        let presentation = AppOperationPresentation(app: app, now: now)
+
+        #expect(presentation.validity?.text == "23小时")
+        #expect(presentation.validity?.detailText == "23小时")
+        #expect(presentation.validity?.tone == .danger)
     }
 
     @Test

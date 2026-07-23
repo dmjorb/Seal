@@ -146,6 +146,60 @@ struct ImportWorkflowTests {
         #expect(FileManager.default.fileExists(atPath: oldIPA.path) == false)
     }
 
+    @Test
+    func successfulSigningPreferencesAreInheritedByLaterImportOfSameOriginalBundleID() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let previousID = UUID()
+        let previousIcon = Data("preferred-icon".utf8)
+        let previousIconPath = try await environment.fileStore.storePreferredIcon(
+            data: previousIcon,
+            appID: previousID
+        )
+        let previous = AppRecord(
+            id: previousID,
+            originalBundleIdentifier: "com.example.demo",
+            mappedBundleIdentifier: "com.example.demo.personal",
+            name: "Demo",
+            version: "1.0",
+            buildNumber: "1",
+            size: 10,
+            state: .signed,
+            accountID: UUID(),
+            signingTeamID: "TEAM",
+            certificateSerialNumber: "SERIAL",
+            signedDeviceIdentifier: "DEVICE",
+            provisioningProfileExpirationDate: Date(timeIntervalSince1970: 1_900_000_000),
+            lastSignedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            ipaRelativePath: "Apps/\(previousID.uuidString)/Original.ipa",
+            signedIPARelativePath: "Apps/\(previousID.uuidString)/Signed.ipa",
+            signedIPASHA256: "abc",
+            signedArtifactStatus: .available,
+            preferredBundleIdentifier: "com.example.demo.personal",
+            preferredDisplayName: "Demo Custom",
+            preferredIconRelativePath: previousIconPath,
+            removedExtensionBundleIdentifiers: ["com.example.demo.share"],
+            importedAt: Date(timeIntervalSince1970: 100)
+        )
+        try await environment.appStore.save(previous)
+
+        let source = try IPAArchiveFixture.make()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let newID = UUID()
+        let workflow = makeWorkflow(environment: environment, appID: newID)
+        await workflow.prepare(sourceURL: source)
+        await workflow.confirm()
+
+        let imported = try requireCompleted(await workflow.state)
+        #expect(imported.id == newID)
+        #expect(imported.preferredBundleIdentifier == "com.example.demo.personal")
+        #expect(imported.preferredDisplayName == "Demo Custom")
+        #expect(imported.removedExtensionBundleIdentifiers == ["com.example.demo.share"])
+        let inheritedIconPath = try #require(imported.preferredIconRelativePath)
+        #expect(inheritedIconPath != previousIconPath)
+        #expect(try await environment.fileStore.read(relativePath: inheritedIconPath) == previousIcon)
+    }
+
     private func makeWorkflow(
         environment: Environment,
         appID: UUID = UUID()

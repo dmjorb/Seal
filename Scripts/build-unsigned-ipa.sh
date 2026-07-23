@@ -6,6 +6,12 @@ product="$derived_data/Build/Products/Release-iphoneos/Seal.app"
 package_root="$PWD/build/package"
 archive="$PWD/build/Seal.ipa"
 
+if ! command -v xcodegen >/dev/null 2>&1; then
+  echo "error: xcodegen is required to regenerate Seal.xcodeproj from project.yml" >&2
+  exit 1
+fi
+xcodegen generate
+
 rm -rf "$derived_data" "$package_root" "$archive" "$archive.sha256"
 
 xcodebuild build \

@@ -34,7 +34,7 @@ enum SigningCertificateSelectionPolicy {
             throw ImportFailure(
                 title: "Team 不匹配",
                 reason: "续签必须使用上次签名此 App 的 Team。",
-                recovery: "重新验证原 Apple ID",
+                recovery: "选择 Team",
                 code: "SEAL-AUTH-112"
             )
         }

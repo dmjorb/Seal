@@ -76,6 +76,25 @@ struct SigningCertificateSelectionPolicyTests {
     }
 
     @Test
+    func renewalTeamMismatchRequestsExplicitTeamSelection() throws {
+        let account = makeAccount(localSerial: "LOCAL", selectedSerial: "LOCAL")
+        var app = makeApp(state: .installed)
+        app.accountID = account.id
+        app.signingTeamID = "OTHERTEAM"
+
+        do {
+            try SigningCertificateSelectionPolicy.validateAccountAndTeam(
+                for: app,
+                account: account
+            )
+            Issue.record("Expected Team mismatch failure")
+        } catch let failure as ImportFailure {
+            #expect(failure.code == "SEAL-AUTH-112")
+            #expect(failure.recovery == "选择 Team")
+        }
+    }
+
+    @Test
     func renewalRejectsDifferentAccountAndTeam() {
         let account = makeAccount(localSerial: "LOCAL", selectedSerial: "LOCAL")
         var app = makeApp(state: .installed)

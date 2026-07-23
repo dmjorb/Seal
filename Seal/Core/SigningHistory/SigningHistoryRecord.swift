@@ -220,8 +220,10 @@ struct SigningHistoryRecord: Codable, Equatable, Identifiable, Sendable {
         guard let expiryDate else { return "已签名" }
         let interval = expiryDate.timeIntervalSince(now)
         guard interval > 0 else { return "已过期" }
-        let days = max(1, Int(ceil(interval / 86_400)))
-        return "剩余 \(days) 天"
+        if interval < 86_400 {
+            return "\(max(1, Int(interval / 3_600)))小时"
+        }
+        return "\(max(1, Int(interval / 86_400)))天"
     }
 }
 

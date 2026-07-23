@@ -37,6 +37,7 @@ struct ApplePortalCertificateSnapshot: Codable, Equatable, Identifiable, Sendabl
     let machineName: String
     let machineIdentifier: String?
     let hasLocalPrivateKey: Bool
+    let expirationDate: Date?
 
     var displayName: String { machineName }
 }
@@ -100,9 +101,9 @@ actor ApplePortalInventoryService {
         guard let team = teams.first(where: { $0.identifier == account.teamID }) else {
             throw ImportFailure(
                 title: "Apple 同步失败",
-                reason: "Apple 返回的 Team 列表中没有当前账号保存的 Team ID：\(account.teamID)。",
-                recovery: "重新验证 Apple ID",
-                code: "SEAL-INVENTORY-101"
+                reason: "Apple 返回的 Team 列表中没有当前账号保存的 Team。",
+                recovery: "选择 Team",
+                code: "SEAL-AUTH-112"
             )
         }
 
@@ -129,11 +130,15 @@ actor ApplePortalInventoryService {
             let matchesP12Serial = localP12SerialNumber?.caseInsensitiveCompare(
                 certificate.serialNumber
             ) == .orderedSame
+            let expirationDate = certificate.data
+                .flatMap(X509CertificateValidityReader.validity(from:))?
+                .notAfter
             return ApplePortalCertificateSnapshot(
                 serialNumber: certificate.serialNumber,
                 machineName: certificate.machineName ?? "Apple Development",
                 machineIdentifier: certificate.machineIdentifier,
-                hasLocalPrivateKey: matchesStoredSerial && matchesP12Serial
+                hasLocalPrivateKey: matchesStoredSerial && matchesP12Serial,
+                expirationDate: expirationDate
             )
         }
 

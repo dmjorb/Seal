@@ -9,6 +9,7 @@ actor ImportWorkflow {
     private let now: @Sendable () -> Date
     private let makeID: @Sendable () -> UUID
     private var retryDraft: ImportDraft?
+    private(set) var lastCleanupFailure: ImportFailure?
 
     init(
         parser: IPAParserService,
@@ -27,6 +28,10 @@ actor ImportWorkflow {
     func prepare(sourceURL: URL) async {
         guard canPrepare else { return }
         await discardRetryDraft()
+        if let cleanupFailure = lastCleanupFailure {
+            state = .failed(cleanupFailure)
+            return
+        }
         state = .preparing
 
         var stagedIPA: StagedIPA?
@@ -42,15 +47,18 @@ actor ImportWorkflow {
             )
             state = .awaitingConfirmation(draft)
         } catch is CancellationError {
-            if let stagedIPA {
-                try? await fileStore.cancel(stagedIPA)
+            if let stagedIPA, let cleanupFailure = await cancelStagedIPA(stagedIPA) {
+                state = .failed(cleanupFailure)
+            } else {
+                state = .idle
             }
-            state = .idle
         } catch {
-            if let stagedIPA {
-                try? await fileStore.cancel(stagedIPA)
+            let importFailure = Self.importFailure(from: error)
+            if let stagedIPA, let cleanupFailure = await cancelStagedIPA(stagedIPA) {
+                state = .failed(cleanupFailure)
+            } else {
+                state = .failed(importFailure)
             }
-            state = .failed(Self.importFailure(from: error))
         }
     }
 
@@ -83,8 +91,10 @@ actor ImportWorkflow {
             draft = nil
         }
 
-        if let draft {
-            try? await fileStore.cancel(draft.stagedIPA)
+        if let draft, let cleanupFailure = await cancelStagedIPA(draft.stagedIPA) {
+            retryDraft = nil
+            state = .failed(cleanupFailure)
+            return
         }
         retryDraft = nil
         state = .idle
@@ -101,7 +111,9 @@ actor ImportWorkflow {
 
     private func commit(_ draft: ImportDraft) async {
         state = .committing(draft)
-        var committedFiles: StoredAppFiles?
+        var fileTransaction: PreparedAppFileTransaction?
+        var databaseReplacedRecords: [AppRecord] = []
+        var databaseRecord: AppRecord?
 
         do {
             let records = try await appStore.fetchAll()
@@ -109,63 +121,162 @@ actor ImportWorkflow {
                 for: draft.parsedIPA,
                 in: records
             )
+            let preferenceSource = Self.preferenceSource(
+                for: draft.parsedIPA,
+                in: records,
+                excluding: existing?.id
+            )
             let commitAppID = existing?.id ?? draft.appID
-            let files = try await fileStore.commit(
+            let preferredIconData: Data?
+            if let path = preferenceSource?.preferredIconRelativePath {
+                preferredIconData = try? await fileStore.read(relativePath: path)
+            } else {
+                preferredIconData = nil
+            }
+
+            var transaction = try await fileStore.prepareImportCommit(
                 staged: draft.stagedIPA,
                 appID: commitAppID,
-                iconData: draft.parsedIPA.iconData
+                iconData: draft.parsedIPA.iconData,
+                preferredIconData: preferredIconData
             )
-            committedFiles = files
-            let record = Self.makeRecord(
-                draft: draft,
-                files: files,
-                importedAt: now(),
-                replacing: existing
-            )
-            let replaced = try await appStore.replaceImportedApp(record)
+            fileTransaction = transaction
+            transaction = try await fileStore.markDatabaseCommitPending(transaction)
+            fileTransaction = transaction
 
-            try? await fileStore.cancel(draft.stagedIPA)
-            for oldRecord in replaced where oldRecord.id != record.id {
-                try? await fileStore.rollback(
-                    StoredAppFiles(
-                        ipaRelativePath: oldRecord.ipaRelativePath,
-                        iconRelativePath: oldRecord.iconRelativePath
-                    )
-                )
-            }
+            var record = Self.makeRecord(
+                draft: draft,
+                files: transaction.storedFiles,
+                importedAt: now(),
+                replacing: existing,
+                preferenceSource: preferenceSource
+            )
+            record.pendingFileTransactionID = transaction.id
+            databaseReplacedRecords = try await appStore.replaceImportedApp(record)
+            databaseRecord = record
+
+            transaction = try await fileStore.finalizeImportCommit(transaction)
+            fileTransaction = transaction
+
+            record.pendingFileTransactionID = nil
+            try await appStore.save(record)
+            databaseRecord = record
+            try await fileStore.completeImportCommit(transaction)
+            fileTransaction = nil
+
+            lastCleanupFailure = await cancelStagedIPA(draft.stagedIPA)
+            // Replaced pending-import directories are intentionally left for the
+            // orphan maintenance pass. Deleting them here would introduce a new
+            // post-commit failure point after the authoritative DB/file transaction
+            // has already succeeded. Recovery also refuses to resurrect a second
+            // record with the same original Bundle ID.
             retryDraft = nil
             state = .completed(record)
         } catch is CancellationError {
-            if let committedFiles {
-                try? await fileStore.rollback(committedFiles)
+            if let rollbackFailure = await rollbackFailedCommit(
+                transaction: fileTransaction,
+                databaseRecord: databaseRecord,
+                replacedRecords: databaseReplacedRecords
+            ) {
+                retryDraft = nil
+                state = .failed(rollbackFailure)
+            } else {
+                retryDraft = nil
+                state = .awaitingConfirmation(draft)
             }
-            retryDraft = nil
-            state = .awaitingConfirmation(draft)
         } catch {
-            if let committedFiles {
-                try? await fileStore.rollback(committedFiles)
+            let originalFailure = Self.importFailure(from: error)
+            if let transaction = fileTransaction,
+               transaction.phase == .finalized {
+                // A finalized transaction is intentionally left journaled when a
+                // later metadata write fails. Startup recovery can safely finish it.
+                retryDraft = nil
+                state = .failed(Self.finalizeRecoveryFailure(originalFailure))
+                return
             }
-            retryDraft = draft
-            state = .failed(
-                committedFiles == nil
-                    ? Self.importFailure(from: error)
-                    : Self.persistenceFailure
-            )
+
+            if let rollbackFailure = await rollbackFailedCommit(
+                transaction: fileTransaction,
+                databaseRecord: databaseRecord,
+                replacedRecords: databaseReplacedRecords
+            ) {
+                retryDraft = nil
+                state = .failed(rollbackFailure)
+            } else {
+                retryDraft = draft
+                state = .failed(originalFailure)
+            }
+        }
+    }
+
+
+    private func rollbackFailedCommit(
+        transaction: PreparedAppFileTransaction?,
+        databaseRecord: AppRecord?,
+        replacedRecords: [AppRecord]
+    ) async -> ImportFailure? {
+        if let databaseRecord {
+            do {
+                try await restoreDatabaseAfterFailedImport(
+                    newRecordID: databaseRecord.id,
+                    replacedRecords: replacedRecords
+                )
+            } catch {
+                // Keep the file transaction journal intact. Startup recovery can
+                // inspect the committed database/file state instead of losing the
+                // only durable marker for this interrupted operation.
+                return Self.rollbackRecoveryFailure
+            }
+        }
+
+        if let transaction {
+            do {
+                try await fileStore.abortImportCommit(transaction)
+            } catch {
+                return Self.rollbackRecoveryFailure
+            }
+        }
+        return nil
+    }
+
+    private func restoreDatabaseAfterFailedImport(
+        newRecordID: UUID,
+        replacedRecords: [AppRecord]
+    ) async throws {
+        try await appStore.delete(id: newRecordID)
+        for record in replacedRecords {
+            try await appStore.save(record)
         }
     }
 
     private func discardRetryDraft() async {
+        lastCleanupFailure = nil
         if let retryDraft {
-            try? await fileStore.cancel(retryDraft.stagedIPA)
+            lastCleanupFailure = await cancelStagedIPA(retryDraft.stagedIPA)
         }
         retryDraft = nil
+    }
+
+    private func cancelStagedIPA(_ stagedIPA: StagedIPA) async -> ImportFailure? {
+        do {
+            try await fileStore.cancel(stagedIPA)
+            return nil
+        } catch {
+            return Self.temporaryCleanupFailure
+        }
+    }
+
+    func takeCleanupFailure() -> ImportFailure? {
+        defer { lastCleanupFailure = nil }
+        return lastCleanupFailure
     }
 
     private static func makeRecord(
         draft: ImportDraft,
         files: StoredAppFiles,
         importedAt: Date,
-        replacing existing: AppRecord?
+        replacing existing: AppRecord?,
+        preferenceSource: AppRecord?
     ) -> AppRecord {
         let parsed = draft.parsedIPA
         return AppRecord(
@@ -177,13 +288,20 @@ actor ImportWorkflow {
             buildNumber: parsed.buildNumber,
             size: parsed.fileSize,
             iconRelativePath: files.iconRelativePath,
-            state: .imported,
+            state: .preflightPassed,
             expiryDate: nil,
             accountID: nil,
             certificateSerialNumber: nil,
             ipaRelativePath: files.ipaRelativePath,
             signedIPARelativePath: nil,
-            preferredBundleIdentifier: existing?.preferredBundleIdentifier,
+            preferredBundleIdentifier: existing?.preferredBundleIdentifier
+                ?? preferenceSource?.mappedBundleIdentifier
+                ?? preferenceSource?.preferredBundleIdentifier,
+            preferredDisplayName: existing?.preferredDisplayName ?? preferenceSource?.preferredDisplayName,
+            preferredIconRelativePath: existing?.preferredIconRelativePath ?? files.preferredIconRelativePath,
+            removedExtensionBundleIdentifiers: existing?.removedExtensionBundleIdentifiers
+                ?? preferenceSource?.removedExtensionBundleIdentifiers
+                ?? [],
             isSeal: false,
             isPinned: existing?.isPinned ?? false,
             importedAt: importedAt,
@@ -197,9 +315,27 @@ actor ImportWorkflow {
     ) -> AppRecord? {
         records.first(where: { record in
             record.isSeal == false
-                && record.state != .installed
                 && record.originalBundleIdentifier == parsed.bundleIdentifier
+                && record.hasSignedArtifact == false
+                && [.imported, .failedRecoverable, .failedFinal].contains(record.state)
         })
+    }
+
+    private static func preferenceSource(
+        for parsed: ParsedIPA,
+        in records: [AppRecord],
+        excluding excludedID: UUID?
+    ) -> AppRecord? {
+        records
+            .filter { record in
+                record.id != excludedID
+                    && record.isSeal == false
+                    && record.originalBundleIdentifier == parsed.bundleIdentifier
+                    && (record.lastSignedAt != nil || record.mappedBundleIdentifier != nil)
+            }
+            .max { lhs, rhs in
+                (lhs.lastSignedAt ?? lhs.importedAt) < (rhs.lastSignedAt ?? rhs.importedAt)
+            }
     }
 
     private static func importFailure(from error: Error) -> ImportFailure {
@@ -208,7 +344,7 @@ actor ImportWorkflow {
         }
         return ImportFailure(
             title: "无法导入 IPA",
-            reason: "来源：IPA 解析\n原始返回：处理失败",
+            reason: "IPA 解析失败，文件结构或元数据不可读取。",
             recovery: "重试",
             code: "SEAL-IPA-200"
         )
@@ -220,4 +356,27 @@ actor ImportWorkflow {
         recovery: "重试",
         code: "SEAL-IPA-205"
     )
+
+    private static let temporaryCleanupFailure = ImportFailure(
+        title: "临时文件清理失败",
+        reason: "导入产生的临时文件未能完整删除。",
+        recovery: "稍后在存储维护中重试清理",
+        code: "SEAL-STORAGE-IMPORT-001"
+    )
+
+    private static let rollbackRecoveryFailure = ImportFailure(
+        title: "导入恢复未完成",
+        reason: "本次导入未能完全回滚。Seal 已保留恢复记录，下次启动时会继续恢复。",
+        recovery: "重新打开 Seal 后再重试",
+        code: "SEAL-IPA-ROLLBACK-001"
+    )
+
+    private static func finalizeRecoveryFailure(_ original: ImportFailure) -> ImportFailure {
+        ImportFailure(
+            title: "导入提交待恢复",
+            reason: "IPA 文件已经提交，但后续状态保存未完成。Seal 已保留恢复记录，下次启动时会继续完成。",
+            recovery: "重新打开 Seal 后检查应用状态",
+            code: original.code == "SEAL-IPA-205" ? "SEAL-IPA-RECOVERY-001" : original.code
+        )
+    }
 }

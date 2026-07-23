@@ -152,7 +152,7 @@ struct CertificatesRootView: View {
     private func accountRow(_ account: AppleAccountRecord) -> some View {
         HStack(spacing: 12) {
             Button {
-                guard account.status == .verified else {
+                guard AccountAvailabilityPolicy.isSelectable(account) else {
                     detailAccount = account
                     return
                 }

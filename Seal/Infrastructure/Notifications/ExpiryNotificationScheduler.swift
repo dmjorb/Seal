@@ -23,6 +23,33 @@ final class ExpiryNotificationScheduler {
         try await center.requestAuthorization(options: [.alert, .badge, .sound])
     }
 
+    func status(sealEnabled: Bool, schedulingFailure: String? = nil) async -> NotificationScheduleStatus {
+        let settings = await center.notificationSettings()
+        let authorization: SealNotificationAuthorization
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            authorization = .allowed
+        case .denied:
+            authorization = .denied
+        case .notDetermined:
+            authorization = .notDetermined
+        @unknown default:
+            authorization = .notDetermined
+        }
+        let pending = await center.pendingNotificationRequests()
+            .filter { $0.identifier.hasPrefix(identifierPrefix) }
+        let nextDate = pending.compactMap { request in
+            (request.trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate()
+        }.min()
+        return NotificationScheduleStatus(
+            sealEnabled: sealEnabled,
+            authorization: authorization,
+            scheduledCount: pending.count,
+            nextReminderDate: nextDate,
+            schedulingFailure: schedulingFailure
+        )
+    }
+
     func reschedule(
         apps: [AppRecord],
         enabled: Bool,
