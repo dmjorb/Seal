@@ -176,7 +176,7 @@ struct IPAParserService: Sendable {
 
         var result = Data()
         result.reserveCapacity(Int(entry.uncompressedSize))
-        try archive.extract(entry) { chunk in
+        _ = try archive.extract(entry) { chunk in
             result.append(chunk)
         }
         return result

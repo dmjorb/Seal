@@ -50,7 +50,8 @@ jobs:
             -scheme Seal \
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
             -parallel-testing-enabled NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            OTHER_SWIFT_FLAGS='$(inherited) -continue-building-after-errors'
 
       - name: Build unsigned IPA
         run: bash Scripts/build-unsigned-ipa.sh

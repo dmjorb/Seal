@@ -37,7 +37,7 @@ struct SigningWorkspace: Sendable {
             for entry in entries {
                 try Task.checkCancellation()
                 let destination = workspaceRoot.appending(path: entry.path)
-                try archive.extract(entry, to: destination)
+                _ = try archive.extract(entry, to: destination)
             }
 
             let payloadURL = workspaceRoot.appending(

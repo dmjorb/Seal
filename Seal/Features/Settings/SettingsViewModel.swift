@@ -413,7 +413,6 @@ final class SettingsViewModel: ObservableObject {
         } catch let failure as ImportFailure {
             alertFailure = failure
         } catch {
-            let nsError = error as NSError
             alertFailure = Self.failure(
                 title: "签名失败",
                 reason: "Apple 返回：无法创建签名证书",
@@ -482,7 +481,6 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             await load(force: true)
             await refreshCertificateInventory(for: account, force: true)
-            let nsError = error as NSError
             alertFailure = Self.failure(
                 title: "签名失败",
                 reason: "Apple 返回：证书撤销失败",
@@ -563,7 +561,6 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             await load(force: true)
             await refreshCertificateInventory(for: account, force: true)
-            let nsError = error as NSError
             alertFailure = Self.failure(
                 title: "无法完成证书处理",
                 reason: "已按用户选择处理证书，但 Apple 或本地保存阶段没有返回明确失败原因。",

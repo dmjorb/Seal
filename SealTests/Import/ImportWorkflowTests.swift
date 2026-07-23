@@ -171,6 +171,7 @@ struct ImportWorkflowTests {
             signedDeviceIdentifier: "DEVICE",
             provisioningProfileExpirationDate: Date(timeIntervalSince1970: 1_900_000_000),
             lastSignedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            removedExtensionBundleIdentifiers: ["com.example.demo.share"],
             ipaRelativePath: "Apps/\(previousID.uuidString)/Original.ipa",
             signedIPARelativePath: "Apps/\(previousID.uuidString)/Signed.ipa",
             signedIPASHA256: "abc",
@@ -178,7 +179,6 @@ struct ImportWorkflowTests {
             preferredBundleIdentifier: "com.example.demo.personal",
             preferredDisplayName: "Demo Custom",
             preferredIconRelativePath: previousIconPath,
-            removedExtensionBundleIdentifiers: ["com.example.demo.share"],
             importedAt: Date(timeIntervalSince1970: 100)
         )
         try await environment.appStore.save(previous)
