@@ -51,6 +51,7 @@ targets:
               - public.zip-archive
               - public.data
         LSSupportsOpeningDocumentsInPlace: true
+        UIFileSharingEnabled: true
         UTImportedTypeDeclarations:
           - UTTypeIdentifier: com.apple.itunes.ipa
             UTTypeDescription: iOS App Archive

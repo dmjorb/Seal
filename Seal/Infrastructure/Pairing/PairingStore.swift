@@ -10,6 +10,8 @@ actor PairingStore {
     private static let maximumFileSize = 5 * 1_024 * 1_024
     private let fileURL: URL
     private let metadataURL: URL
+    private let backupURL: URL
+    private let backupMetadataURL: URL
     private let fileProtector: any FileProtecting
 
     init(
@@ -18,6 +20,8 @@ actor PairingStore {
     ) {
         self.fileURL = fileURL
         self.metadataURL = fileURL.appendingPathExtension("validation.json")
+        self.backupURL = fileURL.appendingPathExtension("backup")
+        self.backupMetadataURL = fileURL.appendingPathExtension("backup.validation.json")
         self.fileProtector = fileProtector
     }
 
@@ -47,20 +51,31 @@ actor PairingStore {
             format: .xml,
             options: 0
         )
+        let hadExistingPairing = FileManager.default.fileExists(atPath: fileURL.path)
+        try backupCurrentIfNeeded()
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
         )
-        try normalized.write(to: fileURL, options: .atomic)
-        try fileProtector.protect(fileURL)
-        try saveMetadata(
-            ValidationMetadata(
-                status: .unverified,
-                validatedDeviceIdentifier: nil,
-                validatedAt: nil
+        do {
+            try normalized.write(to: fileURL, options: .atomic)
+            try fileProtector.protect(fileURL)
+            try saveMetadata(
+                ValidationMetadata(
+                    status: .unverified,
+                    validatedDeviceIdentifier: nil,
+                    validatedAt: nil
+                )
             )
-        )
+        } catch {
+            if hadExistingPairing {
+                _ = try? restoreBackupIfPresent()
+            } else {
+                try? removeCurrentFilesAfterFailedInitialImport()
+            }
+            throw error
+        }
 
         return PairingRecord(
             deviceIdentifier: inspection.udid,
@@ -106,6 +121,7 @@ actor PairingStore {
             validatedAt: Date()
         )
         try saveMetadata(metadata)
+        try discardBackup()
         return PairingRecord(
             deviceIdentifier: inspection.udid,
             isRemotePairing: inspection.isRemote,
@@ -155,6 +171,50 @@ actor PairingStore {
         }
         if FileManager.default.fileExists(atPath: metadataURL.path) {
             try FileManager.default.removeItem(at: metadataURL)
+        }
+        try discardBackup()
+    }
+
+    func restoreBackupIfPresent() throws -> PairingRecord? {
+        guard FileManager.default.fileExists(atPath: backupURL.path) else { return nil }
+        let data = try Data(contentsOf: backupURL)
+        try data.write(to: fileURL, options: .atomic)
+        try fileProtector.protect(fileURL)
+
+        if FileManager.default.fileExists(atPath: backupMetadataURL.path) {
+            let metadataData = try Data(contentsOf: backupMetadataURL)
+            try metadataData.write(to: metadataURL, options: .atomic)
+            try fileProtector.protect(metadataURL)
+        } else if FileManager.default.fileExists(atPath: metadataURL.path) {
+            try FileManager.default.removeItem(at: metadataURL)
+        }
+        try discardBackup()
+        return try current()
+    }
+
+    private func backupCurrentIfNeeded() throws {
+        guard FileManager.default.fileExists(atPath: fileURL.path),
+              FileManager.default.fileExists(atPath: backupURL.path) == false else { return }
+        let data = try Data(contentsOf: fileURL)
+        try data.write(to: backupURL, options: .atomic)
+        try fileProtector.protect(backupURL)
+        if FileManager.default.fileExists(atPath: metadataURL.path) {
+            let metadataData = try Data(contentsOf: metadataURL)
+            try metadataData.write(to: backupMetadataURL, options: .atomic)
+            try fileProtector.protect(backupMetadataURL)
+        }
+    }
+
+    private func removeCurrentFilesAfterFailedInitialImport() throws {
+        for url in [fileURL, metadataURL, backupURL, backupMetadataURL]
+        where FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func discardBackup() throws {
+        for url in [backupURL, backupMetadataURL] where FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
         }
     }
 

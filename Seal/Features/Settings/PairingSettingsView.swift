@@ -59,6 +59,9 @@ struct PairingSettingsView: View {
             )
         }
         .sealScreenBackground()
+        .task {
+            _ = await viewModel.importPairingAssistantInboxIfPresent()
+        }
     }
 
     private var hero: some View {
@@ -93,9 +96,9 @@ struct PairingSettingsView: View {
 
     private var acquisitionGuide: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("如何获取配对文件")
+            Text("电脑配对助手")
                 .font(.headline)
-            Text("在电脑上下载 idevice pair 工具。\n连接当前 iPhone 后，通过 CoreDeviceProxy 生成 RPPairing 文件。\n生成完成后，将该文件导入 Seal，即可用于安装和续签应用。")
+            Text("在 Windows 上打开 Seal 配对助手并连接当前 iPhone。助手会使用上游 idevice_pair 的设备协议生成并验证配对信息；检测到 Seal 后，可直接写入本 App。手动导入仍作为备用方式保留。")
                 .font(.subheadline)
                 .foregroundStyle(Color.sealTextSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -112,8 +115,15 @@ struct PairingSettingsView: View {
             }
             .sealPrimaryAction(cornerRadius: 12)
 
+            Button("接收配对助手") {
+                Task {
+                    _ = await viewModel.importPairingAssistantInboxIfPresent()
+                }
+            }
+            .sealOutlineAction(cornerRadius: 12)
+
             if shouldShowDownloadLink {
-                Button("获取下载链接") {
+                Button("获取官方 idevice_pair") {
                     UIPasteboard.general.string = directDownloadURL
                     copiedDownloadLink = true
                 }

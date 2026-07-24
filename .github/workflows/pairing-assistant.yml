@@ -1,0 +1,201 @@
+name: Seal Pairing Assistant
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, "feature/**"]
+    paths:
+      - "Tools/SealPairingAssistant/**"
+      - "Seal/Features/Settings/SettingsViewModel.swift"
+      - "Seal/Features/Settings/PairingSettingsView.swift"
+      - "Seal/Infrastructure/Pairing/PairingStore.swift"
+      - "project.yml"
+      - ".github/workflows/pairing-assistant.yml"
+
+concurrency:
+  group: pairing-assistant-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      UPSTREAM_REPOSITORY: jkcoxson/idevice_pair
+      UPSTREAM_COMMIT: e3abb341b73a4fbeb96cdfc5e6652687e4bee130
+      RUST_TOOLCHAIN: 1.97.1
+
+    steps:
+      - name: Checkout Seal integration
+        uses: actions/checkout@v6.0.2
+
+      - name: Checkout pinned upstream idevice_pair
+        uses: actions/checkout@v6.0.2
+        with:
+          repository: ${{ env.UPSTREAM_REPOSITORY }}
+          ref: ${{ env.UPSTREAM_COMMIT }}
+          path: upstream/idevice_pair
+          persist-credentials: false
+
+      - name: Verify pinned upstream revision
+        shell: pwsh
+        run: |
+          $actual = git -C upstream/idevice_pair rev-parse HEAD
+          if ($actual -ne "${env:UPSTREAM_COMMIT}") { throw "Unexpected upstream commit: $actual" }
+          $cargo = Get-Content upstream/idevice_pair/Cargo.toml -Raw
+          if ($cargo -notmatch 'version = "0\.1\.14"') { throw "Unexpected idevice_pair version" }
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          Copy-Item upstream/idevice_pair/Cargo.lock build/idevice_pair-Cargo.lock.upstream
+
+      - name: Apply Seal overlay
+        shell: pwsh
+        run: python Tools/SealPairingAssistant/patch_upstream.py upstream/idevice_pair
+
+      - name: Install pinned Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --component rustfmt
+          rustup default $env:RUST_TOOLCHAIN
+          rustc --version --verbose
+          cargo --version
+
+      - name: Normalize and verify Rust format
+        working-directory: upstream/idevice_pair
+        run: |
+          cargo fmt --all
+          cargo fmt --all -- --check
+
+      - name: Normalize overlay lock metadata
+        working-directory: upstream/idevice_pair
+        run: cargo check --release
+
+      - name: Verify dependency lock did not drift
+        shell: pwsh
+        run: |
+          @'
+          import collections
+          import pathlib
+          import tomllib
+
+          original = tomllib.loads(pathlib.Path("build/idevice_pair-Cargo.lock.upstream").read_text(encoding="utf-8"))
+          current = tomllib.loads(pathlib.Path("upstream/idevice_pair/Cargo.lock").read_text(encoding="utf-8"))
+
+          def packages(lock):
+              return lock.get("package", [])
+
+          def root(lock):
+              matches = [p for p in packages(lock) if p.get("name") == "idevice_pair"]
+              if len(matches) != 1:
+                  raise SystemExit(f"Expected one idevice_pair root package, found {len(matches)}")
+              return matches[0]
+
+          def identity(p):
+              return (
+                  p.get("name"),
+                  p.get("version"),
+                  p.get("source"),
+                  p.get("checksum"),
+              )
+
+          original_root = root(original)
+          current_root = root(current)
+
+          if current_root.get("version") != "0.1.14":
+              raise SystemExit(f"Unexpected overlaid root version: {current_root.get('version')}")
+          if "raw-window-handle" not in current_root.get("dependencies", []):
+              raise SystemExit("raw-window-handle was not recorded in root lock metadata")
+
+          original_third_party = collections.Counter(
+              identity(p) for p in packages(original) if p.get("name") != "idevice_pair"
+          )
+          current_third_party = collections.Counter(
+              identity(p) for p in packages(current) if p.get("name") != "idevice_pair"
+          )
+          if original_third_party != current_third_party:
+              raise SystemExit("Third-party dependency versions changed while normalizing Cargo.lock")
+
+          print(
+              "Cargo.lock normalized without third-party dependency drift: "
+              f"{original_root.get('version')} -> {current_root.get('version')}"
+          )
+          '@ | python -
+
+      - name: Rust compile gate
+        working-directory: upstream/idevice_pair
+        run: cargo check --release --locked
+
+      - name: Rust test gate
+        working-directory: upstream/idevice_pair
+        run: cargo test --release --locked
+
+      - name: Build Windows x64 release
+        working-directory: upstream/idevice_pair
+        run: cargo build --release --locked
+
+      - name: Verify upstream feature surface
+        shell: pwsh
+        run: |
+          $source = Get-Content upstream/idevice_pair/src/main.rs -Raw
+          $required = @(
+            'IdeviceCommands::EnableWireless',
+            'IdeviceCommands::CheckDevMode',
+            'IdeviceCommands::AutoMount',
+            'IdeviceCommands::GeneratePairingFile',
+            'IdeviceCommands::ValidateRemote',
+            'IdeviceCommands::InstallPairingFile',
+            'PairingMode::Lockdown',
+            'PairingMode::RemotePairing',
+            'SealPairing.mobiledevicepairing',
+            'fn setup_windows_backdrop',
+            'DWMSBT_TRANSIENTWINDOW',
+            'pairing_material_hidden'
+          )
+          foreach ($marker in $required) {
+            if (-not $source.Contains($marker)) { throw "Required feature missing: $marker" }
+          }
+          if ($source.Contains('RichText::new(&pairing_file).monospace()')) {
+            throw "Raw pairing material is still rendered in the UI"
+          }
+
+      - name: Verify Windows PE
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path upstream/idevice_pair/target/release/idevice_pair.exe
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          if ($bytes.Length -lt 1024) { throw "Executable is unexpectedly small" }
+          if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw "Missing MZ header" }
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+          if ([Text.Encoding]::ASCII.GetString($bytes, $peOffset, 4) -ne "PE`0`0") { throw "Invalid PE signature" }
+
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD "build/Seal-Pairing-Assistant-Windows-x64"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item upstream/idevice_pair/target/release/idevice_pair.exe (Join-Path $out "Seal配对助手.exe")
+          Copy-Item upstream/idevice_pair/LICENSE (Join-Path $out "LICENSE-idevice_pair.txt")
+          Copy-Item Tools/SealPairingAssistant/UPSTREAM.md (Join-Path $out "UPSTREAM.md")
+          @"
+          Seal Pairing Assistant
+          Upstream: ${env:UPSTREAM_REPOSITORY}
+          Commit: ${env:UPSTREAM_COMMIT}
+          Rust: ${env:RUST_TOOLCHAIN}
+          Target: Windows x64
+
+          Windows prerequisite:
+          Install Apple website iTunes / Apple Mobile Device support as required by upstream idevice_pair.
+          "@ | Set-Content (Join-Path $out "README.txt") -Encoding UTF8
+          Get-FileHash (Join-Path $out "Seal配对助手.exe") -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  Seal配对助手.exe" } |
+            Set-Content (Join-Path $out "SHA256SUMS.txt") -Encoding ASCII
+
+      - name: Upload Windows pairing assistant
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Seal-Pairing-Assistant-Windows-x64
+          path: build/Seal-Pairing-Assistant-Windows-x64
+          if-no-files-found: error
+          retention-days: 30

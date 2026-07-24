@@ -82,6 +82,8 @@ final class SettingsViewModel: ObservableObject {
     private let operationCoordinator: OperationCoordinator?
     private var hasLoaded = false
     private var loadGeneration = 0
+    private static let pairingAssistantInboxFileName = "SealPairing.mobiledevicepairing"
+    private static let pairingAssistantSource = "Seal 配对助手"
 
     init(
         accountRepository: any AccountRepository,
@@ -183,6 +185,9 @@ final class SettingsViewModel: ObservableObject {
             let repairedAccounts = try await repairLegacyAccountStatuses(fetchedAccounts)
             guard generation == loadGeneration else { return }
             let displayedAccounts = try await refreshedAccountDisplayNames(repairedAccounts)
+            guard generation == loadGeneration else { return }
+
+            _ = await importPairingAssistantInboxIfPresent()
             guard generation == loadGeneration else { return }
 
             let loadedPairing: PairingRecord?
@@ -1359,6 +1364,72 @@ final class SettingsViewModel: ObservableObject {
         return (try? await keychain.load(accountID: account.id))?.email ?? ""
     }
 
+    @discardableResult
+    func importPairingAssistantInboxIfPresent() async -> Bool {
+        guard let pairingStore else { return false }
+        guard let operationLease = acquireOperation(.resettingPairing) else { return false }
+        defer { releaseOperation(operationLease) }
+        guard let documentsURL = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        ).first else {
+            return false
+        }
+
+        let inboxURL = documentsURL.appendingPathComponent(
+            Self.pairingAssistantInboxFileName,
+            isDirectory: false
+        )
+        guard FileManager.default.fileExists(atPath: inboxURL.path) else {
+            return false
+        }
+
+        do {
+            pairingRecord = try await pairingStore.importFile(at: inboxURL)
+            await installChannel?.reset()
+            diagnosticState = .idle
+            installDiagnostics = .empty
+            try? FileManager.default.removeItem(at: inboxURL)
+            try? await logStore?.append(
+                category: .pairing,
+                message: "\(Self.pairingAssistantSource)已自动写入配对信息，等待真实设备连接验证"
+            )
+            logs = (try? await logStore?.entries()) ?? logs
+            refreshLogExportText()
+            await runInstallChannelCheck(successMessage: "配对助手和安装通道正常")
+            return true
+        } catch let failure as ImportFailure {
+            try? FileManager.default.removeItem(at: inboxURL)
+            alertFailure = failure
+            try? await logStore?.append(
+                category: .pairing,
+                level: .error,
+                message: "\(Self.pairingAssistantSource)写入的配对信息无法导入",
+                code: failure.code
+            )
+            logs = (try? await logStore?.entries()) ?? logs
+            refreshLogExportText()
+            return false
+        } catch {
+            try? FileManager.default.removeItem(at: inboxURL)
+            alertFailure = Self.failure(
+                title: "无法接收配对信息",
+                reason: "Seal 配对助手已发送数据，但本机无法读取。",
+                recovery: "重新配对",
+                code: "SEAL-PAIR-207"
+            )
+            try? await logStore?.append(
+                category: .pairing,
+                level: .error,
+                message: "\(Self.pairingAssistantSource)写入的配对信息读取失败",
+                code: "SEAL-PAIR-207"
+            )
+            logs = (try? await logStore?.entries()) ?? logs
+            refreshLogExportText()
+            return false
+        }
+    }
+
     func importPairingFile(_ url: URL) async {
         guard let pairingStore else { return }
         guard let operationLease = acquireOperation(.resettingPairing) else { return }
@@ -1636,14 +1707,72 @@ final class SettingsViewModel: ObservableObject {
         )
     }
 
+    private static func shouldRollbackPairing(after failure: ImportFailure) -> Bool {
+        ["SEAL-PAIR-205", "SEAL-PAIR-206", "SEAL-INSTALL-703"].contains(failure.code)
+    }
+
     private func finishInstallChannelCheckWithFailure(
         _ failure: ImportFailure,
         diagnostics: InstallChannelDiagnostics? = nil,
         logMessage: String
     ) async {
+        var effectiveFailure = failure
+        var effectiveDiagnostics = diagnostics
+        if Self.shouldRollbackPairing(after: failure), let pairingStore {
+            do {
+                if let restored = try await pairingStore.restoreBackupIfPresent() {
+                    pairingRecord = restored
+                    await installChannel?.reset()
+                    try? await logStore?.append(
+                        category: .pairing,
+                        message: "新配对信息验证失败，已自动恢复上一份可用配对信息"
+                    )
+                    if let installChannel {
+                        let recoveryDiagnostics = await installChannel.diagnose()
+                        effectiveDiagnostics = recoveryDiagnostics
+                        if recoveryDiagnostics.isReady,
+                           let deviceIdentifier = recoveryDiagnostics.deviceIdentifier {
+                            do {
+                                pairingRecord = try await pairingStore.markValidated(
+                                    deviceIdentifier: deviceIdentifier
+                                )
+                                diagnosticState = .ready(deviceIdentifier: deviceIdentifier)
+                                installDiagnostics = recoveryDiagnostics
+                                try? await logStore?.append(
+                                    category: .pairing,
+                                    message: "上一份配对信息已恢复并重新验证成功"
+                                )
+                                logs = (try? await logStore?.entries()) ?? logs
+                                refreshLogExportText()
+                                return
+                            } catch let restoreFailure as ImportFailure {
+                                effectiveFailure = restoreFailure
+                            } catch {
+                                effectiveFailure = Self.failure(
+                                    title: "配对恢复验证失败",
+                                    reason: "上一份配对信息已恢复，但验证结果无法保存。",
+                                    recovery: "重新检测",
+                                    code: "SEAL-PAIR-210"
+                                )
+                            }
+                        } else if let recoveryFailure = recoveryDiagnostics.failure {
+                            effectiveFailure = recoveryFailure
+                        }
+                    }
+                }
+            } catch {
+                effectiveFailure = Self.failure(
+                    title: "配对恢复失败",
+                    reason: "新配对信息不可用，且上一份配对信息未能自动恢复。",
+                    recovery: "重新配对",
+                    code: "SEAL-PAIR-209"
+                )
+                alertFailure = effectiveFailure
+            }
+        }
         if let pairingStore {
             do {
-                if let deviceIdentifier = diagnostics?.deviceIdentifier {
+                if let deviceIdentifier = effectiveDiagnostics?.deviceIdentifier {
                     pairingRecord = try await pairingStore.markValidated(
                         deviceIdentifier: deviceIdentifier
                     )
@@ -1660,13 +1789,13 @@ final class SettingsViewModel: ObservableObject {
             }
         }
         await load(force: true)
-        if let diagnostics { installDiagnostics = diagnostics }
-        diagnosticState = .failed(failure)
+        if let effectiveDiagnostics { installDiagnostics = effectiveDiagnostics }
+        diagnosticState = .failed(effectiveFailure)
         try? await logStore?.append(
             category: .installation,
             level: .error,
             message: logMessage,
-            code: failure.code
+            code: effectiveFailure.code
         )
         logs = (try? await logStore?.entries()) ?? logs
         refreshLogExportText()
