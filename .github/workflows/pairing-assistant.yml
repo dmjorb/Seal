@@ -159,6 +159,9 @@ jobs:
           if ($source.Contains('RichText::new(&pairing_file).monospace()')) {
             throw "Raw pairing material is still rendered in the UI"
           }
+          if ($source.Contains('if let Some(pairing_file) = pairing_file_text')) {
+            throw "Seal overlay left an unused pairing-file binding"
+          }
 
       - name: Verify Windows PE
         shell: pwsh
@@ -176,7 +179,10 @@ jobs:
           $out = Join-Path $PWD "build/Seal-Pairing-Assistant-Windows-x64"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           Copy-Item upstream/idevice_pair/target/release/idevice_pair.exe (Join-Path $out "Seal配对助手.exe")
-          Copy-Item upstream/idevice_pair/LICENSE (Join-Path $out "LICENSE-idevice_pair.txt")
+          $upstreamReadme = "upstream/idevice_pair/README.md"
+          $upstreamReadmeText = Get-Content $upstreamReadme -Raw
+          if ($upstreamReadmeText -notmatch '(?ms)^## License\s+.*MIT License') { throw "Pinned upstream license declaration changed" }
+          Copy-Item $upstreamReadme (Join-Path $out "UPSTREAM-README.md")
           Copy-Item Tools/SealPairingAssistant/UPSTREAM.md (Join-Path $out "UPSTREAM.md")
           @"
           Seal Pairing Assistant

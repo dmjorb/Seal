@@ -59,6 +59,12 @@ def patch_main(path: pathlib.Path) -> None:
     secret_preview = """                            let p_background_color = match ctx.theme() {\n                                egui::Theme::Dark => Color32::BLACK,\n                                egui::Theme::Light => Color32::LIGHT_GRAY,\n                            };\n                            egui::frame::Frame::new().corner_radius(10).inner_margin(10).fill(p_background_color).show(ui, |ui| {\n                                ui.label(RichText::new(&pairing_file).monospace());\n                            });\n"""
     secure_preview = """                            egui::frame::Frame::new()\n                                .corner_radius(16)\n                                .inner_margin(14)\n                                .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 150))\n                                .show(ui, |ui| {\n                                    ui.strong(t!(\"pairing_material_hidden\"));\n                                    ui.label(RichText::new(t!(\"pairing_material_hidden_help\")).weak());\n                                });\n"""
     text = replace_once(text, secret_preview, secure_preview, "pairing secret redaction")
+    text = replace_once(
+        text,
+        "                    if let Some(pairing_file) = pairing_file_text {\n",
+        "                    if pairing_file_text.is_some() {\n",
+        "pairing preview presence check",
+    )
 
     app_tail = "        });\n    }\n}\n"
     if not text.endswith(app_tail):
@@ -111,6 +117,8 @@ def verify(root: pathlib.Path) -> None:
         raise RuntimeError("Seal must be supported in both pairing modes")
     if 'RichText::new(&pairing_file).monospace()' in main:
         raise RuntimeError("raw pairing material must not be rendered in the UI")
+    if "if let Some(pairing_file) = pairing_file_text" in main:
+        raise RuntimeError("unused pairing-file UI binding was not removed")
     if 'raw-window-handle = "0.6.2"' not in cargo:
         raise RuntimeError("Windows backdrop dependency missing")
 
