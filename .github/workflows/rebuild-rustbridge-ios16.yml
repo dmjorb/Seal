@@ -2,6 +2,15 @@ name: Rebuild RustBridge for iOS 16
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/seal-optimization
+    paths:
+      - .github/workflows/rebuild-rustbridge-ios16.yml
+      - Vendor/Minimuxer/RustBridge/**
+      - Scripts/audit-rustbridge-source.sh
+      - Scripts/verify-rustbridge-minos.sh
+      - Scripts/verify-rustbridge-symbols.sh
 
 permissions:
   contents: read
