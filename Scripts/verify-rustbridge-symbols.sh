@@ -4,11 +4,11 @@ set -euo pipefail
 FRAMEWORK_PATH="${1:-Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "RustBridge symbol verification requires macOS/xcrun nm." >&2
+  echo "RustBridge symbol verification requires macOS/Xcode llvm-nm." >&2
   exit 2
 fi
-if ! command -v xcrun >/dev/null 2>&1 || ! xcrun --find nm >/dev/null 2>&1; then
-  echo "xcrun nm is required to inspect RustBridge symbols." >&2
+if ! command -v xcrun >/dev/null 2>&1 || ! xcrun --find llvm-nm >/dev/null 2>&1; then
+  echo "xcrun llvm-nm is required to inspect RustBridge symbols." >&2
   exit 2
 fi
 if [[ ! -d "$FRAMEWORK_PATH" ]]; then
@@ -30,25 +30,42 @@ required_symbols=(
   idevice_error_free
 )
 
+has_symbol() {
+  local symbols="$1"
+  local symbol="$2"
+
+  # llvm-nm POSIX output may prefix archive/member information before the
+  # Mach-O symbol. Match a complete symbol token, never a substring.
+  printf '%s\n' "$symbols" |
+    grep -Eq "(^|[[:space:]:])_${symbol}[[:space:]]"
+}
+
 archives_checked=0
 failures=0
 while IFS= read -r archive; do
   archives_checked=$((archives_checked + 1))
   echo "Checking exported FFI symbols in $archive"
-  if ! symbols="$(xcrun nm -gU "$archive" 2>/dev/null)"; then
-    echo "ERROR: unable to inspect symbols in $archive" >&2
+
+  nm_stderr="$(mktemp)"
+  if ! symbols="$(
+    xcrun llvm-nm       --defined-only       --extern-only       --quiet       --format=posix       "$archive" 2>"$nm_stderr"
+  )"; then
+    echo "ERROR: llvm-nm could not inspect $archive" >&2
+    cat "$nm_stderr" >&2
+    rm -f "$nm_stderr"
     failures=$((failures + 1))
     continue
   fi
+  rm -f "$nm_stderr"
 
   for symbol in "${required_symbols[@]}"; do
-    if ! printf '%s\n' "$symbols" | grep -Eq "[[:space:]]_${symbol}$"; then
+    if ! has_symbol "$symbols" "$symbol"; then
       echo "ERROR: missing exported symbol $symbol in $archive" >&2
       failures=$((failures + 1))
     fi
   done
 
-  if printf '%s\n' "$symbols" | grep -Eq '[[:space:]]_rust_bridge_free_pointer$'; then
+  if has_symbol "$symbols" "rust_bridge_free_pointer"; then
     echo "ERROR: unsafe generic rust_bridge_free_pointer is still exported by $archive" >&2
     failures=$((failures + 1))
   fi
