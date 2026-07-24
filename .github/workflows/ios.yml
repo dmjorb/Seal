@@ -18,7 +18,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6.0.2
 
       - name: Select pinned Xcode 26.5
         run: |
@@ -40,18 +40,42 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Verify Seal minimum deployment target remains iOS 16
+        run: |
+          TARGET="$(xcodebuild \
+            -project Seal.xcodeproj \
+            -target Seal \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -showBuildSettings | awk -F ' = ' '/^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = / { print $2; exit }')"
+          echo "Seal IPHONEOS_DEPLOYMENT_TARGET=$TARGET"
+          test "$TARGET" = "16.0"
+
       - name: Run Swift unit and UI regression tests
+        id: regression-tests
+        continue-on-error: true
         run: |
           SIMULATOR_UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(device["udid"] for runtime, devices in d.items() if "iOS-26-5" in runtime for device in devices if device.get("isAvailable") and device.get("name", "").startswith("iPhone")))')"
           xcrun simctl boot "$SIMULATOR_UDID" || true
           xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+          rm -rf build/TestResults.xcresult
           xcodebuild test \
             -project Seal.xcodeproj \
             -scheme Seal \
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
             -parallel-testing-enabled NO \
+            -resultBundlePath build/TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             OTHER_SWIFT_FLAGS='$(inherited) -continue-building-after-errors'
+
+      - name: Upload regression test result bundle
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Seal-TestResults-${{ github.run_number }}
+          if-no-files-found: warn
+          path: build/TestResults.xcresult
+          retention-days: 14
 
       - name: Build unsigned IPA
         run: bash Scripts/build-unsigned-ipa.sh
@@ -60,7 +84,7 @@ jobs:
         run: bash Scripts/verify-ipa.sh build/Seal.ipa
 
       - name: Upload unsigned IPA
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: Seal-${{ github.run_number }}
           if-no-files-found: error
@@ -72,7 +96,7 @@ jobs:
 
       - name: Upload build metadata
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: Seal-Build-Metadata-${{ github.run_number }}
           if-no-files-found: warn
@@ -80,3 +104,9 @@ jobs:
             build/Seal.ipa.sha256
             build/Seal-Info.plist
           retention-days: 14
+
+      - name: Fail when regression tests failed
+        if: always() && steps.regression-tests.outcome != 'success'
+        run: |
+          echo "Swift/UI regression tests failed. See Seal-TestResults artifact." >&2
+          exit 1

@@ -138,7 +138,7 @@ struct AnisetteV3Client: AnisetteEnvironmentManaging {
         identity: AnisetteV3Identity
     ) async throws -> AnisetteProvisioningState {
         let urls = try await provisioningURLs(clientInfo: clientInfo, identity: identity)
-        var socketRequest = URLRequest(url: websocketURL(for: server))
+        var socketRequest = URLRequest(url: try websocketURL(for: server))
         socketRequest.timeoutInterval = 15
         let socket = session.webSocketTask(with: socketRequest)
         socket.resume()
@@ -198,7 +198,9 @@ struct AnisetteV3Client: AnisetteEnvironmentManaging {
         clientInfo: AnisetteV3ClientInfo,
         identity: AnisetteV3Identity
     ) async throws -> (start: URL, end: URL) {
-        let url = URL(string: "https://gsa.apple.com/grandslam/GsService2/lookup")!
+        guard let url = URL(string: "https://gsa.apple.com/grandslam/GsService2/lookup") else {
+            throw AnisetteV3Error.provisioningFailed
+        }
         let request = appleRequest(
             url: url,
             clientInfo: clientInfo,
@@ -381,10 +383,18 @@ struct AnisetteV3Client: AnisetteEnvironmentManaging {
         return request
     }
 
-    private func websocketURL(for server: URL) -> URL {
-        var components = URLComponents(url: server, resolvingAgainstBaseURL: false)!
+    private func websocketURL(for server: URL) throws -> URL {
+        guard var components = URLComponents(
+            url: server,
+            resolvingAgainstBaseURL: false
+        ) else {
+            throw AnisetteV3Error.invalidServerResponse
+        }
         components.scheme = "wss"
-        return components.url!
+        guard let baseURL = components.url else {
+            throw AnisetteV3Error.invalidServerResponse
+        }
+        return baseURL
             .appendingPathComponent("v3")
             .appendingPathComponent("provisioning_session")
     }

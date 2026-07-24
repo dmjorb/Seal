@@ -52,6 +52,7 @@ actor SigningCoordinator {
         }
         guard var secret = try await keychain.load(accountID: accountID) else {
             account.status = .needsVerification
+            account.verificationFailureReason = .localCredentialsMissing
             try await persistAccountState(account)
             throw Self.failure(
                 reason: "本机 Keychain 中缺少当前 Apple ID 的登录凭据。",
@@ -146,6 +147,7 @@ actor SigningCoordinator {
             account.certificateSerialNumber = portalResult.certificateSerialNumber
             account.selectedCertificateSerialNumber = portalResult.certificateSerialNumber
             account.status = .verified
+            account.verificationFailureReason = nil
             account.lastVerifiedAt = Date()
             try await accountRepository.save(account)
 
@@ -187,8 +189,9 @@ actor SigningCoordinator {
             try await persistAppState(app)
             throw CancellationError()
         } catch let failure as ImportFailure {
-            if AppleServiceFailurePolicy.shouldRequireReverification(failure) {
+            if let reason = AppleServiceFailurePolicy.verificationFailureReason(for: failure) {
                 account.status = .needsVerification
+                account.verificationFailureReason = reason
                 try await persistAccountState(account)
             }
             if didPersistNewSignedArtifact || failure.code.hasPrefix("SEAL-INSTALL-") {
@@ -389,6 +392,7 @@ actor SigningCoordinator {
             updatedAccount.certificateSerialNumber = serialNumber
             updatedAccount.selectedCertificateSerialNumber = serialNumber
             updatedAccount.status = .verified
+            updatedAccount.verificationFailureReason = nil
             updatedAccount.lastVerifiedAt = Date()
             try await accountRepository.save(updatedAccount)
         } catch {

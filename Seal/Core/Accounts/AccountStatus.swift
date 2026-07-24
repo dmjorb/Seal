@@ -7,3 +7,9 @@ enum AccountStatus: String, Codable, Equatable, Sendable {
         self != .needsVerification
     }
 }
+
+enum AccountVerificationFailureReason: String, Codable, Equatable, Sendable {
+    case credentialsRejected
+    case localCredentialsMissing
+    case localCredentialsMismatch
+}

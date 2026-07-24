@@ -331,7 +331,7 @@ actor ImportWorkflow {
             record.isSeal == false
                 && record.originalBundleIdentifier == parsed.bundleIdentifier
                 && record.hasSignedArtifact == false
-                && [.imported, .failedRecoverable, .failedFinal].contains(record.state)
+                && AppState.replaceablePendingImportStates.contains(record.state)
         })
     }
 

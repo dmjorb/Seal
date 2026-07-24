@@ -9,7 +9,9 @@ enum AccountAvailabilityPolicy {
         for account: AppleAccountRecord,
         hasLocalSecret: Bool
     ) -> AccountStatus {
-        guard account.status == .needsVerification, hasLocalSecret else {
+        guard account.status == .needsVerification,
+              account.verificationFailureReason == nil,
+              hasLocalSecret else {
             return account.status
         }
         // Older Seal builds persisted transient network failures as

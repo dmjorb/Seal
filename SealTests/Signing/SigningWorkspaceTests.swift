@@ -38,7 +38,7 @@ struct SigningWorkspaceTests {
         )
         defer { try? FileManager.default.removeItem(at: root) }
         let iconData = try #require(Data(base64Encoded:
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl8sAAAAASUVORK5CYII="
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII="
         ))
         let workspace = SigningWorkspace()
         let prepared = try workspace.prepare(

@@ -15,6 +15,14 @@ enum AppState: String, Codable, CaseIterable, Equatable, Sendable {
     case failedRecoverable
     case failedFinal
 
+    static let replaceablePendingImportStates: Set<AppState> = [
+        .imported,
+        .preflightPassed,
+        .waitingForAccount,
+        .failedRecoverable,
+        .failedFinal
+    ]
+
     var title: String {
         switch self {
         case .imported, .preflightPassed, .waitingForAccount:

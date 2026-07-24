@@ -1,6 +1,7 @@
 import XCTest
 
 final class RootNavigationUITests: XCTestCase {
+    @MainActor
     func testSwitchesBetweenTheTwoRootTabs() {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing-empty"]
@@ -13,7 +14,7 @@ final class RootNavigationUITests: XCTestCase {
         XCTAssertTrue(settingsTab.waitForExistence(timeout: 10))
 
         settingsTab.tap()
-        XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["我的"].waitForExistence(timeout: 5))
 
         appsTab.tap()
         XCTAssertTrue(app.staticTexts["Seal"].waitForExistence(timeout: 5))

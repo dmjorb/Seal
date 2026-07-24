@@ -161,7 +161,12 @@ actor AppFileStore {
     }
 
     private func isReadableZIPArchive(_ sourceURL: URL) -> Bool {
-        (try? Archive(url: sourceURL, accessMode: .read)) != nil
+        do {
+            _ = try Archive(url: sourceURL, accessMode: .read, pathEncoding: nil)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func openArchive(_ sourceURL: URL) throws -> Archive {
@@ -199,7 +204,7 @@ actor AppFileStore {
         }
 
         do {
-            try archive.extract(ipaEntry, to: stagedURL)
+            _ = try archive.extract(ipaEntry, to: stagedURL)
         } catch {
             throw ImportFailure(
                 title: "无法导入构建产物",
@@ -237,7 +242,7 @@ actor AppFileStore {
             iconRelativePath: iconData == nil ? nil : "Apps/\(appDirectoryName)/Icon.png",
             preferredIconRelativePath: preferredIconData == nil ? nil : "Apps/\(appDirectoryName)/PreferredIcon.png"
         )
-        var transaction = PreparedAppFileTransaction(
+        let transaction = PreparedAppFileTransaction(
             id: transactionID,
             appID: appID,
             pendingDirectoryName: pendingDirectoryName,
@@ -561,20 +566,48 @@ actor AppFileStore {
             do {
                 try fileManager.moveItem(at: pending, to: destination)
             } catch {
+                let moveError = error
                 if fileManager.fileExists(atPath: backup.path) {
-                    try? fileManager.moveItem(at: backup, to: destination)
+                    do {
+                        try fileManager.moveItem(at: backup, to: destination)
+                    } catch {
+                        throw Self.signedArtifactRecoveryFailure(
+                            reason: "Signed.ipa 写入失败，旧签名包也未能恢复；备份仍保留在应用目录中。"
+                        )
+                    }
                 }
-                throw error
+                throw moveError
             }
-            try? fileManager.removeItem(at: backup)
+            if fileManager.fileExists(atPath: backup.path) {
+                do {
+                    try fileManager.removeItem(at: backup)
+                } catch {
+                    // The committed Signed.ipa is already valid. Keep the hidden
+                    // backup rather than turning a successful signing into a false failure.
+                }
+            }
             return relativePath
         } catch {
-            try? fileManager.removeItem(at: pending)
+            let originalError = error
+            if fileManager.fileExists(atPath: pending.path) {
+                do {
+                    try fileManager.removeItem(at: pending)
+                } catch {
+                    // Preserve the primary failure; stale hidden pending files are
+                    // safe to clean during storage maintenance.
+                }
+            }
             if fileManager.fileExists(atPath: destination.path) == false,
                fileManager.fileExists(atPath: backup.path) {
-                try? fileManager.moveItem(at: backup, to: destination)
+                do {
+                    try fileManager.moveItem(at: backup, to: destination)
+                } catch {
+                    throw Self.signedArtifactRecoveryFailure(
+                        reason: "签名包写入失败后无法恢复旧 Signed.ipa；备份仍保留在应用目录中。"
+                    )
+                }
             }
-            throw error
+            throw originalError
         }
     }
 
@@ -801,6 +834,15 @@ actor AppFileStore {
             reason: reason,
             recovery: "重新打开 Seal 后重试；如持续失败请复制诊断日志",
             code: "SEAL-IPA-RECOVERY-003"
+        )
+    }
+
+    private static func signedArtifactRecoveryFailure(reason: String) -> ImportFailure {
+        ImportFailure(
+            title: "签名包恢复未完成",
+            reason: reason,
+            recovery: "保留当前文件并重新打开 Seal；如持续失败请复制诊断日志",
+            code: "SEAL-IPA-RECOVERY-004"
         )
     }
 

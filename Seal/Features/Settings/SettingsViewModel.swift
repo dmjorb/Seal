@@ -382,6 +382,7 @@ final class SettingsViewModel: ObservableObject {
 
         do {
             guard let originalSecret = try await keychain.load(accountID: account.id) else {
+                try await persistVerificationFailure(.localCredentialsMissing, for: account)
                 throw Self.failure(
                     title: "无法创建证书",
                     reason: "本机没有当前 Apple ID 的登录凭据。",
@@ -438,6 +439,7 @@ final class SettingsViewModel: ObservableObject {
 
         do {
             guard let originalSecret = try await keychain.load(accountID: account.id) else {
+                try await persistVerificationFailure(.localCredentialsMissing, for: account)
                 throw Self.failure(
                     title: "无法撤销证书",
                     reason: "本机没有当前 Apple ID 的登录凭据。",
@@ -506,6 +508,7 @@ final class SettingsViewModel: ObservableObject {
 
         do {
             guard let originalSecret = try await keychain.load(accountID: account.id) else {
+                try await persistVerificationFailure(.localCredentialsMissing, for: account)
                 throw Self.failure(
                     title: "无法更换证书",
                     reason: "本机没有当前 Apple ID 的登录凭据。",
@@ -597,6 +600,7 @@ final class SettingsViewModel: ObservableObject {
             updatedAccount.certificateSerialNumber = material.serialNumber
             updatedAccount.selectedCertificateSerialNumber = material.serialNumber
             updatedAccount.status = .verified
+            updatedAccount.verificationFailureReason = nil
             updatedAccount.lastVerifiedAt = Date()
             try await accountRepository.save(updatedAccount)
         } catch {
@@ -764,6 +768,7 @@ final class SettingsViewModel: ObservableObject {
 
         do {
             guard let secret = try await keychain.load(accountID: account.id) else {
+                try await persistVerificationFailure(.localCredentialsMissing, for: account)
                 throw Self.failure(
                     title: "Apple ID 同步失败",
                     reason: "本机没有此 Apple ID 的登录凭据。",
@@ -824,6 +829,7 @@ final class SettingsViewModel: ObservableObject {
 
         do {
             guard let secret = try await keychain.load(accountID: account.id) else {
+                try await persistVerificationFailure(.localCredentialsMissing, for: account)
                 throw Self.failure(
                     title: "Apple 侧同步失败",
                     reason: "本机没有此 Apple ID 的登录凭据。",
@@ -1365,6 +1371,7 @@ final class SettingsViewModel: ObservableObject {
         }
         do {
             pairingRecord = try await pairingStore.importFile(at: url)
+            await installChannel?.reset()
             diagnosticState = .idle
             installDiagnostics = .empty
             try? await logStore?.append(
@@ -1401,6 +1408,7 @@ final class SettingsViewModel: ObservableObject {
         defer { releaseOperation(operationLease) }
         do {
             try await pairingStore.remove()
+            await installChannel?.reset()
             pairingRecord = nil
             diagnosticState = .idle
             installDiagnostics = .empty
@@ -1461,6 +1469,7 @@ final class SettingsViewModel: ObservableObject {
         diagnosticState = .running
         do {
             guard let secret = try await keychain.load(accountID: account.id) else {
+                try await persistVerificationFailure(.localCredentialsMissing, for: account)
                 throw Self.failure(
                     title: "账号需要验证",
                     reason: "本机没有当前 Apple ID 的登录凭据。",
@@ -1472,12 +1481,14 @@ final class SettingsViewModel: ObservableObject {
             do {
                 try await accountClient.validate(account: account, secret: secret)
                 account.status = .verified
+                account.verificationFailureReason = nil
                 account.maskedEmail = AppleAccountClient.mask(secret.email)
                 account.lastVerifiedAt = Date()
                 try await accountRepository.save(account)
             } catch let failure as ImportFailure {
-                if AppleServiceFailurePolicy.shouldRequireReverification(failure) {
+                if let reason = AppleServiceFailurePolicy.verificationFailureReason(for: failure) {
                     account.status = .needsVerification
+                    account.verificationFailureReason = reason
                     try await accountRepository.save(account)
                 }
                 throw failure
@@ -1512,6 +1523,17 @@ final class SettingsViewModel: ObservableObject {
                 logMessage: "签名环境检测失败"
             )
         }
+    }
+
+    private func persistVerificationFailure(
+        _ reason: AccountVerificationFailureReason,
+        for account: AppleAccountRecord
+    ) async throws {
+        guard let accountRepository else { return }
+        var updated = account
+        updated.status = .needsVerification
+        updated.verificationFailureReason = reason
+        try await accountRepository.save(updated)
     }
 
     private func repairLegacyAccountStatuses(

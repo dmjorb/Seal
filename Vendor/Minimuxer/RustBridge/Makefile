@@ -21,13 +21,13 @@ rust:
 	@echo "--- Building Rust Bridge ---"
 
 	@# iOS device (arm64)
-	cd $(RUST_DIR) && cargo build --target aarch64-apple-ios --release
+	cd $(RUST_DIR) && cargo build --locked --target aarch64-apple-ios --release
 
 	@# iOS Simulator (Apple Silicon)
-	cd $(RUST_DIR) && cargo build --target aarch64-apple-ios-sim --release
+	cd $(RUST_DIR) && cargo build --locked --target aarch64-apple-ios-sim --release
 
 	@# macOS (arm64)
-	cd $(RUST_DIR) && cargo build --target aarch64-apple-darwin --release
+	cd $(RUST_DIR) && cargo build --locked --target aarch64-apple-darwin --release
 
 
 # --- XCFramework from static libs (no C headers needed — Swift uses @_silgen_name) ---

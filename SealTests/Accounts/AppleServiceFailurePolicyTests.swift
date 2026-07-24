@@ -79,4 +79,40 @@ struct AppleServiceFailurePolicyTests {
         )
         #expect(AccountAvailabilityPolicy.isSelectable(account))
     }
+    @Test
+    func explicitAuthenticationFailureReasonPreventsLegacyAutoRepair() {
+        let account = AppleAccountRecord(
+            maskedEmail: "a***@icloud.com",
+            accountIdentifier: "account",
+            teamID: "TEAM",
+            teamName: "Team",
+            status: .needsVerification,
+            verificationFailureReason: .credentialsRejected,
+            lastVerifiedAt: Date()
+        )
+        #expect(
+            AccountAvailabilityPolicy.repairedStatus(for: account, hasLocalSecret: true)
+                == .needsVerification
+        )
+    }
+
+    @Test(arguments: [
+        ("SEAL-AUTH-102", AccountVerificationFailureReason.credentialsRejected),
+        ("SEAL-AUTH-105", AccountVerificationFailureReason.localCredentialsMissing),
+        ("SEAL-AUTH-106", AccountVerificationFailureReason.localCredentialsMismatch)
+    ])
+    func explicitAuthenticationFailuresPersistTheirReason(
+        code: String,
+        expected: AccountVerificationFailureReason
+    ) {
+        let failure = ImportFailure(
+            title: "账号需要重新验证",
+            reason: "认证状态失效",
+            recovery: "重新验证 Apple ID",
+            code: code
+        )
+        #expect(AppleServiceFailurePolicy.verificationFailureReason(for: failure) == expected)
+        #expect(AppleServiceFailurePolicy.shouldRequireReverification(failure))
+    }
+
 }

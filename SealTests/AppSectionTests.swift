@@ -8,12 +8,12 @@ final class AppSectionTests: XCTestCase {
 
     func testRootSectionTitlesAreConciseChinese() {
         XCTAssertEqual(AppSection.apps.title, "应用")
-        XCTAssertEqual(AppSection.settings.title, "设置")
+        XCTAssertEqual(AppSection.settings.title, "我的")
     }
 
     func testRootSectionIconsAreStable() {
         XCTAssertEqual(AppSection.apps.systemImage, "square.grid.2x2")
-        XCTAssertEqual(AppSection.settings.systemImage, "gearshape.fill")
+        XCTAssertEqual(AppSection.settings.systemImage, "person.crop.circle")
     }
 
     func testMissingAccountSetupOpensAddAccountDirectly() {

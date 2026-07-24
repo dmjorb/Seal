@@ -10,34 +10,44 @@ import Foundation
 import RustBridge
 
 public class Heartbeat {
-    public static var lastBeatSuccessful = false
+    private static let stateLock = NSLock()
+    private static var _lastBeatSuccessful = false
 
-    public static func startBeat() {
+    public static var lastBeatSuccessful: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _lastBeatSuccessful
+    }
+
+    public static func reset() {
+        setLastBeatSuccessful(false)
+    }
+
+    public static func startBeat(generation: UInt64) {
         Thread.detachNewThread {
             print("[minimuxer] Starting heartbeat thread...")
-            while !Muxer.usbmuxdReady {
+            while Muxer.isCurrentGeneration(generation), Muxer.usbmuxdReady == false {
                 Thread.sleep(forTimeInterval: 1)
-                let ts = ISO8601DateFormatter().string(from: Date())
-                print("[\(ts)] [minimuxer] heartbeat-thread: Waiting for usbmuxd to be ready...")
+                let timestamp = ISO8601DateFormatter().string(from: Date())
+                print("[\(timestamp)] [minimuxer] heartbeat-thread: Waiting for usbmuxd to be ready...")
             }
+            guard Muxer.isCurrentGeneration(generation) else { return }
             print("[minimuxer] heartbeat-thread: usbmuxd is ready")
 
-            // outer loop
-            while true {
+            while Muxer.isCurrentGeneration(generation) {
                 let deviceIP: String
                 do {
                     deviceIP = try DeviceEndpoint.shared.ip()
                 } catch {
                     print("[minimuxer] heartbeat-thread: deviceIP unavailable")
-                    lastBeatSuccessful = false
+                    setLastBeatSuccessful(false, generation: generation)
                     Thread.sleep(forTimeInterval: 1)
                     continue
                 }
-                
-                // verify tunnel/device reachability first
-                if !Minimuxer.testDeviceConnection(ifaddr: deviceIP) {
+
+                if Minimuxer.testDeviceConnection(ifaddr: deviceIP) == false {
                     print("[minimuxer] heartbeat-thread: device IP not reachable, waiting...")
-                    lastBeatSuccessful = false
+                    setLastBeatSuccessful(false, generation: generation)
                     Thread.sleep(forTimeInterval: 1)
                     continue
                 }
@@ -48,35 +58,49 @@ public class Heartbeat {
                     device = try Device.getFirstDevice()
                 } catch {
                     print("[minimuxer] WARN: Could not query device from usbmuxd for heartbeat")
-                    lastBeatSuccessful = false
+                    setLastBeatSuccessful(false, generation: generation)
                     Thread.sleep(forTimeInterval: 1)
                     continue
                 }
 
-                guard let heartbeat = RustHeartbeat.connect(device: device.internalInstance, label: "minimuxer") else {
+                guard let heartbeat = RustHeartbeat.connect(
+                    device: device.internalInstance,
+                    label: "minimuxer"
+                ) else {
                     print("[minimuxer] ERROR: Failed to create heartbeat client")
-                    lastBeatSuccessful = false
+                    setLastBeatSuccessful(false, generation: generation)
                     Thread.sleep(forTimeInterval: 1)
                     continue
                 }
 
-                // Inner loop: keep receiving and sending heartbeats
-                while true {
-                   guard let plist = heartbeat.receive(timeoutMs: MuxerConstants.heartbeatTimeoutMs) else {
-                       print("[minimuxer] ERROR: Heartbeat recv failed")
-                       lastBeatSuccessful = false
-                       break
-                   }
+                while Muxer.isCurrentGeneration(generation) {
+                    guard let plist = heartbeat.receive(
+                        timeoutMs: MuxerConstants.heartbeatTimeoutMs
+                    ) else {
+                        print("[minimuxer] ERROR: Heartbeat recv failed")
+                        setLastBeatSuccessful(false, generation: generation)
+                        break
+                    }
 
                     if heartbeat.send(plistXml: plist) {
-                        lastBeatSuccessful = true
+                        setLastBeatSuccessful(true, generation: generation)
                     } else {
                         print("[minimuxer] ERROR: Heartbeat send failed")
-                        lastBeatSuccessful = false
+                        setLastBeatSuccessful(false, generation: generation)
                         break
                     }
                 }
             }
         }
+    }
+
+    private static func setLastBeatSuccessful(
+        _ value: Bool,
+        generation: UInt64? = nil
+    ) {
+        if let generation, Muxer.isCurrentGeneration(generation) == false { return }
+        stateLock.lock()
+        _lastBeatSuccessful = value
+        stateLock.unlock()
     }
 }

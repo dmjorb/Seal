@@ -54,7 +54,6 @@ actor ApplePortalCertificateService {
         secret: AccountSecret
     ) async throws -> CreatedCertificateMaterial {
         let context = try await context(account: account, secret: secret)
-        let existing = try await fetchCertificates(team: context.team, session: context.session)
         let deviceName = await MainActor.run { UIDevice.current.name }
 
         let requested: ALTCertificate

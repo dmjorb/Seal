@@ -114,14 +114,16 @@ struct ImportWorkflowTests {
     func duplicateBundleIdentifierIsReplacedAtomically() async throws {
         let environment = try makeEnvironment()
         defer { try? FileManager.default.removeItem(at: environment.root) }
+        let oldID = UUID()
         let oldRecord = AppRecord(
+            id: oldID,
             originalBundleIdentifier: "com.example.demo",
             name: "Old Demo",
             version: "0.9",
             buildNumber: "1",
             size: 10,
-            state: .imported,
-            ipaRelativePath: "Apps/old/Original.ipa",
+            state: .preflightPassed,
+            ipaRelativePath: "Apps/\(oldID.uuidString)/Original.ipa",
             importedAt: Date(timeIntervalSince1970: 100)
         )
         let oldIPA = environment.documents.appending(path: oldRecord.ipaRelativePath)
@@ -142,6 +144,7 @@ struct ImportWorkflowTests {
         let records = try await environment.appStore.fetchAll()
         #expect(records.count == 1)
         #expect(records.first?.id == oldRecord.id)
+        #expect(records.first?.ipaRelativePath == oldRecord.ipaRelativePath)
         #expect(records.first?.name == "Demo")
         #expect(FileManager.default.fileExists(atPath: oldIPA.path))
         #expect(try Data(contentsOf: oldIPA) != Data("old".utf8))

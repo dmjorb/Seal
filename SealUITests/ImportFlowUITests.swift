@@ -1,6 +1,7 @@
 import XCTest
 
 final class ImportFlowUITests: XCTestCase {
+    @MainActor
     func testEmptyStateHasImportEntry() {
         let app = launch(with: "--ui-testing-empty")
         XCTAssertTrue(app.staticTexts["Seal"].waitForExistence(timeout: 10))
@@ -9,6 +10,7 @@ final class ImportFlowUITests: XCTestCase {
         XCTAssertFalse(element("imported-app-row", in: app).exists)
     }
 
+    @MainActor
     func testNormalColdLaunchDefaultsToInstalledAndPendingItemRemainsAvailable() {
         let app = launch(with: "--ui-testing-imported")
         XCTAssertTrue(app.buttons["待签名，1 个"].waitForExistence(timeout: 10))
@@ -18,6 +20,7 @@ final class ImportFlowUITests: XCTestCase {
         XCTAssertTrue(app.buttons["import-toolbar-button"].exists)
     }
 
+    @MainActor
     func testConfirmationKeepsSummaryAndActionsConcise() {
         let app = launch(with: "--ui-testing-confirmation")
         XCTAssertTrue(app.otherElements["import-confirmation"].waitForExistence(timeout: 10))
@@ -29,6 +32,7 @@ final class ImportFlowUITests: XCTestCase {
         XCTAssertTrue(app.buttons["取消"].exists)
     }
 
+    @MainActor
     func testThreeStageNavigationCanBeTappedWithoutChangingHeaderAlignment() {
         let app = launch(with: "--ui-testing-empty")
         XCTAssertTrue(app.buttons["待签名，0 个"].waitForExistence(timeout: 10))
@@ -44,6 +48,7 @@ final class ImportFlowUITests: XCTestCase {
     }
 
 
+    @MainActor
     func testThreeStageNavigationSupportsHorizontalSwipe() {
         let app = launch(with: "--ui-testing-empty")
         XCTAssertTrue(app.staticTexts["待签名应用"].waitForExistence(timeout: 10))
@@ -57,6 +62,7 @@ final class ImportFlowUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["已签名应用"].waitForExistence(timeout: 5))
     }
 
+    @MainActor
     func testLargeDynamicTypeKeepsPrimaryNavigationReachable() {
         let app = XCUIApplication()
         app.launchArguments = [
@@ -71,10 +77,13 @@ final class ImportFlowUITests: XCTestCase {
         XCTAssertTrue(app.buttons["import-toolbar-button"].exists)
     }
 
+    @MainActor
     private func launch(with argument: String) -> XCUIApplication {
         let app = XCUIApplication(); app.launchArguments = [argument]; app.launch(); return app
     }
+    @MainActor
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement { app.descendants(matching: .any)[identifier].firstMatch }
+    @MainActor
     private func assertSummary(_ identifier: String, value: String, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let summary = element(identifier, in: app)
         XCTAssertTrue(summary.waitForExistence(timeout: 10), file: file, line: line)

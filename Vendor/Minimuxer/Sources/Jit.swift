@@ -15,20 +15,24 @@ public protocol JITProvider {
 }
 
 public class JIT {
-    private static var provider: JITProvider?;
-    
+    private static let providerLock = NSLock()
+    private static var provider: JITProvider?
+
     private static func getProvider() -> any JITProvider {
-        if let provider {
-            return provider
-        } else {
-            if Muxer.isrppairing {
-                provider = RPJit()
-            } else {
-                provider = LockDownJIT()
-            }
-        }
-        
-        return provider!
+        providerLock.lock()
+        defer { providerLock.unlock() }
+        if let provider { return provider }
+        let selected: any JITProvider = Muxer.isrppairing
+            ? RPJit()
+            : LockDownJIT()
+        provider = selected
+        return selected
+    }
+
+    public static func resetProvider() {
+        providerLock.lock()
+        provider = nil
+        providerLock.unlock()
     }
 
     public static func debugApp(appId: String) throws {

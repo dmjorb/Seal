@@ -161,6 +161,12 @@ actor MinimuxerInstallChannel: InstallChannel {
         #endif
     }
 
+    func reset() async {
+        #if !targetEnvironment(simulator)
+        Minimuxer.reset()
+        #endif
+    }
+
     func install(
         ipaData: Data,
         bundleID: String,

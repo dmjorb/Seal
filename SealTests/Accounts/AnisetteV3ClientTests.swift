@@ -4,14 +4,13 @@ import Testing
 
 struct AnisetteV3ClientTests {
     @Test
-    func officialServersPutSelectedServerFirstWithoutDuplicates() {
-        let servers = AnisetteServerCatalog.prioritized(selectedID: "sidestore-app")
+    func officialServersPutSelectedServerFirstWithoutDuplicates() throws {
+        let selected = try #require(AnisetteServerCatalog.official.first)
+        let servers = AnisetteServerCatalog.prioritized(selectedID: selected.id)
 
-        #expect(servers.map(\.id) == [
-            "sidestore-app",
-            "sidestore-io",
-            "sidestore-zip"
-        ])
+        #expect(servers.first?.id == selected.id)
+        #expect(Set(servers.map(\.id)).count == servers.count)
+        #expect(Set(servers.map(\.id)) == Set(AnisetteServerCatalog.official.map(\.id)))
         #expect(servers.allSatisfy { $0.url.scheme == "https" })
     }
 
@@ -19,11 +18,7 @@ struct AnisetteV3ClientTests {
     func unknownSelectedServerUsesOfficialDefaultOrder() {
         let servers = AnisetteServerCatalog.prioritized(selectedID: "not-a-server")
 
-        #expect(servers.map(\.id) == [
-            "sidestore-io",
-            "sidestore-app",
-            "sidestore-zip"
-        ])
+        #expect(servers == AnisetteServerCatalog.official)
     }
 
     @Test

@@ -52,7 +52,7 @@ struct IPAParserServiceTests {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
         assertFailure(code: "SEAL-IPA-101") {
-            try IPAParserService().parse(url: url)
+            _ = try IPAParserService().parse(url: url)
         }
     }
 
@@ -62,7 +62,7 @@ struct IPAParserServiceTests {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
         assertFailure(code: "SEAL-IPA-102") {
-            try IPAParserService().parse(url: url)
+            _ = try IPAParserService().parse(url: url)
         }
     }
 
@@ -75,7 +75,7 @@ struct IPAParserServiceTests {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
         assertFailure(code: "SEAL-IPA-103") {
-            try IPAParserService().parse(url: url)
+            _ = try IPAParserService().parse(url: url)
         }
     }
 
@@ -87,7 +87,7 @@ struct IPAParserServiceTests {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
         assertFailure(code: "SEAL-IPA-104") {
-            try IPAParserService().parse(url: url)
+            _ = try IPAParserService().parse(url: url)
         }
     }
 
@@ -102,7 +102,7 @@ struct IPAParserServiceTests {
         )
 
         assertFailure(code: "SEAL-IPA-105") {
-            try IPAParserService(limits: limits).parse(url: url)
+            _ = try IPAParserService(limits: limits).parse(url: url)
         }
     }
 

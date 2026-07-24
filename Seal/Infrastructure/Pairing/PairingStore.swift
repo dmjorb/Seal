@@ -54,7 +54,13 @@ actor PairingStore {
         )
         try normalized.write(to: fileURL, options: .atomic)
         try fileProtector.protect(fileURL)
-        try? FileManager.default.removeItem(at: metadataURL)
+        try saveMetadata(
+            ValidationMetadata(
+                status: .unverified,
+                validatedDeviceIdentifier: nil,
+                validatedAt: nil
+            )
+        )
 
         return PairingRecord(
             deviceIdentifier: inspection.udid,

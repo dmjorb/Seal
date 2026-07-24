@@ -37,15 +37,23 @@ enum AppleServiceFailurePolicy {
         )
     }
 
-    static func shouldRequireReverification(_ failure: ImportFailure) -> Bool {
+    static func verificationFailureReason(
+        for failure: ImportFailure
+    ) -> AccountVerificationFailureReason? {
         switch failure.code {
-        case "SEAL-AUTH-102", // credentials rejected
-             "SEAL-AUTH-105", // local credentials missing
-             "SEAL-AUTH-106": // local credentials mismatch
-            return true
+        case "SEAL-AUTH-102":
+            return .credentialsRejected
+        case "SEAL-AUTH-105":
+            return .localCredentialsMissing
+        case "SEAL-AUTH-106":
+            return .localCredentialsMismatch
         default:
-            return false
+            return nil
         }
+    }
+
+    static func shouldRequireReverification(_ failure: ImportFailure) -> Bool {
+        verificationFailureReason(for: failure) != nil
     }
 
     static func isTransient(_ failure: ImportFailure) -> Bool {

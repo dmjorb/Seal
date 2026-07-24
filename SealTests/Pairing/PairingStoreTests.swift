@@ -40,6 +40,45 @@ struct PairingStoreTests {
     }
 
     @Test
+    func reimportResetsPreviouslyVerifiedPairingMetadata() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let sourceA = root.appending(path: "Source-A.plist")
+        let sourceB = root.appending(path: "Source-B.plist")
+        let destination = root.appending(path: "Stored/Pairing.plist")
+
+        try PropertyListSerialization.data(
+            fromPropertyList: standardPairingDictionary(udid: "device-A"),
+            format: .xml,
+            options: 0
+        ).write(to: sourceA)
+        try PropertyListSerialization.data(
+            fromPropertyList: standardPairingDictionary(udid: "device-B"),
+            format: .xml,
+            options: 0
+        ).write(to: sourceB)
+
+        let store = PairingStore(fileURL: destination)
+        _ = try await store.importFile(at: sourceA)
+        _ = try await store.markValidated(deviceIdentifier: "device-A")
+        #expect(try await store.current()?.validationStatus == .verified)
+
+        let replacement = try await store.importFile(at: sourceB)
+        #expect(replacement.deviceIdentifier == "device-B")
+        #expect(replacement.validationStatus == .unverified)
+        #expect(replacement.validatedDeviceIdentifier == nil)
+        #expect(replacement.validatedAt == nil)
+
+        let current = try await store.current()
+        #expect(current?.deviceIdentifier == "device-B")
+        #expect(current?.validationStatus == .unverified)
+        #expect(current?.validatedDeviceIdentifier == nil)
+        #expect(current?.validatedAt == nil)
+    }
+
+    @Test
     func importsRemotePairingWithPrivateKeyOnly() async throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

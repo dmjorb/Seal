@@ -40,6 +40,30 @@ struct ProtectedAccountRepositoryTests {
         #expect(saved == [first])
     }
 
+    @Test
+    func decodesLegacyAccountWithoutVerificationFailureReason() throws {
+        let id = UUID()
+        let json = """
+        [{
+          "id":"\(id.uuidString)",
+          "maskedEmail":"a***@icloud.com",
+          "accountIdentifier":"legacy-account",
+          "teamID":"TEAMID",
+          "teamName":"Personal Team",
+          "status":"needsVerification",
+          "lastVerifiedAt":0
+        }]
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .deferredToDate
+        let accounts = try decoder.decode(
+            [AppleAccountRecord].self,
+            from: Data(json.utf8)
+        )
+        #expect(accounts.first?.verificationFailureReason == nil)
+        #expect(accounts.first?.status == .needsVerification)
+    }
+
     private func account(
         id: UUID,
         email: String,

@@ -19,7 +19,9 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 
 fn to_char(s: String) -> *mut c_char {
-    CString::new(s).unwrap().into_raw()
+    CString::new(s)
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
 }
 
 #[no_mangle]
@@ -216,13 +218,10 @@ pub extern "C" fn rust_bridge_afc_get_file_info(
     let c = unsafe { &*client };
     let path = unsafe { CStr::from_ptr(path).to_str().unwrap() };
     match c.0.get_file_info(path) {
-        Ok(info) => {
-            let pairs: Vec<String> = info
-                .iter()
-                .map(|(k, v)| format!("\"{}\":\"{}\"", k, v))
-                .collect();
-            to_char(format!("{{{}}}", pairs.join(",")))
-        }
+        Ok(info) => match serde_json::to_string(&info) {
+            Ok(json) => to_char(json),
+            Err(_) => std::ptr::null_mut(),
+        },
         Err(_) => std::ptr::null_mut(),
     }
 }
@@ -235,13 +234,10 @@ pub extern "C" fn rust_bridge_afc_read_directory(
     let c = unsafe { &*client };
     let path = unsafe { CStr::from_ptr(path).to_str().unwrap() };
     match c.0.read_directory(path) {
-        Ok(entries) => {
-            let json_entries: Vec<String> = entries
-                .iter()
-                .map(|e| format!("\"{}\"", e.replace('"', "\\\"")))
-                .collect();
-            to_char(format!("[{}]", json_entries.join(",")))
-        }
+        Ok(entries) => match serde_json::to_string(&entries) {
+            Ok(json) => to_char(json),
+            Err(_) => std::ptr::null_mut(),
+        },
         Err(_) => std::ptr::null_mut(),
     }
 }

@@ -16,19 +16,24 @@ public protocol InstallProvider {
 }
 
 public class Install {
-    public static var provider: InstallProvider?;
-    
+    private static let providerLock = NSLock()
+    private static var provider: InstallProvider?
+
     private static func getProvider() throws -> any InstallProvider {
-        if let provider {
-            return provider
-        } else {
-            if Muxer.isrppairing {
-                provider = RPInstall()
-            } else {
-                provider = LockDownInstall()
-            }
-        }
-        return provider!
+        providerLock.lock()
+        defer { providerLock.unlock() }
+        if let provider { return provider }
+        let selected: any InstallProvider = Muxer.isrppairing
+            ? RPInstall()
+            : LockDownInstall()
+        provider = selected
+        return selected
+    }
+
+    public static func resetProvider() {
+        providerLock.lock()
+        provider = nil
+        providerLock.unlock()
     }
 
     public static func yeetAppAfc(bundleId: String, ipaBytes: Data) throws {

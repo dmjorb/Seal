@@ -57,7 +57,7 @@ actor CoreDataAppStore: AppStore {
                 request.predicate = NSPredicate(
                     format: "originalBundleIdentifier == %@ AND stateRaw IN %@ AND signedIPARelativePath == nil AND isSeal == NO",
                     record.originalBundleIdentifier,
-                    [AppState.imported.rawValue, AppState.failedRecoverable.rawValue, AppState.failedFinal.rawValue]
+                    Array(AppState.replaceablePendingImportStates).map(\.rawValue)
                 )
                 let existing = try context.fetch(request)
                 let replaced = try existing.map(Self.decode)
@@ -80,9 +80,14 @@ actor CoreDataAppStore: AppStore {
 
     func delete(id: UUID) throws {
         try context.performAndWait {
-            if let app = try Self.fetchApp(id: id, context: context) {
-                context.delete(app)
-                try context.save()
+            do {
+                if let app = try Self.fetchApp(id: id, context: context) {
+                    context.delete(app)
+                    try context.save()
+                }
+            } catch {
+                context.rollback()
+                throw error
             }
         }
     }
@@ -149,10 +154,18 @@ actor CoreDataAppStore: AppStore {
             forSourceModel: legacyModel,
             destinationModel: currentModel
         )
+        let migrationID = UUID().uuidString
         let temporaryURL = storeURL.deletingLastPathComponent().appending(
-            path: "Seal-Migration-\(UUID().uuidString).sqlite"
+            path: "Seal-Migration-\(migrationID).sqlite"
         )
-        defer { removeSQLiteStoreFiles(at: temporaryURL) }
+        let backupURL = storeURL.deletingLastPathComponent().appending(
+            path: "Seal-Migration-Backup-\(migrationID).sqlite"
+        )
+        defer {
+            removeSQLiteStoreFiles(at: temporaryURL)
+            removeSQLiteStoreFiles(at: backupURL)
+        }
+        try copySQLiteStoreFiles(from: storeURL, to: backupURL)
 
         let migrationManager = NSMigrationManager(
             sourceModel: legacyModel,
@@ -174,13 +187,47 @@ actor CoreDataAppStore: AppStore {
         let replacementCoordinator = NSPersistentStoreCoordinator(
             managedObjectModel: currentModel
         )
-        try replacementCoordinator.replacePersistentStore(
-            at: storeURL,
-            destinationOptions: nil,
-            withPersistentStoreFrom: temporaryURL,
-            sourceOptions: nil,
-            ofType: NSSQLiteStoreType
-        )
+        do {
+            try replacementCoordinator.replacePersistentStore(
+                at: storeURL,
+                destinationOptions: nil,
+                withPersistentStoreFrom: temporaryURL,
+                sourceOptions: nil,
+                ofType: NSSQLiteStoreType
+            )
+        } catch {
+            let replacementError = error
+            do {
+                try restoreSQLiteStoreFiles(from: backupURL, to: storeURL)
+            } catch {
+                throw AppStoreError.invalidConfiguration
+            }
+            throw replacementError
+        }
+    }
+
+    private static func copySQLiteStoreFiles(from source: URL, to destination: URL) throws {
+        let fileManager = FileManager.default
+        for suffix in ["", "-wal", "-shm"] {
+            let sourceFile = URL(fileURLWithPath: source.path + suffix)
+            guard fileManager.fileExists(atPath: sourceFile.path) else { continue }
+            let destinationFile = URL(fileURLWithPath: destination.path + suffix)
+            if fileManager.fileExists(atPath: destinationFile.path) {
+                try fileManager.removeItem(at: destinationFile)
+            }
+            try fileManager.copyItem(at: sourceFile, to: destinationFile)
+        }
+    }
+
+    private static func restoreSQLiteStoreFiles(from backup: URL, to destination: URL) throws {
+        let fileManager = FileManager.default
+        for suffix in ["", "-wal", "-shm"] {
+            let destinationFile = URL(fileURLWithPath: destination.path + suffix)
+            if fileManager.fileExists(atPath: destinationFile.path) {
+                try fileManager.removeItem(at: destinationFile)
+            }
+        }
+        try copySQLiteStoreFiles(from: backup, to: destination)
     }
 
     private static func removeSQLiteStoreFiles(at url: URL) {

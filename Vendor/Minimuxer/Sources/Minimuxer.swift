@@ -40,7 +40,7 @@ public struct Minimuxer {
         
         let deviceConnection = testDeviceConnection(ifaddr: deviceIP)
         if Muxer.isrppairing {
-            return true
+            return deviceConnection
         }
         
         let deviceExists: Bool
@@ -83,6 +83,15 @@ public struct Minimuxer {
         try Muxer.start(pairingFile: pairingFile, logPath: logPath)
     }
 
+    public static func reset() {
+        Muxer.reset()
+        DeviceEndpoint.shared.clear()
+        Install.resetProvider()
+        Provision.resetProvider()
+        JIT.resetProvider()
+        Mounter.resetProvider()
+    }
+
     public static func retargetUsbmuxdAddr() {
         Muxer.retargetUsbmuxdAddr()
     }
@@ -109,29 +118,52 @@ public struct Minimuxer {
     }
 
     public static func testDeviceConnection(ifaddr: String?) -> Bool {
-        guard let ip = ifaddr else { return false }
-        
+        guard let ip = ifaddr, ip.isEmpty == false else { return false }
+
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = Muxer.isrppairing ? MuxerConstants.rsdPort.bigEndian : MuxerConstants.lockdowndPort.bigEndian
-        inet_pton(AF_INET, ip, &addr.sin_addr)
+        addr.sin_port = Muxer.isrppairing
+            ? MuxerConstants.rsdPort.bigEndian
+            : MuxerConstants.lockdowndPort.bigEndian
+        guard inet_pton(AF_INET, ip, &addr.sin_addr) == 1 else { return false }
 
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return false }
         defer { close(fd) }
 
         let flags = fcntl(fd, F_GETFL, 0)
-        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+            return false
+        }
 
-        _ = withUnsafePointer(to: &addr) {
+        let connectResult = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
+        if connectResult == 0 { return true }
+        guard errno == EINPROGRESS else { return false }
 
         var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-        let result = poll(&pfd, 1, 100)
-        return result > 0 && (pfd.revents & Int16(POLLOUT)) != 0
+        let pollResult = poll(&pfd, 1, 500)
+        guard pollResult > 0,
+              (pfd.revents & Int16(POLLOUT)) != 0,
+              (pfd.revents & Int16(POLLERR | POLLHUP | POLLNVAL)) == 0 else {
+            return false
+        }
+
+        var socketError: Int32 = 0
+        var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
+        guard getsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_ERROR,
+            &socketError,
+            &socketErrorLength
+        ) == 0 else {
+            return false
+        }
+        return socketError == 0
     }
 
     public static func yeetAppAfc(bundleId: String, ipaBytes: Data) throws {

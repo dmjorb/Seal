@@ -10,38 +10,76 @@ import Foundation
 import RustBridge
 import ZIPFoundation
 
-public protocol MounterProvider {
-    var dmgMounted:Bool { get }
-    func startAutoMounter(docsPath: String);
+public protocol MounterProvider: AnyObject {
+    var dmgMounted: Bool { get }
+    func startAutoMounter(docsPath: String)
+    func stop()
+}
+
+public extension MounterProvider {
+    func stop() {}
 }
 
 public class Mounter {
-    public static var provider: MounterProvider?;
-    
+    private static let providerLock = NSLock()
+    private static var provider: MounterProvider?
+
     private static func getProvider() -> any MounterProvider {
-        if let provider {
-            return provider
-        } else {
-            if Muxer.isrppairing {
-                provider = RPMounter()
-            } else {
-                provider = LockDownMounter()
-            }
-        }
-        return provider!
+        providerLock.lock()
+        defer { providerLock.unlock() }
+        if let provider { return provider }
+        let selected: any MounterProvider = Muxer.isrppairing
+            ? RPMounter()
+            : LockDownMounter()
+        provider = selected
+        return selected
     }
+
+    public static func resetProvider() {
+        providerLock.lock()
+        let oldProvider = provider
+        provider = nil
+        providerLock.unlock()
+        oldProvider?.stop()
+    }
+
     public static func startAutoMounter(docsPath: String) {
         getProvider().startAutoMounter(docsPath: docsPath)
     }
-    public static var dmgMounted:Bool {
-        get {
-            return getProvider().dmgMounted
-        }
+
+    public static var dmgMounted: Bool {
+        getProvider().dmgMounted
     }
 }
 
 public class LockDownMounter: MounterProvider {
-    public var dmgMounted = false
+    private let stateLock = NSLock()
+    private var _dmgMounted = false
+    private var stopped = false
+
+    public var dmgMounted: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _dmgMounted
+    }
+
+    public func stop() {
+        stateLock.lock()
+        stopped = true
+        stateLock.unlock()
+    }
+
+    private var shouldContinue: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return stopped == false && _dmgMounted == false
+    }
+
+    private func markMounted() {
+        stateLock.lock()
+        _dmgMounted = true
+        stateLock.unlock()
+    }
 
     public func startAutoMounter(docsPath: String) {
         let path = docsPath.hasPrefix("file://") ? String(docsPath.dropFirst(7)) : docsPath
@@ -49,17 +87,27 @@ public class LockDownMounter: MounterProvider {
 
         Thread.detachNewThread {
             print("[minimuxer] Starting mount thread...")
-            while !Muxer.usbmuxdReady {
+            while self.shouldContinue, Muxer.usbmuxdReady == false {
                 Thread.sleep(forTimeInterval: 1)
                 let ts = ISO8601DateFormatter().string(from: Date())
                 print("[\(ts)] [minimuxer] mount-thread: Waiting for usbmuxd to be ready...")
             }
+            guard self.shouldContinue else { return }
             print("[minimuxer] mount-thread: usbmuxd is ready")
 
-            try? FileManager.default.createDirectory(atPath: dmgDocsPath, withIntermediateDirectories: true)
+            do {
+                try FileManager.default.createDirectory(
+                    atPath: dmgDocsPath,
+                    withIntermediateDirectories: true
+                )
+            } catch {
+                print("[minimuxer] ERROR: Could not create mounter cache directory: \(error)")
+                return
+            }
 
-            while !self.dmgMounted {
+            while self.shouldContinue {
                 Thread.sleep(forTimeInterval: 1.0)
+                guard self.shouldContinue else { return }
                 do {
                     let device = try Device.getFirstDevice()
                     guard let lockdown = RustLockdown.connect(device: device.internalInstance, label: "minimuxer"),
@@ -74,7 +122,9 @@ public class LockDownMounter: MounterProvider {
                     } else {
                         try self.handlePost17Mount(dmgDocsPath: dmgDocsPath)
                     }
-                } catch {}
+                } catch {
+                    print("[minimuxer] WARN: Auto-mounter iteration failed: \(error)")
+                }
             }
         }
     }
@@ -91,7 +141,7 @@ public class LockDownMounter: MounterProvider {
            let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
            let sigArray = plist["ImageSignature"] as? [Any], !sigArray.isEmpty {
             print("[minimuxer] Developer disk image already mounted")
-            dmgMounted = true; return
+            markMounted(); return
         }
 
         let dmgPath = "\(dmgDocsPath)/\(iosVersion).dmg"
@@ -121,7 +171,7 @@ public class LockDownMounter: MounterProvider {
             throw MinimuxerError.Mount
         }
         print("[minimuxer] Successfully mounted the image")
-        dmgMounted = true
+        markMounted()
     }
 
     private func handlePost17Mount(dmgDocsPath: String) throws {
@@ -143,7 +193,7 @@ public class LockDownMounter: MounterProvider {
         )
         if result == 0 {
             print("[minimuxer] DDI mounted successfully")
-            dmgMounted = true
+            markMounted()
         } else {
             print("[minimuxer] ERROR: Failed to mount DDI (code \(result))")
             switch result {
@@ -231,8 +281,34 @@ public class LockDownMounter: MounterProvider {
 }
 
 public class RPMounter: MounterProvider {
-    public var dmgMounted: Bool = false
-    
+    private let stateLock = NSLock()
+    private var _dmgMounted = false
+    private var stopped = false
+
+    public var dmgMounted: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _dmgMounted
+    }
+
+    public func stop() {
+        stateLock.lock()
+        stopped = true
+        stateLock.unlock()
+    }
+
+    private var shouldContinue: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return stopped == false && _dmgMounted == false
+    }
+
+    private func markMounted() {
+        stateLock.lock()
+        _dmgMounted = true
+        stateLock.unlock()
+    }
+
     public func startAutoMounter(docsPath: String) {
         let path = docsPath.hasPrefix("file://") ? String(docsPath.dropFirst(7)) : docsPath
         let dmgDocsPath = "\(path)/DMG"
@@ -244,13 +320,14 @@ public class RPMounter: MounterProvider {
 
                 try? FileManager.default.createDirectory(atPath: dmgDocsPath, withIntermediateDirectories: true)
                 
-                while !self.dmgMounted {
+                while self.shouldContinue {
                     Thread.sleep(forTimeInterval: 1.0)
+                    guard self.shouldContinue else { return }
                     do {
                         let result = RustIdevice.mountPersonalizedDDI(image: imageData, trustcache: trustcacheData, manifest: manifestData)
                         if result == 0 {
                             print("[minimuxer] DDI mounted successfully")
-                            self.dmgMounted = true
+                            self.markMounted()
                         } else {
                             print("[minimuxer] ERROR: Failed to mount DDI (code \(result))")
                         }
