@@ -21,20 +21,42 @@ use log::{debug, error, info};
 use once_cell::sync::Lazy;
 use tokio::runtime::{self, Runtime};
 
-pub static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
-    runtime::Builder::new_multi_thread()
+static RUNTIME: Lazy<Option<Runtime>> = Lazy::new(|| {
+    match runtime::Builder::new_multi_thread()
         .enable_io()
         .enable_time()
         .build()
-        .unwrap()
+    {
+        Ok(runtime) => Some(runtime),
+        Err(error) => {
+            error!("Unable to initialize RustBridge Tokio runtime: {error}");
+            None
+        }
+    }
 });
 
+pub(crate) fn shared_runtime() -> Option<&'static Runtime> {
+    Lazy::force(&RUNTIME).as_ref()
+}
+
 async fn get_provider(muxer_addr: &str, device_ip: &str) -> Result<TcpProvider, i32> {
+    let muxer_socket = SocketAddrV4::from_str(muxer_addr).map_err(|error| {
+        error!("Invalid muxer address {muxer_addr}: {error}");
+        1i32
+    })?;
+    let device_ip = Ipv4Addr::from_str(device_ip).map_err(|error| {
+        error!("Invalid device IP {device_ip}: {error}");
+        1i32
+    })?;
+
     let mut uc = UsbmuxdConnection::new(
         Box::new(
-            tokio::net::TcpStream::connect(muxer_addr)
+            tokio::net::TcpStream::connect(muxer_socket)
                 .await
-                .map_err(|_| 1i32)?,
+                .map_err(|error| {
+                    error!("Unable to connect to usbmuxd at {muxer_socket}: {error}");
+                    1i32
+                })?,
         ),
         0,
     );
@@ -43,27 +65,33 @@ async fn get_provider(muxer_addr: &str, device_ip: &str) -> Result<TcpProvider, 
         .get_devices()
         .await
         .ok()
-        .and_then(|x| x.into_iter().next())
+        .and_then(|devices| devices.into_iter().next())
         .ok_or(1i32)?;
 
-    let dev = dev.to_provider(
-        idevice::usbmuxd::UsbmuxdAddr::TcpSocket(std::net::SocketAddr::V4(
-            SocketAddrV4::from_str(muxer_addr).unwrap(),
-        )),
+    let provider = dev.to_provider(
+        idevice::usbmuxd::UsbmuxdAddr::TcpSocket(std::net::SocketAddr::V4(muxer_socket)),
         "asdf",
     );
+    let pairing_file = provider.get_pairing_file().await.map_err(|error| {
+        error!("Unable to obtain pairing file from provider: {error:?}");
+        1i32
+    })?;
 
     Ok(TcpProvider {
-        addr: std::net::IpAddr::V4(Ipv4Addr::from_str(device_ip).unwrap()),
-        pairing_file: dev.get_pairing_file().await.unwrap(),
+        addr: std::net::IpAddr::V4(device_ip),
+        pairing_file,
         label: "minimuxer".to_string(),
     })
 }
 
-/// Post-17 JIT: CoreDeviceProxy → DVT → ProcessControl → DebugProxy
-/// Returns 0 on success, 1-11 on specific failures.
+/// Post-17 JIT: CoreDeviceProxy → DVT → ProcessControl → DebugProxy.
+/// Returns 0 on success, 1-12 on specific failures.
 pub(crate) fn debug_app_post17(app_id: String, muxer_addr: String, device_ip: String) -> i32 {
-    RUNTIME.block_on(async move {
+    let Some(runtime) = shared_runtime() else {
+        return 12;
+    };
+
+    runtime.block_on(async move {
         let provider = match get_provider(&muxer_addr, &device_ip).await {
             Ok(p) => p,
             Err(e) => return e,
@@ -111,7 +139,7 @@ pub(crate) fn debug_app_post17(app_id: String, muxer_addr: String, device_ip: St
         {
             Ok(x) => x,
             Err(e) => {
-                error!("Failed to get connect to remote server client: {e:?}");
+                error!("Failed to connect to remote server client: {e:?}");
                 return 6;
             }
         };
@@ -134,8 +162,7 @@ pub(crate) fn debug_app_post17(app_id: String, muxer_addr: String, device_ip: St
         debug!("Launched PID {pid}");
         let _ = pc.disable_memory_limit(pid).await;
 
-        let mut dp = match DebugProxyClient::connect_rsd(&mut adapter_handle, &mut handshake).await
-        {
+        let mut dp = match DebugProxyClient::connect_rsd(&mut adapter_handle, &mut handshake).await {
             Ok(p) => p,
             Err(e) => {
                 error!("DebugProxy connect: {:?}", e);
@@ -162,7 +189,7 @@ pub(crate) fn debug_app_post17(app_id: String, muxer_addr: String, device_ip: St
 }
 
 /// Post-17 personalized DDI mount from pre-downloaded bytes.
-/// Returns 0 on success, 1-8 on specific failures.
+/// Returns 0 on success, 1-9 on specific failures.
 pub(crate) fn mount_personalized_ddi(
     image_bytes: &[u8],
     trustcache_bytes: &[u8],
@@ -170,7 +197,11 @@ pub(crate) fn mount_personalized_ddi(
     muxer_addr: String,
     device_ip: String,
 ) -> i32 {
-    RUNTIME.block_on(async move {
+    let Some(runtime) = shared_runtime() else {
+        return 9;
+    };
+
+    runtime.block_on(async move {
         let provider = match get_provider(&muxer_addr, &device_ip).await {
             Ok(p) => p,
             Err(e) => return e,
@@ -187,10 +218,14 @@ pub(crate) fn mount_personalized_ddi(
         let ucid_val = match lockdown.get_value(Some("UniqueChipID"), None).await {
             Ok(u) => u,
             Err(_) => {
-                if let Err(e) = lockdown
-                    .start_session(&provider.get_pairing_file().await.unwrap())
-                    .await
-                {
+                let pairing_file = match provider.get_pairing_file().await {
+                    Ok(pairing_file) => pairing_file,
+                    Err(e) => {
+                        error!("Unable to read pairing file: {e:?}");
+                        return 4;
+                    }
+                };
+                if let Err(e) = lockdown.start_session(&pairing_file).await {
                     error!("Session: {:?}", e);
                     return 4;
                 }
@@ -241,9 +276,11 @@ pub(crate) fn mount_personalized_ddi(
                 None,
                 unique_chip_id,
                 async |((n, d), _)| {
-                    let pct = (n as f64 / d as f64) * 100.0;
-                    print!("\rProgress: {pct:.2}%");
-                    std::io::stdout().flush().unwrap();
+                    if d > 0 {
+                        let pct = (n as f64 / d as f64) * 100.0;
+                        print!("\rProgress: {pct:.2}%");
+                        let _ = std::io::stdout().flush();
+                    }
                     if n == d {
                         println!();
                     }

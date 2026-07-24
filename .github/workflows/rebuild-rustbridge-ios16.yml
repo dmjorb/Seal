@@ -20,22 +20,35 @@ jobs:
 
       - name: Install Rust targets
         run: |
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
           rustc --version
           cargo --version
+
+      - name: Audit RustBridge FFI source
+        run: bash Scripts/audit-rustbridge-source.sh
 
       - name: Rebuild RustBridge with iOS 16 deployment target
         working-directory: Vendor/Minimuxer/RustBridge
         env:
           IPHONEOS_DEPLOYMENT_TARGET: "16.0"
-          MACOSX_DEPLOYMENT_TARGET: "13.0"
         run: make clean xcframework
 
       - name: Verify every RustBridge object supports iOS 16
         run: MAX_IOS_VERSION=16.0 bash Scripts/verify-rustbridge-minos.sh
 
+      - name: Verify typed RustBridge FFI symbols
+        run: bash Scripts/verify-rustbridge-symbols.sh
+
       - name: Package rebuilt RustBridge
         run: |
+          {
+            echo "commit=${GITHUB_SHA}"
+            xcodebuild -version | tr '\n' ' '; echo
+            rustc --version
+            cargo --version
+            echo "IPHONEOS_DEPLOYMENT_TARGET=16.0"
+            shasum -a 256 Vendor/Minimuxer/RustBridge/Cargo.lock
+          } > RustBridge-iOS16-build-manifest.txt
           ditto -c -k --sequesterRsrc --keepParent \
             Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework \
             RustBridge-iOS16.xcframework.zip
@@ -48,4 +61,5 @@ jobs:
           path: |
             RustBridge-iOS16.xcframework.zip
             RustBridge-iOS16.xcframework.zip.sha256
+            RustBridge-iOS16-build-manifest.txt
           retention-days: 30

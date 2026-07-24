@@ -5,9 +5,13 @@ BUILD_DIR=lib
 FRAMEWORK_NAME=Minimuxer
 
 IPHONEOS_DEPLOYMENT_TARGET ?= 16.0
-MACOSX_DEPLOYMENT_TARGET ?= 13.0
+CFLAGS_aarch64_apple_ios ?= -miphoneos-version-min=$(IPHONEOS_DEPLOYMENT_TARGET)
+CXXFLAGS_aarch64_apple_ios ?= -miphoneos-version-min=$(IPHONEOS_DEPLOYMENT_TARGET)
+CFLAGS_aarch64_apple_ios_sim ?= -mios-simulator-version-min=$(IPHONEOS_DEPLOYMENT_TARGET)
+CXXFLAGS_aarch64_apple_ios_sim ?= -mios-simulator-version-min=$(IPHONEOS_DEPLOYMENT_TARGET)
 export IPHONEOS_DEPLOYMENT_TARGET
-export MACOSX_DEPLOYMENT_TARGET
+export CFLAGS_aarch64_apple_ios CXXFLAGS_aarch64_apple_ios
+export CFLAGS_aarch64_apple_ios_sim CXXFLAGS_aarch64_apple_ios_sim
 
 .PHONY: all build rust xcframework zip clean
 
@@ -26,9 +30,6 @@ rust:
 	@# iOS Simulator (Apple Silicon)
 	cd $(RUST_DIR) && cargo build --locked --target aarch64-apple-ios-sim --release
 
-	@# macOS (arm64)
-	cd $(RUST_DIR) && cargo build --locked --target aarch64-apple-darwin --release
-
 
 # --- XCFramework from static libs (no C headers needed — Swift uses @_silgen_name) ---
 
@@ -45,8 +46,6 @@ xcframework: rust
 		-library $(RUST_DIR)/target/aarch64-apple-ios/release/lib$(TARGET).a \
 		-headers $(RUST_DIR)/lib/headers \
 		-library $(RUST_DIR)/target/aarch64-apple-ios-sim/release/lib$(TARGET).a \
-		-headers $(RUST_DIR)/lib/headers \
-		-library $(RUST_DIR)/target/aarch64-apple-darwin/release/lib$(TARGET).a \
 		-headers $(RUST_DIR)/lib/headers \
 		-output $(RUST_DIR)/lib/RustBridge.xcframework
 

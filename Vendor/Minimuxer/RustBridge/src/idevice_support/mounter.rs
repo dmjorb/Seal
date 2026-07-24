@@ -65,7 +65,10 @@ pub async fn mount_personalized_ddi_rppairing(
             return 6;
         }
     };
-    let conn = &mut *connection;
+    let Some(conn) = connection.as_mut() else {
+        error!("RSD connection cache unexpectedly empty");
+        return 6;
+    };
     if let Err(e) = mounter
         .mount_personalized_with_callback_rsd(
             &mut conn.adapter,
@@ -76,9 +79,11 @@ pub async fn mount_personalized_ddi_rppairing(
             None,
             unique_chip_id,
             async |((n, d), _)| {
-                let pct = (n as f64 / d as f64) * 100.0;
-                print!("\rProgress: {pct:.2}%");
-                std::io::stdout().flush().unwrap();
+                if d > 0 {
+                    let pct = (n as f64 / d as f64) * 100.0;
+                    print!("\rProgress: {pct:.2}%");
+                    let _ = std::io::stdout().flush();
+                }
                 if n == d {
                     println!();
                 }

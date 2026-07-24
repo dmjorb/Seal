@@ -9,6 +9,6 @@ pub use errors::IdeviceFfiError;
 
 pub mod bridge;
 pub mod bridge_idevice;
-mod errors;
+pub(crate) mod errors;
 mod idevice_support;
 mod post17;

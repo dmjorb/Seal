@@ -40,14 +40,23 @@ PY
 failures=0
 checked=0
 unreadable=0
+archives=0
+device_archives=0
+simulator_archives=0
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 while IFS= read -r archive; do
+  archives=$((archives + 1))
   slice="$(basename "$(dirname "$archive")")"
   case "$slice" in
-    *ios*|*simulator*) ;;
-    *) continue ;;
+    *ios*simulator*) simulator_archives=$((simulator_archives + 1)) ;;
+    *ios*) device_archives=$((device_archives + 1)) ;;
+    *)
+      echo "ERROR: unexpected non-iOS RustBridge slice: $slice" >&2
+      failures=$((failures + 1))
+      continue
+      ;;
   esac
 
   slice_dir="$work/$slice"
@@ -80,6 +89,10 @@ if (( checked == 0 )); then
   echo "ERROR: no RustBridge Mach-O objects were found." >&2
   exit 2
 fi
+if (( archives != 2 || device_archives != 1 || simulator_archives != 1 )); then
+  echo "ERROR: RustBridge must contain exactly one iOS device slice and one iOS simulator slice (archives=$archives device=$device_archives simulator=$simulator_archives)." >&2
+  failures=$((failures + 1))
+fi
 
-echo "Checked $checked RustBridge objects; incompatible/unreadable objects: $failures (unreadable: $unreadable)"
+echo "Checked $checked RustBridge objects across $archives archives; incompatible/unreadable/layout failures: $failures (unreadable: $unreadable)"
 (( failures == 0 ))
