@@ -44,13 +44,13 @@ required_symbols=(
 )
 
 has_symbol() {
-  local symbols="$1"
+  local symbols_file="$1"
   local symbol="$2"
 
-  # llvm-nm POSIX output may prefix archive/member information before the
-  # Mach-O symbol. Match a complete symbol token, never a substring.
-  printf '%s\n' "$symbols" |
-    grep -Eq "(^|[[:space:]:])_${symbol}[[:space:]]"
+  # Do not pipe a large producer into grep -q while pipefail is enabled:
+  # grep exits as soon as it finds a match and the producer then receives
+  # SIGPIPE, which turns a successful match into a false failure.
+  grep -Eq "(^|[[:space:]:])_${symbol}[[:space:]]" "$symbols_file"
 }
 
 archives_checked=0
@@ -59,34 +59,35 @@ while IFS= read -r archive; do
   archives_checked=$((archives_checked + 1))
   echo "Checking exported FFI symbols in $archive"
 
+  nm_output="$(mktemp)"
   nm_stderr="$(mktemp)"
-  if ! symbols="$(
-    "$LLVM_NM" \
+  if ! "$LLVM_NM" \
       --defined-only \
       --extern-only \
       --quiet \
       --format=posix \
-      "$archive" 2>"$nm_stderr"
-  )"; then
+      "$archive" >"$nm_output" 2>"$nm_stderr"; then
     echo "ERROR: Rust llvm-nm could not inspect $archive" >&2
     cat "$nm_stderr" >&2
-    rm -f "$nm_stderr"
+    rm -f "$nm_output" "$nm_stderr"
     failures=$((failures + 1))
     continue
   fi
   rm -f "$nm_stderr"
 
   for symbol in "${required_symbols[@]}"; do
-    if ! has_symbol "$symbols" "$symbol"; then
+    if ! has_symbol "$nm_output" "$symbol"; then
       echo "ERROR: missing exported symbol $symbol in $archive" >&2
       failures=$((failures + 1))
     fi
   done
 
-  if has_symbol "$symbols" "rust_bridge_free_pointer"; then
+  if has_symbol "$nm_output" "rust_bridge_free_pointer"; then
     echo "ERROR: unsafe generic rust_bridge_free_pointer is still exported by $archive" >&2
     failures=$((failures + 1))
   fi
+
+  rm -f "$nm_output"
 done < <(find "$FRAMEWORK_PATH" -type f -name 'librust_bridge.a' -print | sort)
 
 if (( archives_checked == 0 )); then
