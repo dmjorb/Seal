@@ -61,7 +61,7 @@ struct SigningCertificateSettingsView: View {
                 Divider()
                 detailRow("Team", account.teamName)
                 Divider()
-                FullIdentifierRow(title: "Team ID", value: account.teamID, showsCopyButton: true)
+                nonCopyIdentifierRow("Team ID", account.teamID)
             } else {
                 Text("请先选择已验证的 Apple ID")
                     .foregroundStyle(Color.sealTextSecondary)
@@ -96,7 +96,7 @@ struct SigningCertificateSettingsView: View {
                 Text(account.teamName)
                     .font(.subheadline)
                     .foregroundStyle(Color.sealTextSecondary)
-                FullIdentifierRow(title: "Serial", value: serial, showsCopyButton: true)
+                nonCopyIdentifierRow("Serial", serial)
                 Text(certificateSummary(health))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(certificateSummaryColor(health))
@@ -244,10 +244,7 @@ struct SigningCertificateSettingsView: View {
         guard let health, let expirationDate = health.expirationDate else {
             return "无法确认"
         }
-        let formatted = expirationDate.formatted(
-            date: .abbreviated,
-            time: .shortened
-        )
+        let formatted = SealSettingsDateFormatter.string(from: expirationDate)
         return health.expirationState == .invalid ? "已过期 · \(formatted)" : formatted
     }
 
@@ -302,6 +299,20 @@ struct SigningCertificateSettingsView: View {
                 .foregroundStyle(Color.sealTextSecondary)
                 .multilineTextAlignment(.trailing)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 15)
+    }
+
+    private func nonCopyIdentifierRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(title)
+                .foregroundStyle(.primary)
+            Spacer(minLength: 12)
+            Text(value)
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
         .padding(.vertical, 15)
     }

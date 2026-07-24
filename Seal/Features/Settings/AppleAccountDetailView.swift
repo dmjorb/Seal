@@ -86,7 +86,7 @@ struct AppleAccountDetailView: View {
             Divider()
             detailRow("Team", currentAccount.teamName)
             Divider()
-            FullIdentifierRow(title: "Team ID", value: currentAccount.teamID, showsCopyButton: true)
+            nonCopyIdentifierRow("Team ID", currentAccount.teamID)
             Divider()
             detailRow("App ID", appIDQuotaTitle)
         }
@@ -111,7 +111,7 @@ struct AppleAccountDetailView: View {
                     .font(.subheadline)
                     .foregroundStyle(Color.sealTextSecondary)
                     .lineLimit(1)
-                FullIdentifierRow(title: "Serial", value: serial, showsCopyButton: true)
+                nonCopyIdentifierRow("Serial", serial)
                 Text("本机可用")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.sealSuccess)
@@ -162,18 +162,12 @@ struct AppleAccountDetailView: View {
                     .foregroundStyle(Color.sealSuccess)
                     .lineLimit(1)
             }
-            HStack(spacing: 8) {
-                Text("Bundle ID")
-                    .font(.caption)
-                    .foregroundStyle(Color.sealTextSecondary)
-                Spacer(minLength: 12)
-                Text(item.bundleIdentifier)
-                    .font(.system(size: 13, weight: .regular, design: .monospaced))
-                    .foregroundStyle(Color.sealTextSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-            }
+            Text("Bundle ID：\(item.bundleIdentifier)")
+                .font(.caption)
+                .foregroundStyle(Color.sealTextSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
             Text(item.expirationLabel)
                 .font(.caption)
                 .foregroundStyle(Color.sealTextSecondary)
@@ -219,6 +213,20 @@ struct AppleAccountDetailView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
+        }
+        .padding(.vertical, 15)
+    }
+
+    private func nonCopyIdentifierRow(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(title)
+                .foregroundStyle(.primary)
+            Spacer(minLength: 12)
+            Text(value)
+                .foregroundStyle(Color.sealTextSecondary)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
         .padding(.vertical, 15)
     }

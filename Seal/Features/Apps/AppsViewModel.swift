@@ -18,6 +18,7 @@ final class AppsViewModel: ObservableObject {
 
     @Published private(set) var apps: [AppRecord]
     @Published private(set) var accounts: [AppleAccountRecord]
+    @Published private(set) var fullAccountEmails: [UUID: String] = [:]
     @Published private(set) var activeAccountID: UUID?
     @Published private(set) var iconData: [UUID: Data]
     @Published private(set) var phase: Phase
@@ -322,6 +323,9 @@ final class AppsViewModel: ObservableObject {
             fetchedAccounts = try await repairLegacyAccountStatuses(fetchedAccounts)
             guard generation == loadGeneration else { return }
 
+            let loadedFullAccountEmails = await loadFullAccountEmails(for: fetchedAccounts)
+            guard generation == loadGeneration else { return }
+
             var loadedIcons: [UUID: Data] = [:]
             if let fileStore {
                 for app in fetched {
@@ -388,6 +392,7 @@ final class AppsViewModel: ObservableObject {
 
             apps = fetched
             accounts = fetchedAccounts
+            fullAccountEmails = loadedFullAccountEmails
             activeAccountID = resolvedAccountID
             iconData = loadedIcons
             pendingRefreshCount = refreshedPendingCount
@@ -399,6 +404,22 @@ final class AppsViewModel: ObservableObject {
             guard generation == loadGeneration else { return }
             alertFailure = Self.dataFailure
         }
+    }
+
+    func fullEmail(for account: AppleAccountRecord) -> String {
+        fullAccountEmails[account.id] ?? "未记录"
+    }
+
+    private func loadFullAccountEmails(
+        for accounts: [AppleAccountRecord]
+    ) async -> [UUID: String] {
+        guard let keychain else { return [:] }
+        var values: [UUID: String] = [:]
+        for account in accounts {
+            guard let secret = try? await keychain.load(accountID: account.id) else { continue }
+            values[account.id] = secret.email
+        }
+        return values
     }
 
     func performLightweightLaunchCheck() async {

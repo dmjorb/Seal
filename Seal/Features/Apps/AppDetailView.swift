@@ -51,10 +51,10 @@ struct AppDetailView: View {
                 Text("\(app.name) \(app.version)")
                     .font(.title2.weight(.semibold))
                     .lineLimit(1)
-                Text(displayBundleIdentifier(app))
+                bundleIdentifierValue(displayBundleIdentifier(app), compactAfterSeal: true)
                     .font(.caption.monospaced())
                     .foregroundStyle(Color.sealTextSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             Spacer()
         }
@@ -84,9 +84,9 @@ struct AppDetailView: View {
             Divider()
             detailRow("签名证书", certificateName(app))
             Divider()
-            FullIdentifierRow(title: "Bundle ID", value: signedBundleIdentifier(app), showsCopyButton: true)
+            identifierDetailRow("Bundle ID", signedBundleIdentifier(app), compactAfterSeal: true)
             Divider()
-            FullIdentifierRow(title: "原始 Bundle ID", value: app.originalBundleIdentifier, showsCopyButton: true)
+            identifierDetailRow("原始 Bundle ID", app.originalBundleIdentifier, compactAfterSeal: false)
             Divider()
             detailRow("描述文件", profileSummary(app))
             Divider()
@@ -108,6 +108,36 @@ struct AppDetailView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 15)
+    }
+
+    private func identifierDetailRow(
+        _ title: String,
+        _ value: String,
+        compactAfterSeal: Bool
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(title)
+                .foregroundStyle(.primary)
+            Spacer(minLength: 12)
+            bundleIdentifierValue(value, compactAfterSeal: compactAfterSeal)
+                .foregroundStyle(Color.sealTextSecondary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(.vertical, 15)
+    }
+
+    @ViewBuilder
+    private func bundleIdentifierValue(_ value: String, compactAfterSeal: Bool) -> some View {
+        let compactValue = compactAfterSeal ? compactSignedBundleIdentifier(value) : value
+        ViewThatFits(in: .horizontal) {
+            Text(value)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+            Text(compactValue)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .multilineTextAlignment(.trailing)
     }
 
     @ViewBuilder
@@ -154,7 +184,22 @@ struct AppDetailView: View {
     }
 
     private func accountName(_ app: AppRecord) -> String {
-        viewModel.accounts.first { $0.id == app.accountID }?.maskedEmail ?? "签名时选择"
+        guard let account = viewModel.accounts.first(where: { $0.id == app.accountID }) else {
+            return "签名时选择"
+        }
+        return viewModel.fullEmail(for: account)
+    }
+
+    private func compactSignedBundleIdentifier(_ value: String) -> String {
+        guard let markerRange = value.range(of: ".seal.", options: .backwards) else {
+            return value
+        }
+        let prefix = String(value[..<markerRange.upperBound])
+        let suffix = String(value[markerRange.upperBound...])
+        guard suffix.count > 8 else {
+            return value
+        }
+        return "\(prefix)\(suffix.prefix(4))…\(suffix.suffix(4))"
     }
 
     private func certificateName(_ app: AppRecord) -> String {
