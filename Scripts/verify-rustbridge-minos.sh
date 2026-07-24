@@ -39,6 +39,8 @@ PY
 
 failures=0
 checked=0
+annotated=0
+unannotated=0
 unreadable=0
 archives=0
 device_archives=0
@@ -63,26 +65,50 @@ while IFS= read -r archive; do
   mkdir -p "$slice_dir"
   (cd "$slice_dir" && ar -x "$OLDPWD/$archive")
 
+  slice_checked=0
+  slice_annotated=0
+  slice_unannotated=0
+
   while IFS= read -r object; do
     checked=$((checked + 1))
+    slice_checked=$((slice_checked + 1))
     if ! output="$(xcrun vtool -show-build "$object" 2>/dev/null)"; then
       echo "ERROR: unable to inspect $slice/$(basename "$object")" >&2
       unreadable=$((unreadable + 1))
       failures=$((failures + 1))
       continue
     fi
+
     minos="$(printf '%s\n' "$output" | awk '/minos / { print $2; exit }')"
     if [[ -z "$minos" ]]; then
-      echo "ERROR: no iOS deployment target found in $slice/$(basename "$object")" >&2
-      unreadable=$((unreadable + 1))
-      failures=$((failures + 1))
+      # Rust's compiler_builtins/std runtime archives legitimately contain helper
+      # objects without LC_BUILD_VERSION/LC_VERSION_MIN_IPHONEOS. They are not
+      # evidence of a higher deployment target. Keep counting them, but validate
+      # every object that does carry deployment metadata and require each slice
+      # to contain at least one annotated object.
+      unannotated=$((unannotated + 1))
+      slice_unannotated=$((slice_unannotated + 1))
       continue
     fi
+
+    annotated=$((annotated + 1))
+    slice_annotated=$((slice_annotated + 1))
     if version_gt "$minos" "$MAX_IOS_VERSION"; then
       echo "ERROR: $slice/$(basename "$object") requires iOS $minos (maximum allowed $MAX_IOS_VERSION)" >&2
       failures=$((failures + 1))
     fi
   done < <(find "$slice_dir" -type f -name '*.o' -print)
+
+  if (( slice_checked == 0 )); then
+    echo "ERROR: no Mach-O objects found in RustBridge slice $slice." >&2
+    failures=$((failures + 1))
+  fi
+  if (( slice_annotated == 0 )); then
+    echo "ERROR: no deployment-target metadata found in any object in RustBridge slice $slice." >&2
+    failures=$((failures + 1))
+  fi
+
+  echo "RustBridge slice $slice: checked=$slice_checked annotated=$slice_annotated unannotated-runtime-helpers=$slice_unannotated"
 done < <(find "$FRAMEWORK_PATH" -type f -name 'librust_bridge.a' -print)
 
 if (( checked == 0 )); then
@@ -94,5 +120,5 @@ if (( archives != 2 || device_archives != 1 || simulator_archives != 1 )); then
   failures=$((failures + 1))
 fi
 
-echo "Checked $checked RustBridge objects across $archives archives; incompatible/unreadable/layout failures: $failures (unreadable: $unreadable)"
+echo "Checked $checked RustBridge objects across $archives archives; annotated=$annotated unannotated-runtime-helpers=$unannotated unreadable=$unreadable failures=$failures"
 (( failures == 0 ))

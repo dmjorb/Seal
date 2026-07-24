@@ -1,8 +1,6 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-use idevice::IdeviceError;
-
 use crate::idevice_support::mounter::mount_personalized_ddi_rppairing;
 use crate::idevice_support::rsd::set_rppairing_file;
 use crate::idevice_support::{
