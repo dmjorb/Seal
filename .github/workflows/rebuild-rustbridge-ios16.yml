@@ -1,0 +1,51 @@
+name: Rebuild RustBridge for iOS 16
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rebuild:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Select pinned Xcode 26.5
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install Rust targets
+        run: |
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin
+          rustc --version
+          cargo --version
+
+      - name: Rebuild RustBridge with iOS 16 deployment target
+        working-directory: Vendor/Minimuxer/RustBridge
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: make clean xcframework
+
+      - name: Verify every RustBridge object supports iOS 16
+        run: MAX_IOS_MAJOR=16 bash Scripts/verify-rustbridge-minos.sh
+
+      - name: Package rebuilt RustBridge
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework \
+            RustBridge-iOS16.xcframework.zip
+          shasum -a 256 RustBridge-iOS16.xcframework.zip > RustBridge-iOS16.xcframework.zip.sha256
+
+      - name: Upload rebuilt RustBridge
+        uses: actions/upload-artifact@v7
+        with:
+          name: RustBridge-iOS16
+          path: |
+            RustBridge-iOS16.xcframework.zip
+            RustBridge-iOS16.xcframework.zip.sha256
+          retention-days: 30

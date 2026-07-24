@@ -4,6 +4,11 @@ SCHEME=Minimuxer
 BUILD_DIR=lib
 FRAMEWORK_NAME=Minimuxer
 
+IPHONEOS_DEPLOYMENT_TARGET ?= 16.0
+MACOSX_DEPLOYMENT_TARGET ?= 13.0
+export IPHONEOS_DEPLOYMENT_TARGET
+export MACOSX_DEPLOYMENT_TARGET
+
 .PHONY: all build rust xcframework zip clean
 
 # --- Core Build ---

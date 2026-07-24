@@ -67,7 +67,7 @@ enum ApplePortalSigningFailure {
             || normalized.contains("bundle identifier unavailable") {
             return ImportFailure(
                 title: "Bundle ID 不可用",
-                reason: "Apple 返回：Bundle ID 不可用",
+                reason: "Apple 返回：App ID 的 Bundle ID 不可用",
                 recovery: "更换 Bundle ID",
                 code: "SEAL-APPID-302"
             )

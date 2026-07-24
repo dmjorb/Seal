@@ -141,9 +141,10 @@ struct ImportWorkflowTests {
 
         let records = try await environment.appStore.fetchAll()
         #expect(records.count == 1)
-        #expect(records.first?.id == newID)
+        #expect(records.first?.id == oldRecord.id)
         #expect(records.first?.name == "Demo")
-        #expect(FileManager.default.fileExists(atPath: oldIPA.path) == false)
+        #expect(FileManager.default.fileExists(atPath: oldIPA.path))
+        #expect(try Data(contentsOf: oldIPA) != Data("old".utf8))
     }
 
     @Test

@@ -17,6 +17,7 @@ struct RootTabView: View {
             )
             .tabItem {
                 Label(AppSection.apps.title, systemImage: AppSection.apps.systemImage)
+                    .accessibilityIdentifier("root-tab-apps")
             }
             .tag(AppSection.apps)
 
@@ -26,6 +27,7 @@ struct RootTabView: View {
             )
             .tabItem {
                 Label(AppSection.settings.title, systemImage: AppSection.settings.systemImage)
+                    .accessibilityIdentifier("root-tab-settings")
             }
             .tag(AppSection.settings)
         }

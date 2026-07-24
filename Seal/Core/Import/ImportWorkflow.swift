@@ -185,7 +185,12 @@ actor ImportWorkflow {
                 state = .awaitingConfirmation(draft)
             }
         } catch {
-            let originalFailure = Self.importFailure(from: error)
+            let originalFailure: ImportFailure
+            if fileTransaction?.phase == .databaseCommitPending, databaseRecord == nil {
+                originalFailure = Self.persistenceFailure
+            } else {
+                originalFailure = Self.importFailure(from: error)
+            }
             if let transaction = fileTransaction,
                transaction.phase == .finalized {
                 // A finalized transaction is intentionally left journaled when a

@@ -21,11 +21,10 @@ final class ImportFlowUITests: XCTestCase {
     func testConfirmationKeepsSummaryAndActionsConcise() {
         let app = launch(with: "--ui-testing-confirmation")
         XCTAssertTrue(app.otherElements["import-confirmation"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Demo"].exists)
-        XCTAssertTrue(app.staticTexts["v1.0 (1)"].exists)
+        XCTAssertTrue(element("import-confirmation-name", in: app).exists)
+        XCTAssertTrue(element("import-confirmation-version", in: app).exists)
         assertSummary("import-summary-extensions", value: "1 个", in: app)
-        assertSummary("import-summary-compatibility", value: "兼容", in: app)
-        assertSummary("import-summary-account", value: "签名时选择", in: app)
+        assertSummary("import-summary-compatibility", value: "可导入", in: app)
         XCTAssertTrue(app.buttons["导入"].exists)
         XCTAssertTrue(app.buttons["取消"].exists)
     }

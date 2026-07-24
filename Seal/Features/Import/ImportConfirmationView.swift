@@ -66,10 +66,12 @@ struct ImportConfirmationView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(draft.parsedIPA.name)
                     .font(.system(size: 22, weight: .semibold))
+                    .accessibilityIdentifier("import-confirmation-name")
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text("v\(draft.parsedIPA.version) · \(formattedSize)")
                     .font(.system(size: 15, weight: .medium))
+                    .accessibilityIdentifier("import-confirmation-version")
                     .foregroundStyle(Color.sealTextSecondary)
                     .lineLimit(1)
             }
@@ -86,10 +88,16 @@ struct ImportConfirmationView: View {
     private var summaryCard: some View {
         VStack(spacing: 0) {
             summaryRow("Bundle ID", draft.parsedIPA.bundleIdentifier, monospaced: true)
+                .accessibilityIdentifier("import-summary-bundle-id")
+                .accessibilityValue(draft.parsedIPA.bundleIdentifier)
             Divider().padding(.leading, 16)
             summaryRow("扩展", extensionSummary)
+                .accessibilityIdentifier("import-summary-extensions")
+                .accessibilityValue(extensionSummary)
             Divider().padding(.leading, 16)
             summaryRow("状态", migrationSummary)
+                .accessibilityIdentifier("import-summary-compatibility")
+                .accessibilityValue(migrationSummary)
         }
         .padding(.horizontal, 16)
         .background(Color.sealSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))

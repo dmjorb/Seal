@@ -7,13 +7,15 @@ final class RootNavigationUITests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(app.staticTexts["Seal"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.tabBars.buttons["应用"].exists)
-        XCTAssertTrue(app.tabBars.buttons["设置"].exists)
+        let appsTab = app.buttons["root-tab-apps"]
+        let settingsTab = app.buttons["root-tab-settings"]
+        XCTAssertTrue(appsTab.waitForExistence(timeout: 10))
+        XCTAssertTrue(settingsTab.waitForExistence(timeout: 10))
 
-        app.tabBars.buttons["设置"].tap()
+        settingsTab.tap()
         XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
 
-        app.tabBars.buttons["应用"].tap()
+        appsTab.tap()
         XCTAssertTrue(app.staticTexts["Seal"].waitForExistence(timeout: 5))
 
         let screenshot = XCUIScreen.main.screenshot()
