@@ -4,17 +4,30 @@ set -euo pipefail
 FRAMEWORK_PATH="${1:-Vendor/Minimuxer/RustBridge/lib/RustBridge.xcframework}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "RustBridge symbol verification requires macOS/Xcode llvm-nm." >&2
+  echo "RustBridge symbol verification requires macOS and Rust llvm-tools-preview." >&2
   exit 2
 fi
-if ! command -v xcrun >/dev/null 2>&1 || ! xcrun --find llvm-nm >/dev/null 2>&1; then
-  echo "xcrun llvm-nm is required to inspect RustBridge symbols." >&2
+if ! command -v rustc >/dev/null 2>&1; then
+  echo "rustc is required to locate the matching Rust LLVM tools." >&2
   exit 2
 fi
 if [[ ! -d "$FRAMEWORK_PATH" ]]; then
   echo "RustBridge XCFramework not found: $FRAMEWORK_PATH" >&2
   exit 2
 fi
+
+RUST_HOST="$(rustc -vV | awk '/^host:/ { print $2 }')"
+RUST_SYSROOT="$(rustc --print sysroot)"
+LLVM_NM="${RUST_SYSROOT}/lib/rustlib/${RUST_HOST}/bin/llvm-nm"
+
+if [[ -z "$RUST_HOST" || ! -x "$LLVM_NM" ]]; then
+  echo "Rust llvm-nm was not found. Install llvm-tools-preview for the active Rust toolchain." >&2
+  echo "Expected: $LLVM_NM" >&2
+  exit 2
+fi
+
+echo "Using Rust-matched llvm-nm: $LLVM_NM"
+"$LLVM_NM" --version
 
 required_symbols=(
   rust_bridge_device_free
@@ -48,9 +61,14 @@ while IFS= read -r archive; do
 
   nm_stderr="$(mktemp)"
   if ! symbols="$(
-    xcrun llvm-nm       --defined-only       --extern-only       --quiet       --format=posix       "$archive" 2>"$nm_stderr"
+    "$LLVM_NM" \
+      --defined-only \
+      --extern-only \
+      --quiet \
+      --format=posix \
+      "$archive" 2>"$nm_stderr"
   )"; then
-    echo "ERROR: llvm-nm could not inspect $archive" >&2
+    echo "ERROR: Rust llvm-nm could not inspect $archive" >&2
     cat "$nm_stderr" >&2
     rm -f "$nm_stderr"
     failures=$((failures + 1))

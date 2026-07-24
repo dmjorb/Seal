@@ -27,11 +27,17 @@ jobs:
           sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
           xcodebuild -version
 
-      - name: Install Rust targets
+      - name: Install pinned Rust toolchain and iOS targets
         run: |
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-          rustc --version
+          rustup toolchain install 1.97.1 --profile minimal --component llvm-tools-preview
+          rustup target add --toolchain 1.97.1 aarch64-apple-ios aarch64-apple-ios-sim
+          rustup default 1.97.1
+          rustc --version --verbose
           cargo --version
+          RUST_HOST="$(rustc -vV | awk '/^host:/ { print $2 }')"
+          RUST_LLVM_NM="$(rustc --print sysroot)/lib/rustlib/${RUST_HOST}/bin/llvm-nm"
+          test -x "$RUST_LLVM_NM"
+          "$RUST_LLVM_NM" --version
 
       - name: Audit RustBridge FFI source
         run: bash Scripts/audit-rustbridge-source.sh
@@ -53,7 +59,7 @@ jobs:
           {
             echo "commit=${GITHUB_SHA}"
             xcodebuild -version | tr '\n' ' '; echo
-            rustc --version
+            rustc --version --verbose
             cargo --version
             echo "IPHONEOS_DEPLOYMENT_TARGET=16.0"
             shasum -a 256 Vendor/Minimuxer/RustBridge/Cargo.lock
