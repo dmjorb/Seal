@@ -12,8 +12,29 @@ import Foundation
 @_silgen_name("rust_bridge_free_string")
 internal func _rust_bridge_free_string(_ ptr: UnsafeMutablePointer<Int8>?)
 
-@_silgen_name("rust_bridge_free_pointer")
-internal func _rust_bridge_free_pointer(_ ptr: UnsafeMutableRawPointer?)
+@_silgen_name("rust_bridge_device_free")
+internal func _rust_bridge_device_free(_ ptr: UnsafeMutableRawPointer?)
+
+@_silgen_name("rust_bridge_lockdown_free")
+internal func _rust_bridge_lockdown_free(_ ptr: UnsafeMutableRawPointer?)
+
+@_silgen_name("rust_bridge_afc_free")
+internal func _rust_bridge_afc_free(_ ptr: UnsafeMutableRawPointer?)
+
+@_silgen_name("rust_bridge_instproxy_free")
+internal func _rust_bridge_instproxy_free(_ ptr: UnsafeMutableRawPointer?)
+
+@_silgen_name("rust_bridge_misagent_free")
+internal func _rust_bridge_misagent_free(_ ptr: UnsafeMutableRawPointer?)
+
+@_silgen_name("rust_bridge_debugserver_free")
+internal func _rust_bridge_debugserver_free(_ ptr: UnsafeMutableRawPointer?)
+
+@_silgen_name("rust_bridge_mounter_free")
+internal func _rust_bridge_mounter_free(_ ptr: UnsafeMutableRawPointer?)
+
+@_silgen_name("rust_bridge_heartbeat_free")
+internal func _rust_bridge_heartbeat_free(_ ptr: UnsafeMutableRawPointer?)
 
 @_silgen_name("rust_bridge_free_byte_array")
 internal func _rust_bridge_free_byte_array(_ ptr: UnsafeMutablePointer<UInt8>?, _ len: UInt32)
@@ -132,7 +153,7 @@ internal func _rust_bridge_set_debug(_ level: Int32)
 public final class RustDevice {
     internal let ptr: UnsafeMutableRawPointer
     init(ptr: UnsafeMutableRawPointer) { self.ptr = ptr }
-    deinit { _rust_bridge_free_pointer(ptr) }
+    deinit { _rust_bridge_device_free(ptr) }
     public static func fetchFirst() -> RustDevice? {
         guard let p = _rust_bridge_device_get_first() else { return nil }
         return RustDevice(ptr: p)
@@ -146,11 +167,15 @@ public final class RustDevice {
 
 public final class RustLockdown {
     internal let ptr: UnsafeMutableRawPointer
-    init(ptr: UnsafeMutableRawPointer) { self.ptr = ptr }
-    deinit { _rust_bridge_free_pointer(ptr) }
+    private let device: RustDevice
+    init(ptr: UnsafeMutableRawPointer, device: RustDevice) {
+        self.ptr = ptr
+        self.device = device
+    }
+    deinit { _rust_bridge_lockdown_free(ptr) }
     public static func connect(device: RustDevice, label: String) -> RustLockdown? {
         guard let p = _rust_bridge_lockdown_new(device.ptr, label) else { return nil }
-        return RustLockdown(ptr: p)
+        return RustLockdown(ptr: p, device: device)
     }
     public func getValue(domain: String? = nil, key: String) -> String? {
         guard let p = _rust_bridge_lockdown_get_value(ptr, domain, key) else { return nil }
@@ -161,11 +186,15 @@ public final class RustLockdown {
 
 public final class RustAfc {
     internal let ptr: UnsafeMutableRawPointer
-    init(ptr: UnsafeMutableRawPointer) { self.ptr = ptr }
-    deinit { _rust_bridge_free_pointer(ptr) }
+    private let device: RustDevice
+    init(ptr: UnsafeMutableRawPointer, device: RustDevice) {
+        self.ptr = ptr
+        self.device = device
+    }
+    deinit { _rust_bridge_afc_free(ptr) }
     public static func connect(device: RustDevice, label: String) -> RustAfc? {
         guard let p = _rust_bridge_afc_new(device.ptr, label) else { return nil }
-        return RustAfc(ptr: p)
+        return RustAfc(ptr: p, device: device)
     }
     public func remove(path: String) -> Bool {
         return _rust_bridge_afc_remove(ptr, path)
@@ -177,8 +206,9 @@ public final class RustAfc {
         return _rust_bridge_afc_file_open(ptr, path, mode)
     }
     public func fileWrite(handle: UInt64, data: Data) -> Bool {
+        guard let size = UInt32(exactly: data.count) else { return false }
         return data.withUnsafeBytes { buf in
-            _rust_bridge_afc_file_write(ptr, handle, buf.bindMemory(to: UInt8.self).baseAddress, UInt32(data.count))
+            _rust_bridge_afc_file_write(ptr, handle, buf.bindMemory(to: UInt8.self).baseAddress, size)
         }
     }
     public func fileRead(handle: UInt64, size: UInt32) -> Data? {
@@ -217,11 +247,15 @@ public final class RustAfc {
 
 public final class RustInstProxy {
     internal let ptr: UnsafeMutableRawPointer
-    init(ptr: UnsafeMutableRawPointer) { self.ptr = ptr }
-    deinit { _rust_bridge_free_pointer(ptr) }
+    private let device: RustDevice
+    init(ptr: UnsafeMutableRawPointer, device: RustDevice) {
+        self.ptr = ptr
+        self.device = device
+    }
+    deinit { _rust_bridge_instproxy_free(ptr) }
     public static func connect(device: RustDevice, label: String) -> RustInstProxy? {
         guard let p = _rust_bridge_instproxy_new(device.ptr, label) else { return nil }
-        return RustInstProxy(ptr: p)
+        return RustInstProxy(ptr: p, device: device)
     }
     public func install(path: String) -> Bool {
         return _rust_bridge_instproxy_install(ptr, path)
@@ -243,15 +277,20 @@ public final class RustInstProxy {
 
 public final class RustMisagent {
     internal let ptr: UnsafeMutableRawPointer
-    init(ptr: UnsafeMutableRawPointer) { self.ptr = ptr }
-    deinit { _rust_bridge_free_pointer(ptr) }
+    private let device: RustDevice
+    init(ptr: UnsafeMutableRawPointer, device: RustDevice) {
+        self.ptr = ptr
+        self.device = device
+    }
+    deinit { _rust_bridge_misagent_free(ptr) }
     public static func connect(device: RustDevice, label: String) -> RustMisagent? {
         guard let p = _rust_bridge_misagent_new(device.ptr, label) else { return nil }
-        return RustMisagent(ptr: p)
+        return RustMisagent(ptr: p, device: device)
     }
     public func install(profileData: Data) -> Bool {
+        guard let size = UInt32(exactly: profileData.count) else { return false }
         return profileData.withUnsafeBytes { buf in
-            _rust_bridge_misagent_install(ptr, buf.bindMemory(to: UInt8.self).baseAddress, UInt32(profileData.count))
+            _rust_bridge_misagent_install(ptr, buf.bindMemory(to: UInt8.self).baseAddress, size)
         }
     }
     public func remove(profileId: String) -> Bool {
@@ -266,11 +305,15 @@ public final class RustMisagent {
 
 public final class RustDebugserver {
     internal let ptr: UnsafeMutableRawPointer
-    init(ptr: UnsafeMutableRawPointer) { self.ptr = ptr }
-    deinit { _rust_bridge_free_pointer(ptr) }
+    private let device: RustDevice
+    init(ptr: UnsafeMutableRawPointer, device: RustDevice) {
+        self.ptr = ptr
+        self.device = device
+    }
+    deinit { _rust_bridge_debugserver_free(ptr) }
     public static func connect(device: RustDevice, label: String) -> RustDebugserver? {
         guard let p = _rust_bridge_debugserver_new(device.ptr, label) else { return nil }
-        return RustDebugserver(ptr: p)
+        return RustDebugserver(ptr: p, device: device)
     }
     public func sendCommand(_ command: String) -> String? {
         guard let p = _rust_bridge_debugserver_send_command(ptr, command) else { return nil }
@@ -286,11 +329,15 @@ public final class RustDebugserver {
 
 public final class RustMounter {
     internal let ptr: UnsafeMutableRawPointer
-    init(ptr: UnsafeMutableRawPointer) { self.ptr = ptr }
-    deinit { _rust_bridge_free_pointer(ptr) }
+    private let device: RustDevice
+    init(ptr: UnsafeMutableRawPointer, device: RustDevice) {
+        self.ptr = ptr
+        self.device = device
+    }
+    deinit { _rust_bridge_mounter_free(ptr) }
     public static func connect(device: RustDevice, label: String) -> RustMounter? {
         guard let p = _rust_bridge_mounter_new(device.ptr, label) else { return nil }
-        return RustMounter(ptr: p)
+        return RustMounter(ptr: p, device: device)
     }
     public func lookup(imageType: String) -> String? {
         guard let p = _rust_bridge_mounter_lookup(ptr, imageType) else { return nil }
@@ -307,11 +354,15 @@ public final class RustMounter {
 
 public final class RustHeartbeat {
     internal let ptr: UnsafeMutableRawPointer
-    init(ptr: UnsafeMutableRawPointer) { self.ptr = ptr }
-    deinit { _rust_bridge_free_pointer(ptr) }
+    private let device: RustDevice
+    init(ptr: UnsafeMutableRawPointer, device: RustDevice) {
+        self.ptr = ptr
+        self.device = device
+    }
+    deinit { _rust_bridge_heartbeat_free(ptr) }
     public static func connect(device: RustDevice, label: String) -> RustHeartbeat? {
         guard let p = _rust_bridge_heartbeat_new(device.ptr, label) else { return nil }
-        return RustHeartbeat(ptr: p)
+        return RustHeartbeat(ptr: p, device: device)
     }
     public func receive(timeoutMs: UInt32) -> String? {
         guard let p = _rust_bridge_heartbeat_receive(ptr, timeoutMs) else { return nil }
@@ -348,13 +399,16 @@ public func rustBridgeDebugAppPost17(_ appId: String, muxerAddr: String, deviceI
 /// Post-iOS-17 personalized DDI mount from already-downloaded file bytes.
 /// Swift is responsible for downloading the DDI files.
 public func rustBridgeMountPersonalizedDDI(image: Data, trustcache: Data, manifest: Data, muxerAddr: String, deviceIp: String) -> Int32 {
+    guard let imageLength = UInt32(exactly: image.count),
+          let trustcacheLength = UInt32(exactly: trustcache.count),
+          let manifestLength = UInt32(exactly: manifest.count) else { return 1 }
     return image.withUnsafeBytes { imgBuf in
         trustcache.withUnsafeBytes { tcBuf in
             manifest.withUnsafeBytes { manBuf in
                 _rust_bridge_mount_personalized_ddi(
-                    imgBuf.bindMemory(to: UInt8.self).baseAddress, UInt32(image.count),
-                    tcBuf.bindMemory(to: UInt8.self).baseAddress, UInt32(trustcache.count),
-                    manBuf.bindMemory(to: UInt8.self).baseAddress, UInt32(manifest.count),
+                    imgBuf.bindMemory(to: UInt8.self).baseAddress, imageLength,
+                    tcBuf.bindMemory(to: UInt8.self).baseAddress, trustcacheLength,
+                    manBuf.bindMemory(to: UInt8.self).baseAddress, manifestLength,
                     muxerAddr, deviceIp
                 )
             }

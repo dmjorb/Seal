@@ -27,6 +27,21 @@ jobs:
           xcodebuild -version
           test "$(xcodebuild -version | head -n 1)" = "Xcode 26.5"
 
+      - name: Install pinned Rust inspection tools
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component llvm-tools-preview
+          rustup default 1.97.1
+          rustc --version --verbose
+
+      - name: Audit vendored RustBridge FFI source
+        run: bash Scripts/audit-rustbridge-source.sh
+
+      - name: Verify vendored RustBridge supports iOS 16
+        run: MAX_IOS_VERSION=16.0 bash Scripts/verify-rustbridge-minos.sh
+
+      - name: Verify vendored RustBridge typed FFI symbols
+        run: bash Scripts/verify-rustbridge-symbols.sh
+
       - name: Install pinned XcodeGen
         run: |
           curl --fail --location --silent --show-error \

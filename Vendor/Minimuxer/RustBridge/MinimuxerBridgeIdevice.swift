@@ -100,6 +100,18 @@ private func rustIdeviceThrowIfNeeded(_ error: UnsafeMutablePointer<RustIdeviceF
 	throw swiftError
 }
 
+@inline(__always)
+private func rustIdeviceCheckedLength(_ count: Int) throws -> UInt32 {
+	guard let length = UInt32(exactly: count) else {
+		throw NSError(
+			domain: "minimuxer",
+			code: -1,
+			userInfo: [NSLocalizedDescriptionKey: "RustBridge payload exceeds UInt32 length limit"]
+		)
+	}
+	return length
+}
+
 // MARK: - Swift Wrappers
 public class RustIdevice {
 	public static func testDeviceConnection() -> Bool {
@@ -127,11 +139,12 @@ public class RustIdevice {
 	}
 
 	public static func yeetAppAfc(bundleId: String, ipaBytes: Data) throws {
+		let ipaLength = try rustIdeviceCheckedLength(ipaBytes.count)
 		let error = ipaBytes.withUnsafeBytes { buffer in
 			_rust_bridge_idevice_yeet_app_afc(
 				bundleId,
 				buffer.bindMemory(to: UInt8.self).baseAddress,
-				UInt32(ipaBytes.count)
+				ipaLength
 			)
 		}
 
@@ -155,10 +168,11 @@ public class RustIdevice {
     }
 
 	public static func installProvisioningProfile(_ profile: Data) throws {
+		let profileLength = try rustIdeviceCheckedLength(profile.count)
 		let error = profile.withUnsafeBytes { buffer in
 			_rust_bridge_idevice_install_provisioning_profile(
 				buffer.bindMemory(to: UInt8.self).baseAddress,
-				UInt32(profile.count)
+				profileLength
 			)
 		}
 
@@ -178,13 +192,16 @@ public class RustIdevice {
 	}
 
     public static func mountPersonalizedDDI(image: Data, trustcache: Data, manifest: Data) -> Int32 {
+        guard let imageLength = UInt32(exactly: image.count),
+              let trustcacheLength = UInt32(exactly: trustcache.count),
+              let manifestLength = UInt32(exactly: manifest.count) else { return 1 }
         return image.withUnsafeBytes { imgBuf in
             trustcache.withUnsafeBytes { tcBuf in
                 manifest.withUnsafeBytes { manBuf in
                     _rust_bridge_idevice_mount_personalized_ddi(
-                        imgBuf.bindMemory(to: UInt8.self).baseAddress, UInt32(image.count),
-                        tcBuf.bindMemory(to: UInt8.self).baseAddress, UInt32(trustcache.count),
-                        manBuf.bindMemory(to: UInt8.self).baseAddress, UInt32(manifest.count),
+                        imgBuf.bindMemory(to: UInt8.self).baseAddress, imageLength,
+                        tcBuf.bindMemory(to: UInt8.self).baseAddress, trustcacheLength,
+                        manBuf.bindMemory(to: UInt8.self).baseAddress, manifestLength,
                     )
                 }
             }
